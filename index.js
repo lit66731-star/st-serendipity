@@ -1,6 +1,8 @@
 import { extension_settings } from '../../../extensions.js';
 import {
     chat,
+    characters,
+    this_chid,
     event_types,
     eventSource,
     generateRaw,
@@ -14,38 +16,104 @@ const extensionName = 'serendipity';
 const TIER_LIMIT = 10; // 满 10 条晋级
 
 const defaultSettings = {
-    memories: [],           // 短期记忆（详细总结）[{ id, time, text }]
-    longMemories: [],       // 长期记忆（短期满 10 合并而来）
-    permanentMemories: [],  // 永久记忆（长期满 10 合并而来，只增不删）
-    memoryEnabled: true,    // 自动记忆开关
-    blockedWords: [],       // 屏蔽词列表
-    censorEnabled: true,    // 屏蔽开关
-    instructions: [],       // 指令列表（每轮生成都注入）
-    btnLeft: null,          // 主按钮位置（可拖动）
+    chars: {},       // { [角色名]: 该角色的记忆/屏蔽词/指令等数据 }
+    btnLeft: null,   // 主按钮位置（可拖动，全局，不随角色）
     btnTop: null,
 };
 
-let settings = null;
+let globalSettings = null;   // 顶层设置（按角色分组 + 按钮位置）
+let settings = null;         // 当前角色的数据（便捷引用）
+let activeChar = '';         // 当前绑定的角色名
 let isSummarizing = false;
+let pendingMigration = null; // 旧版扁平数据迁移挂起（角色卡尚未加载完成时暂存）
 
 // ---------------- 设置 ----------------
-function loadSettings() {
-    extension_settings[extensionName] = extension_settings[extensionName] || {};
-    const s = extension_settings[extensionName];
-    for (const [k, v] of Object.entries(defaultSettings)) {
-        if (s[k] === undefined) s[k] = v;
-    }
+// 每张角色卡独立的干净数据
+function freshCharSettings() {
+    return {
+        memories: [],           // 短期记忆（详细总结）[{ id, time, text }]
+        longMemories: [],       // 长期记忆（短期满 10 合并而来）
+        permanentMemories: [],  // 永久记忆（长期满 10 合并而来，只增不删）
+        memoryEnabled: true,    // 自动记忆开关
+        blockedWords: [],       // 屏蔽词列表
+        censorEnabled: true,    // 屏蔽开关
+        instructions: [],       // 指令列表（每轮生成都注入）
+    };
+}
+
+// 规范化单个角色的数据（补默认值 + 指令结构迁移）
+function normalizeCharSettings(cs) {
+    if (!cs || typeof cs !== 'object') cs = {};
     for (const key of ['memories', 'longMemories', 'permanentMemories', 'blockedWords', 'instructions']) {
-        if (!Array.isArray(s[key])) s[key] = [];
+        if (!Array.isArray(cs[key])) cs[key] = [];
     }
-    // 指令结构迁移：旧版为纯字符串，升级为 { id, text, enabled }
-    s.instructions = s.instructions.map(it => {
+    if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
+    if (cs.censorEnabled === undefined) cs.censorEnabled = true;
+    cs.instructions = cs.instructions.map(it => {
         if (typeof it === 'string') return { id: uid(), text: it, enabled: true };
         if (it && typeof it === 'object' && typeof it.text === 'string') {
             return { id: it.id || uid(), text: it.text, enabled: it.enabled !== false };
         }
         return null;
     }).filter(Boolean);
+    return cs;
+}
+
+// 当前选中角色卡的名字（未选中返回空字符串）
+function currentCharName() {
+    if (this_chid !== undefined && characters && characters[this_chid] && characters[this_chid].name) {
+        return String(characters[this_chid].name);
+    }
+    return '';
+}
+
+function charData(name) {
+    if (!globalSettings.chars[name]) globalSettings.chars[name] = freshCharSettings();
+    return normalizeCharSettings(globalSettings.chars[name]);
+}
+
+// 切换到当前角色卡的数据（换角色即换一套干净/对应的数据）
+function activateCharacter() {
+    activeChar = currentCharName();
+    // 挂起的旧版扁平数据：等角色名真正可用时挂到该角色名下，避免启动时角色尚未加载导致丢数据
+    if (pendingMigration && activeChar) {
+        globalSettings.chars[activeChar] = normalizeCharSettings(pendingMigration);
+        pendingMigration = null;
+        saveSettings();
+    }
+    settings = charData(activeChar);
+}
+
+function loadSettings() {
+    extension_settings[extensionName] = extension_settings[extensionName] || {};
+    const s = extension_settings[extensionName];
+
+    // 旧版扁平结构 → 新版按角色分组（迁移一次，挂到当前角色名下）
+    if (s.chars === undefined) {
+        const migrated = {
+            memories: Array.isArray(s.memories) ? s.memories : [],
+            longMemories: Array.isArray(s.longMemories) ? s.longMemories : [],
+            permanentMemories: Array.isArray(s.permanentMemories) ? s.permanentMemories : [],
+            memoryEnabled: s.memoryEnabled !== false,
+            blockedWords: Array.isArray(s.blockedWords) ? s.blockedWords : [],
+            censorEnabled: s.censorEnabled !== false,
+            instructions: Array.isArray(s.instructions) ? s.instructions : [],
+        };
+        s.chars = {};
+        const name = currentCharName();
+        if (name) {
+            s.chars[name] = normalizeCharSettings(migrated);
+        } else {
+            // 角色卡此时尚未加载完成（currentCharName 为空），先暂存，待 activateCharacter 挂到真实角色名下
+            pendingMigration = migrated;
+        }
+        for (const k of ['memories', 'longMemories', 'permanentMemories', 'memoryEnabled', 'blockedWords', 'censorEnabled', 'instructions']) {
+            delete s[k];
+        }
+    }
+    if (!s.chars || typeof s.chars !== 'object' || Array.isArray(s.chars)) s.chars = {};
+    if (s.btnLeft === undefined) s.btnLeft = null;
+    if (s.btnTop === undefined) s.btnTop = null;
     return s;
 }
 function saveSettings() { saveSettingsDebounced(); }
@@ -68,6 +136,7 @@ function buildSummaryPrompt(userMsg, charMsg) {
             '【时间】剧情中的具体时间（年/月/日 周几 几时几分）',
             '【天气】天气情况',
             '【在场人物】有哪些人在场',
+            '【地点】发生地点/场景',
             '【关键事件】本段发生的关键事件',
             '【角色衣着】' + charMsg.name + '的衣着',
             '【用户衣着】' + userMsg.name + '的衣着',
@@ -204,17 +273,22 @@ function renderMemories() {
     }
 
     let html = '';
-    if (settings.permanentMemories.length) {
-        html += `<div class="st-sd__tier-title">永久记忆（只增不删）</div>`;
-        html += [...settings.permanentMemories].reverse().map(m => memoryItemHtml(m, false, 'permanent')).join('');
-    }
-    if (settings.longMemories.length) {
-        html += `<div class="st-sd__tier-title">长期记忆（${settings.longMemories.length}/${TIER_LIMIT}）</div>`;
-        html += [...settings.longMemories].reverse().map(m => memoryItemHtml(m, true, 'long')).join('');
-    }
+    // 短期记忆置顶、默认展开（最常用）
     if (settings.memories.length) {
-        html += `<div class="st-sd__tier-title">短期记忆（${settings.memories.length}/${TIER_LIMIT}）</div>`;
+        html += `<div class="st-sd__tier-title st-sd__tier-title--static">短期记忆（${settings.memories.length}/${TIER_LIMIT}）</div>`;
         html += [...settings.memories].reverse().map(m => memoryItemHtml(m, true, 'short')).join('');
+    }
+    // 长期记忆：可折叠，默认收起
+    if (settings.longMemories.length) {
+        html += `<details class="st-sd__tier"><summary class="st-sd__tier-title">长期记忆（${settings.longMemories.length}/${TIER_LIMIT}）</summary>`;
+        html += [...settings.longMemories].reverse().map(m => memoryItemHtml(m, true, 'long')).join('');
+        html += '</details>';
+    }
+    // 永久记忆：可折叠，默认收起，只增不删
+    if (settings.permanentMemories.length) {
+        html += `<details class="st-sd__tier"><summary class="st-sd__tier-title">永久记忆（只增不删）</summary>`;
+        html += [...settings.permanentMemories].reverse().map(m => memoryItemHtml(m, false, 'permanent')).join('');
+        html += '</details>';
     }
     list.html(html);
 }
@@ -347,6 +421,11 @@ function renderInstructions() {
     list.html(items);
 }
 
+function renderCharBinding() {
+    const el = $('#st-serendipity .st-sd__char');
+    if (el.length) el.text(activeChar ? ('绑定角色：' + activeChar) : '未绑定角色');
+}
+
 // ---------------- 图标 ----------------
 const ICONS = {
     menu: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`,
@@ -370,8 +449,8 @@ function initButtonDrag(btn) {
             top: Math.min(Math.max(0, y), window.innerHeight - h),
         };
     };
-    if (settings.btnLeft != null && settings.btnTop != null) {
-        const p = clampBtn(settings.btnLeft, settings.btnTop);
+    if (globalSettings.btnLeft != null && globalSettings.btnTop != null) {
+        const p = clampBtn(globalSettings.btnLeft, globalSettings.btnTop);
         btn.css({ left: p.left + 'px', top: p.top + 'px', right: 'auto' });
     }
     let drag = null;
@@ -391,8 +470,8 @@ function initButtonDrag(btn) {
     $(document).on('pointerup.st-sd-btn', () => {
         if (!drag) return;
         if (drag.active) {
-            settings.btnLeft = parseFloat(btn.css('left'));
-            settings.btnTop = parseFloat(btn.css('top'));
+            globalSettings.btnLeft = parseFloat(btn.css('left'));
+            globalSettings.btnTop = parseFloat(btn.css('top'));
             saveSettings();
         } else {
             togglePanel(); // 单击（未拖动）→ 打开/关闭面板
@@ -407,7 +486,10 @@ function buildPanel() {
     const html = `
     <div id="st-serendipity" class="st-sd" style="display:none">
       <div class="st-sd__head">
-        <span class="st-sd__title">Serendipity</span>
+        <div class="st-sd__head-left">
+          <span class="st-sd__title">Serendipity</span>
+          <span class="st-sd__char"></span>
+        </div>
         <button type="button" class="st-sd__close" title="关闭">${ICONS.close}</button>
       </div>
       <div class="st-sd__tabs">
@@ -592,6 +674,7 @@ function togglePanel(force) {
         renderMemories();
         renderBlockedWords();
         renderInstructions();
+        renderCharBinding();
     } else {
         panel.hide();
     }
@@ -599,7 +682,8 @@ function togglePanel(force) {
 
 // ---------------- 初始化 ----------------
 jQuery(async () => {
-    settings = loadSettings();
+    globalSettings = loadSettings();
+    activateCharacter();
     buildTopBarButton();
     buildPanel();
 
@@ -612,9 +696,17 @@ jQuery(async () => {
     eventSource.on(event_types.GENERATION_ENDED, () => {
         setTimeout(() => summarizeLastRound(), 200);
     });
-    // 切换聊天后重新应用屏蔽
+    // 切换聊天/角色后：切换到该角色对应的数据
     eventSource.on(event_types.CHAT_CHANGED, () => {
-        setTimeout(applyCensorAll, 150);
+        setTimeout(() => {
+            activateCharacter();
+            updatePromptInjection();
+            applyCensorAll();
+            renderMemories();
+            renderBlockedWords();
+            renderInstructions();
+            renderCharBinding();
+        }, 150);
     });
 
     // 屏幕尺寸变化（转屏/键盘）时重新定位面板
@@ -624,4 +716,5 @@ jQuery(async () => {
     renderMemories();
     renderBlockedWords();
     renderInstructions();
+    renderCharBinding();
 });
