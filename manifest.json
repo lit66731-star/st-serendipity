@@ -1,0 +1,13 @@
+{
+    "name": "serendipity",
+    "display_name": "Serendipity",
+    "description": "自动剧情记忆总结 + 剧情屏蔽词，可移动主按钮，白色面板。",
+    "author": "cc_test",
+    "version": "1.0.0",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "auto_update": false
+}
