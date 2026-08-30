@@ -201,6 +201,35 @@ function renderMemories() {
     list.html(html);
 }
 
+// 导出全部记忆为 txt 文件
+function exportMemories() {
+    const lines = ['Serendipity 剧情记忆导出', '导出时间：' + fmtTime(Date.now()), ''];
+
+    const tier = (title, arr) => {
+        if (!arr.length) return;
+        lines.push('========== ' + title + ' ==========');
+        for (const m of arr) {
+            lines.push('[' + fmtTime(m.time) + ']');
+            lines.push(m.text);
+            lines.push('');
+        }
+    };
+    tier('永久记忆', settings.permanentMemories);
+    tier('长期记忆', settings.longMemories);
+    tier('短期记忆', settings.memories);
+
+    const content = '﻿' + lines.join('\n'); // BOM，避免记事本中文乱码
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'serendipity-memories-' + new Date().toISOString().slice(0, 10) + '.txt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // ---------------- 屏蔽词功能 ----------------
 const CENSOR_EXCLUDE = 'script, style, textarea, input, select, option, #st-serendipity, .st-sd, [contenteditable]';
 
@@ -352,6 +381,7 @@ function buildPanel() {
           <span class="st-sd__label">自动记忆</span>
           <label class="st-sd__switch"><input type="checkbox" class="st-sd__mem-toggle"><span class="st-sd__switch-slider"></span></label>
           <button type="button" class="st-sd__summarize">立即总结</button>
+          <button type="button" class="st-sd__export">导出</button>
         </div>
         <div class="st-sd__memory-list"></div>
         <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期，长期满 ${TIER_LIMIT} 条合并入永久（永久只增不删）。记忆会注入正文，防止模型失忆。</div>
@@ -404,6 +434,8 @@ function bindPanelEvents() {
 
     // 立即总结
     panel.find('.st-sd__summarize').on('click', () => summarizeLastRound());
+    // 导出记忆
+    panel.find('.st-sd__export').on('click', exportMemories);
 
     // 添加屏蔽词
     const addWord = () => {

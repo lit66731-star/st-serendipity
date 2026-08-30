@@ -96,6 +96,7 @@
 .st-sd__pane {
     display: flex;
     flex-direction: column;
+    flex: 1;
     min-height: 0;
     padding: 12px 16px 16px;
 }
@@ -124,6 +125,19 @@
     transition: background 0.15s;
 }
 .st-sd__summarize:hover { background: #f5f5f5; }
+
+.st-sd__export {
+    margin-left: 6px;
+    border: 1px solid #dddddd;
+    background: #ffffff;
+    color: #333333;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.st-sd__export:hover { background: #f5f5f5; }
 
 /* 开关 */
 .st-sd__switch {
@@ -297,11 +311,12 @@
         bottom: 90px;
     }
     #st-serendipity {
-        top: auto;
-        bottom: 140px;
+        top: 56px;
+        bottom: 148px;
         left: 8px;
         right: 8px;
         width: auto;
-        max-height: 62vh;
+        max-width: none;
+        max-height: none;
     }
 }
