@@ -474,11 +474,35 @@ function bindPanelEvents() {
     });
 }
 
+// 用真实视口尺寸定位面板，保证手机端一定不出屏（酒馆移动端 body 是 fixed+overflow:hidden，vh/bottom 会失真）
+function fitPanelToViewport() {
+    const panel = $('#st-serendipity');
+    if (!panel.length) return;
+    if (window.innerWidth <= 1000) {
+        const margin = 8;
+        const top = 56;
+        const bottomGap = 60; // 底部留白，避免被输入栏/底部工具条遮挡
+        panel.css({
+            top: top + 'px',
+            bottom: 'auto',
+            left: margin + 'px',
+            right: 'auto',
+            width: (window.innerWidth - margin * 2) + 'px',
+            maxWidth: 'none',
+            maxHeight: Math.max(200, window.innerHeight - top - bottomGap) + 'px',
+        });
+    } else {
+        // 桌面端恢复 CSS 默认
+        panel.css({ top: '', bottom: '', left: '', right: '', width: '', maxWidth: '', maxHeight: '' });
+    }
+}
+
 function togglePanel(force) {
     const panel = $('#st-serendipity');
     if (!panel.length) return;
     const show = force === undefined ? !panel.is(':visible') : force;
     if (show) {
+        fitPanelToViewport();
         panel.show();
         renderMemories();
         renderBlockedWords();
@@ -506,6 +530,10 @@ jQuery(async () => {
     eventSource.on(event_types.CHAT_CHANGED, () => {
         setTimeout(applyCensorAll, 150);
     });
+
+    // 屏幕尺寸变化（转屏/键盘）时重新定位面板
+    $(window).on('resize.st-sd', fitPanelToViewport);
+    $(window).on('orientationchange.st-sd', () => setTimeout(fitPanelToViewport, 300));
 
     renderMemories();
     renderBlockedWords();
