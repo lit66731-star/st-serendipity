@@ -320,7 +320,7 @@
 }
 .st-sd__instr {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 8px;
     background: #f2f2f2;
     border: 1px solid #e0e0e0;

@@ -38,6 +38,14 @@ function loadSettings() {
     for (const key of ['memories', 'longMemories', 'permanentMemories', 'blockedWords', 'instructions']) {
         if (!Array.isArray(s[key])) s[key] = [];
     }
+    // 指令结构迁移：旧版为纯字符串，升级为 { id, text, enabled }
+    s.instructions = s.instructions.map(it => {
+        if (typeof it === 'string') return { id: uid(), text: it, enabled: true };
+        if (it && typeof it === 'object' && typeof it.text === 'string') {
+            return { id: it.id || uid(), text: it.text, enabled: it.enabled !== false };
+        }
+        return null;
+    }).filter(Boolean);
     return s;
 }
 function saveSettings() { saveSettingsDebounced(); }
@@ -161,11 +169,11 @@ function updatePromptInjection() {
         0,
     );
 
-    // 指令注入（无数量限制，每轮生成都读取）
-    const instrActive = settings.instructions.length > 0;
+    // 指令注入（无数量限制，只注入已开启的指令，每轮生成都读取）
+    const enabledInstr = settings.instructions.filter(it => it && it.enabled && typeof it.text === 'string' && it.text.trim());
     setExtensionPrompt(
         'serendipity_instructions',
-        instrActive ? '[Serendipity 指令]\n以下是用户设定、每轮生成都必须遵守的指令：\n' + settings.instructions.map((s, i) => (i + 1) + '. ' + s).join('\n') : '',
+        enabledInstr.length ? '[Serendipity 指令]\n以下是用户设定、每轮生成都必须遵守的指令：\n' + enabledInstr.map((it, i) => (i + 1) + '. ' + it.text).join('\n') : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
@@ -325,9 +333,17 @@ function renderInstructions() {
         list.html('<div class="st-sd__empty">还没有指令，输入后点击「添加」</div>');
         return;
     }
-    const items = settings.instructions.map((s, i) =>
-        `<div class="st-sd__instr"><span class="st-sd__instr-text">${i + 1}. ${escapeHtml(s)}</span><button type="button" class="st-sd__instr-del" data-index="${i}">×</button></div>`
-    ).join('');
+    const items = settings.instructions.map(it => {
+        const checked = it.enabled ? ' checked' : '';
+        return `<div class="st-sd__instr" data-id="${it.id}">
+            <label class="st-sd__switch st-sd__instr-switch" title="开启/关闭此指令">
+                <input type="checkbox" class="st-sd__instr-toggle" data-id="${it.id}"${checked}>
+                <span class="st-sd__switch-slider"></span>
+            </label>
+            <span class="st-sd__instr-text">${escapeHtml(it.text)}</span>
+            <button type="button" class="st-sd__instr-del" data-id="${it.id}">×</button>
+        </div>`;
+    }).join('');
     list.html(items);
 }
 
@@ -430,7 +446,7 @@ function buildPanel() {
           <button type="button" class="st-sd__add-instr">添加</button>
         </div>
         <div class="st-sd__instr-list"></div>
-        <div class="st-sd__hint">指令不限制数量，每轮生成都会读取并遵守；删除即停止生效。</div>
+        <div class="st-sd__hint">指令不限制数量，每轮生成都会读取并遵守；可用每条前面的开关单独开启/关闭，删除则彻底移除。</div>
       </div>
     </div>`;
     $('body').append(html);
@@ -511,8 +527,8 @@ function bindPanelEvents() {
         const input = panel.find('.st-sd__instr-input');
         const v = input.val().trim();
         if (!v) return;
-        if (!settings.instructions.includes(v)) {
-            settings.instructions.push(v);
+        if (!settings.instructions.some(it => it.text === v)) {
+            settings.instructions.push({ id: uid(), text: v, enabled: true });
             saveSettings();
             renderInstructions();
             updatePromptInjection();
@@ -522,15 +538,24 @@ function bindPanelEvents() {
     panel.find('.st-sd__add-instr').on('click', addInstr);
     panel.find('.st-sd__instr-input').on('keydown', (e) => { if (e.key === 'Enter') addInstr(); });
 
-    // 删除指令
-    panel.on('click', '.st-sd__instr-del', function () {
-        const idx = parseInt($(this).data('index'), 10);
-        if (!isNaN(idx) && idx >= 0 && idx < settings.instructions.length) {
-            settings.instructions.splice(idx, 1);
+    // 单个指令开关
+    panel.on('change', '.st-sd__instr-toggle', function () {
+        const id = $(this).data('id');
+        const it = settings.instructions.find(x => x.id === id);
+        if (it) {
+            it.enabled = this.checked;
             saveSettings();
-            renderInstructions();
             updatePromptInjection();
         }
+    });
+
+    // 删除指令
+    panel.on('click', '.st-sd__instr-del', function () {
+        const id = $(this).data('id');
+        settings.instructions = settings.instructions.filter(x => x.id !== id);
+        saveSettings();
+        renderInstructions();
+        updatePromptInjection();
     });
 }
 
