@@ -1,13 +1,27 @@
 import { extension_settings } from '../../../extensions.js';
-import { chat, event_types, eventSource, generateQuietPrompt, saveSettingsDebounced } from '../../../../script.js';
+import {
+    chat,
+    event_types,
+    eventSource,
+    generateQuietPrompt,
+    saveSettingsDebounced,
+    setExtensionPrompt,
+    extension_prompt_types,
+} from '../../../../script.js';
 
 const extensionName = 'serendipity';
 
+const TIER_LIMIT = 10; // 满 10 条晋级
+
 const defaultSettings = {
-    memories: [],          // [{ id, time, text }]
-    memoryEnabled: true,   // 自动记忆开关
-    blockedWords: [],      // 屏蔽词列表
-    censorEnabled: true,   // 屏蔽开关
+    memories: [],           // 短期记忆（详细总结）[{ id, time, text }]
+    longMemories: [],       // 长期记忆（短期满 10 合并而来）
+    permanentMemories: [],  // 永久记忆（长期满 10 合并而来，只增不删）
+    memoryEnabled: true,    // 自动记忆开关
+    blockedWords: [],       // 屏蔽词列表
+    censorEnabled: true,    // 屏蔽开关
+    btnLeft: null,          // 主按钮位置（可拖动）
+    btnTop: null,
 };
 
 let settings = null;
@@ -20,8 +34,9 @@ function loadSettings() {
     for (const [k, v] of Object.entries(defaultSettings)) {
         if (s[k] === undefined) s[k] = v;
     }
-    if (!Array.isArray(s.memories)) s.memories = [];
-    if (!Array.isArray(s.blockedWords)) s.blockedWords = [];
+    for (const key of ['memories', 'longMemories', 'permanentMemories', 'blockedWords']) {
+        if (!Array.isArray(s[key])) s[key] = [];
+    }
     return s;
 }
 function saveSettings() { saveSettingsDebounced(); }
@@ -57,6 +72,25 @@ function buildSummaryPrompt(userMsg, charMsg) {
     ].join('\n');
 }
 
+// 把一组记忆合并成一段文本（带序号），用于晋级时“清空并总结”
+function mergeEntries(arr) {
+    return arr.map((m, i) => `(${i + 1}) ${m.text}`).join('\n\n');
+}
+
+// 记忆三档晋级：短期满 10 → 合并入长期并清空短期；长期满 10 → 合并入永久并清空长期；永久只增不删
+function promoteMemories() {
+    if (settings.memories.length >= TIER_LIMIT) {
+        settings.longMemories.push({ id: uid(), time: Date.now(), text: mergeEntries(settings.memories) });
+        settings.memories = [];
+        saveSettings();
+    }
+    if (settings.longMemories.length >= TIER_LIMIT) {
+        settings.permanentMemories.push({ id: uid(), time: Date.now(), text: mergeEntries(settings.longMemories) });
+        settings.longMemories = [];
+        saveSettings();
+    }
+}
+
 async function summarizeLastRound() {
     if (!settings.memoryEnabled || isSummarizing) return;
     if (!Array.isArray(chat) || chat.length < 2) return;
@@ -80,7 +114,9 @@ async function summarizeLastRound() {
         if (result && result.trim()) {
             // 只追加，绝不覆盖或删除已有记忆
             settings.memories.push({ id: uid(), time: Date.now(), text: result.trim() });
+            promoteMemories();
             saveSettings();
+            updatePromptInjection();
             renderMemories();
         }
     } catch (e) {
@@ -90,24 +126,80 @@ async function summarizeLastRound() {
     }
 }
 
+// ---------------- 记忆注入正文（防失忆） ----------------
+function buildMemoryBlock() {
+    const parts = [];
+    if (settings.permanentMemories.length) {
+        parts.push('【永久记忆】\n' + settings.permanentMemories.map(m => m.text).join('\n\n'));
+    }
+    if (settings.longMemories.length) {
+        parts.push('【长期记忆】\n' + settings.longMemories.map(m => m.text).join('\n\n'));
+    }
+    if (settings.memories.length) {
+        parts.push('【短期记忆】\n' + settings.memories.map(m => m.text).join('\n\n'));
+    }
+    return parts.join('\n\n');
+}
+
+// 把记忆 + 禁止词注入正文 prompt（IN_PROMPT：进入系统提示，正文生成时会被模型读取）
+function updatePromptInjection() {
+    // 记忆注入
+    const mem = settings.memoryEnabled ? buildMemoryBlock().trim() : '';
+    setExtensionPrompt(
+        'serendipity_memory',
+        mem ? '[Serendipity 剧情记忆]\n以下是此前剧情的记忆总结，请在后续生成中严格遵守并延续这些设定、人物、事件与承诺，避免遗忘或前后矛盾。\n\n' + mem : '',
+        extension_prompt_types.IN_PROMPT,
+        0,
+    );
+
+    // 禁止词注入
+    const censorActive = settings.censorEnabled && settings.blockedWords.length > 0;
+    setExtensionPrompt(
+        'serendipity_censor',
+        censorActive ? '[Serendipity 禁止词]\n以下是剧情中禁止出现的词眼，请绝对不要在你的回复中输出这些词：' + settings.blockedWords.join('、') : '',
+        extension_prompt_types.IN_PROMPT,
+        0,
+    );
+}
+
+// ---------------- 记忆 UI ----------------
+function memoryItemHtml(m, deletable, tier) {
+    const del = deletable
+        ? `<button type="button" class="st-sd__memory-del" data-id="${m.id}" data-tier="${tier}" title="删除此条记忆">删除</button>`
+        : '';
+    return `<div class="st-sd__memory" data-id="${m.id}">
+        <div class="st-sd__memory-head">
+            <span class="st-sd__memory-time">${escapeHtml(fmtTime(m.time))}</span>
+            ${del}
+        </div>
+        <pre class="st-sd__memory-text">${escapeHtml(m.text)}</pre>
+    </div>`;
+}
+
 function renderMemories() {
     const list = $('#st-serendipity .st-sd__memory-list');
     if (!list.length) return;
-    if (!settings.memories.length) {
+
+    const hasAny = settings.memories.length || settings.longMemories.length || settings.permanentMemories.length;
+    if (!hasAny) {
         list.html('<div class="st-sd__empty">暂无记忆，每轮对话结束后会自动总结叠加</div>');
         return;
     }
-    const items = [...settings.memories].reverse().map(m => {
-        const del = `<button type="button" class="st-sd__memory-del" data-id="${m.id}" title="删除此条记忆">删除</button>`;
-        return `<div class="st-sd__memory" data-id="${m.id}">
-            <div class="st-sd__memory-head">
-                <span class="st-sd__memory-time">${escapeHtml(fmtTime(m.time))}</span>
-                ${del}
-            </div>
-            <pre class="st-sd__memory-text">${escapeHtml(m.text)}</pre>
-        </div>`;
-    }).join('');
-    list.html(items);
+
+    let html = '';
+    if (settings.permanentMemories.length) {
+        html += `<div class="st-sd__tier-title">永久记忆（只增不删）</div>`;
+        html += [...settings.permanentMemories].reverse().map(m => memoryItemHtml(m, false, 'permanent')).join('');
+    }
+    if (settings.longMemories.length) {
+        html += `<div class="st-sd__tier-title">长期记忆（${settings.longMemories.length}/${TIER_LIMIT}）</div>`;
+        html += [...settings.longMemories].reverse().map(m => memoryItemHtml(m, true, 'long')).join('');
+    }
+    if (settings.memories.length) {
+        html += `<div class="st-sd__tier-title">短期记忆（${settings.memories.length}/${TIER_LIMIT}）</div>`;
+        html += [...settings.memories].reverse().map(m => memoryItemHtml(m, true, 'short')).join('');
+    }
+    list.html(html);
 }
 
 // ---------------- 屏蔽词功能 ----------------
@@ -270,6 +362,7 @@ function buildPanel() {
           <button type="button" class="st-sd__summarize">立即总结</button>
         </div>
         <div class="st-sd__memory-list"></div>
+        <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期，长期满 ${TIER_LIMIT} 条合并入永久（永久只增不删）。记忆会注入正文，防止模型失忆。</div>
       </div>
 
       <div class="st-sd__pane" data-pane="censor" style="display:none">
@@ -282,7 +375,7 @@ function buildPanel() {
           <button type="button" class="st-sd__add-word">添加</button>
         </div>
         <div class="st-sd__word-list"></div>
-        <div class="st-sd__hint">提示：屏蔽只在界面显示层生效，关闭屏蔽后刷新页面可恢复原文。</div>
+        <div class="st-sd__hint">添加后立即把界面中的该词眼替换为 ████，并注入正文提示，禁止模型再输出这些词。</div>
       </div>
     </div>`;
     $('body').append(html);
@@ -296,10 +389,12 @@ function bindPanelEvents() {
     panel.find('.st-sd__mem-toggle').prop('checked', !!settings.memoryEnabled).on('change', function () {
         settings.memoryEnabled = this.checked;
         saveSettings();
+        updatePromptInjection();
     });
     panel.find('.st-sd__censor-toggle').prop('checked', !!settings.censorEnabled).on('change', function () {
         settings.censorEnabled = this.checked;
         saveSettings();
+        updatePromptInjection();
         if (this.checked) applyCensorAll();
     });
 
@@ -328,17 +423,22 @@ function bindPanelEvents() {
             saveSettings();
             renderBlockedWords();
             applyCensorAll();
+            updatePromptInjection();
         }
         input.val('');
     };
     panel.find('.st-sd__add-word').on('click', addWord);
     panel.find('.st-sd__word-input').on('keydown', (e) => { if (e.key === 'Enter') addWord(); });
 
-    // 事件委托：删除记忆 / 删除屏蔽词
+    // 事件委托：删除记忆（永久记忆无删除按钮）/ 删除屏蔽词
     panel.on('click', '.st-sd__memory-del', function () {
         const id = $(this).data('id');
-        settings.memories = settings.memories.filter(m => m.id !== id);
+        const tier = $(this).data('tier');
+        if (tier === 'short') settings.memories = settings.memories.filter(m => m.id !== id);
+        else if (tier === 'long') settings.longMemories = settings.longMemories.filter(m => m.id !== id);
+        else if (tier === 'permanent') settings.permanentMemories = settings.permanentMemories.filter(m => m.id !== id);
         saveSettings();
+        updatePromptInjection();
         renderMemories();
     });
     panel.on('click', '.st-sd__word-del', function () {
@@ -346,6 +446,7 @@ function bindPanelEvents() {
         settings.blockedWords = settings.blockedWords.filter(x => x !== w);
         saveSettings();
         renderBlockedWords();
+        updatePromptInjection();
     });
 }
 
@@ -368,9 +469,10 @@ jQuery(async () => {
     buildTopBarButton();
     buildPanel();
 
-    // 初始屏蔽
+    // 初始屏蔽 + 注入正文提示
     applyCensorAll();
     initCensorObserver();
+    updatePromptInjection();
 
     // 每轮生成结束后自动总结
     eventSource.on(event_types.GENERATION_ENDED, () => {
