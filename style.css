@@ -37,7 +37,6 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
 }
 
 .st-sd__head {
@@ -295,12 +294,14 @@
         top: auto;
         left: auto;
         right: 16px;
-        bottom: 84px;
+        bottom: 90px;
     }
     #st-serendipity {
         top: auto;
-        bottom: 130px;
+        bottom: 140px;
+        left: 8px;
         right: 8px;
-        width: 320px;
+        width: auto;
+        max-height: 62vh;
     }
 }

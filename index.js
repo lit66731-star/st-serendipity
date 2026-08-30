@@ -3,7 +3,7 @@ import {
     chat,
     event_types,
     eventSource,
-    generateQuietPrompt,
+    generateRaw,
     saveSettingsDebounced,
     setExtensionPrompt,
     extension_prompt_types,
@@ -52,24 +52,23 @@ function escapeHtml(str) {
 
 // ---------------- 记忆功能 ----------------
 function buildSummaryPrompt(userMsg, charMsg) {
-    return [
-        '你是剧情记忆助手。请阅读下面这一轮对话，提取信息并总结。严格按照以下格式逐行输出（某项信息未提及时写「无」）：',
-        '',
-        '【时间】剧情中的具体时间（年/月/日 周几 几时几分）',
-        '【天气】天气情况',
-        '【在场人物】有哪些人在场',
-        '【关键事件】本段发生的关键事件',
-        '【角色衣着】' + charMsg.name + '的衣着',
-        '【用户衣着】' + userMsg.name + '的衣着',
-        '【物品】出现或获得的物品',
-        '【约定/承诺】新产生的约定或承诺',
-        '【已完成约定】已完成的约定或承诺',
-        '【详细总结】本段对话的详细总结',
-        '',
-        '对话如下：',
-        userMsg.name + '：' + userMsg.mes,
-        charMsg.name + '：' + charMsg.mes,
-    ].join('\n');
+    return {
+        systemPrompt: [
+            '你是剧情记忆助手。请阅读下面这轮对话，提取信息并总结。只输出总结本身，不要复述、不要添加任何解释或客套。严格按照以下格式逐行输出（某项信息未提及时写「无」）：',
+            '',
+            '【时间】剧情中的具体时间（年/月/日 周几 几时几分）',
+            '【天气】天气情况',
+            '【在场人物】有哪些人在场',
+            '【关键事件】本段发生的关键事件',
+            '【角色衣着】' + charMsg.name + '的衣着',
+            '【用户衣着】' + userMsg.name + '的衣着',
+            '【物品】出现或获得的物品',
+            '【约定/承诺】新产生的约定或承诺',
+            '【已完成约定】已完成的约定或承诺',
+            '【详细总结】本段对话的详细总结',
+        ].join('\n'),
+        prompt: userMsg.name + '：' + userMsg.mes + '\n\n' + charMsg.name + '：' + charMsg.mes,
+    };
 }
 
 // 把一组记忆合并成一段文本（带序号），用于晋级时“清空并总结”
@@ -109,8 +108,8 @@ async function summarizeLastRound() {
 
     isSummarizing = true;
     try {
-        const prompt = buildSummaryPrompt(userMsg, last);
-        const result = await generateQuietPrompt({ quietPrompt: prompt, skipWIAN: true });
+        const { systemPrompt, prompt } = buildSummaryPrompt(userMsg, last);
+        const result = await generateRaw({ prompt, systemPrompt });
         if (result && result.trim()) {
             // 只追加，绝不覆盖或删除已有记忆
             settings.memories.push({ id: uid(), time: Date.now(), text: result.trim() });
@@ -211,7 +210,7 @@ function censorText(text) {
     for (const w of settings.blockedWords) {
         if (!w) continue;
         const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        out = out.replace(new RegExp(esc, 'g'), '████');
+        out = out.replace(new RegExp(esc, 'g'), '');
     }
     return out;
 }
@@ -291,14 +290,13 @@ function buildTopBarButton() {
     if ($('#st-serendipity-button').length) return;
     const btn = $(`<div id="st-serendipity-button" class="st-sd" title="Serendipity（可拖动）">${ICONS.menu}</div>`);
     btn.appendTo('body');
-    btn.on('click', () => togglePanel());
     initButtonDrag(btn);
 }
 
 function initButtonDrag(btn) {
     const clampBtn = (x, y) => {
-        const w = btn[0].offsetWidth || 40;
-        const h = btn[0].offsetHeight || 40;
+        const w = btn[0].offsetWidth || 42;
+        const h = btn[0].offsetHeight || 42;
         return {
             left: Math.min(Math.max(0, x), window.innerWidth - w),
             top: Math.min(Math.max(0, y), window.innerHeight - h),
@@ -309,7 +307,6 @@ function initButtonDrag(btn) {
         btn.css({ left: p.left + 'px', top: p.top + 'px', right: 'auto' });
     }
     let drag = null;
-    let suppressClickUntil = 0;
     btn.on('pointerdown', (e) => {
         const r = btn[0].getBoundingClientRect();
         drag = { sx: e.clientX, sy: e.clientY, left: r.left, top: r.top, active: false };
@@ -326,26 +323,21 @@ function initButtonDrag(btn) {
     $(document).on('pointerup.st-sd-btn', () => {
         if (!drag) return;
         if (drag.active) {
-            suppressClickUntil = Date.now() + 300;
             settings.btnLeft = parseFloat(btn.css('left'));
             settings.btnTop = parseFloat(btn.css('top'));
             saveSettings();
+        } else {
+            togglePanel(); // 单击（未拖动）→ 打开/关闭面板
         }
         drag = null;
     });
-    document.addEventListener('click', (e) => {
-        if (Date.now() < suppressClickUntil) {
-            e.stopPropagation();
-            e.preventDefault();
-        }
-    }, true);
 }
 
 // ---------------- 面板 ----------------
 function buildPanel() {
     if ($('#st-serendipity').length) return;
     const html = `
-    <div id="st-serendipity" class="st-sd">
+    <div id="st-serendipity" class="st-sd" style="display:none">
       <div class="st-sd__head">
         <span class="st-sd__title">Serendipity</span>
         <button type="button" class="st-sd__close" title="关闭">${ICONS.close}</button>
@@ -375,7 +367,7 @@ function buildPanel() {
           <button type="button" class="st-sd__add-word">添加</button>
         </div>
         <div class="st-sd__word-list"></div>
-        <div class="st-sd__hint">添加后立即把界面中的该词眼替换为 ████，并注入正文提示，禁止模型再输出这些词。</div>
+        <div class="st-sd__hint">添加后立即删除剧情与状态栏中的该词眼，并注入正文提示，禁止模型再输出这些词。</div>
       </div>
     </div>`;
     $('body').append(html);
