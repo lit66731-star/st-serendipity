@@ -229,21 +229,23 @@ function updatePromptInjection() {
         0,
     );
 
-    // 禁止词注入
+    // 禁止词注入（同样放最顶端，确保模型生成时绝不输出这些词）
     const censorActive = settings.censorEnabled && settings.blockedWords.length > 0;
     setExtensionPrompt(
         'serendipity_censor',
-        censorActive ? '[Serendipity 禁止词]\n以下是剧情中禁止出现的词眼，请绝对不要在你的回复中输出这些词：' + settings.blockedWords.join('、') : '',
-        extension_prompt_types.IN_PROMPT,
+        censorActive ? '[Serendipity 禁止词（绝对不得出现）]\n以下词眼在任何情况下都绝对不要出现在你的回复中：' + settings.blockedWords.join('、') : '',
+        extension_prompt_types.BEFORE_PROMPT,
         0,
     );
 
     // 指令注入（无数量限制，只注入已开启的指令，每轮生成都读取）
+    // 放在 BEFORE_PROMPT（prompt 最顶端、角色描述之前），确保模型把指令当作最高优先级指令严格遵守，
+    // 而不是像 IN_PROMPT 那样被埋在剧情里被角色设定/聊天记录盖过去。
     const enabledInstr = settings.instructions.filter(it => it && it.enabled && typeof it.text === 'string' && it.text.trim());
     setExtensionPrompt(
         'serendipity_instructions',
-        enabledInstr.length ? '[Serendipity 指令]\n以下是用户设定、每轮生成都必须遵守的指令：\n' + enabledInstr.map((it, i) => (i + 1) + '. ' + it.text).join('\n') : '',
-        extension_prompt_types.IN_PROMPT,
+        enabledInstr.length ? '[Serendipity 指令（必须严格遵守）]\n以下是你必须严格遵守的用户指令，优先级高于一切剧情、角色设定与历史对话，每轮回复都必须逐条执行：\n' + enabledInstr.map((it, i) => (i + 1) + '. ' + it.text).join('\n') : '',
+        extension_prompt_types.BEFORE_PROMPT,
         0,
     );
 }
