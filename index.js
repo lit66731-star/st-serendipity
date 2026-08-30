@@ -20,6 +20,7 @@ const defaultSettings = {
     memoryEnabled: true,    // 自动记忆开关
     blockedWords: [],       // 屏蔽词列表
     censorEnabled: true,    // 屏蔽开关
+    instructions: [],       // 指令列表（每轮生成都注入）
     btnLeft: null,          // 主按钮位置（可拖动）
     btnTop: null,
 };
@@ -34,7 +35,7 @@ function loadSettings() {
     for (const [k, v] of Object.entries(defaultSettings)) {
         if (s[k] === undefined) s[k] = v;
     }
-    for (const key of ['memories', 'longMemories', 'permanentMemories', 'blockedWords']) {
+    for (const key of ['memories', 'longMemories', 'permanentMemories', 'blockedWords', 'instructions']) {
         if (!Array.isArray(s[key])) s[key] = [];
     }
     return s;
@@ -156,6 +157,15 @@ function updatePromptInjection() {
     setExtensionPrompt(
         'serendipity_censor',
         censorActive ? '[Serendipity 禁止词]\n以下是剧情中禁止出现的词眼，请绝对不要在你的回复中输出这些词：' + settings.blockedWords.join('、') : '',
+        extension_prompt_types.IN_PROMPT,
+        0,
+    );
+
+    // 指令注入（无数量限制，每轮生成都读取）
+    const instrActive = settings.instructions.length > 0;
+    setExtensionPrompt(
+        'serendipity_instructions',
+        instrActive ? '[Serendipity 指令]\n以下是用户设定、每轮生成都必须遵守的指令：\n' + settings.instructions.map((s, i) => (i + 1) + '. ' + s).join('\n') : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
@@ -308,6 +318,19 @@ function renderBlockedWords() {
     list.html(items);
 }
 
+function renderInstructions() {
+    const list = $('#st-serendipity .st-sd__instr-list');
+    if (!list.length) return;
+    if (!settings.instructions.length) {
+        list.html('<div class="st-sd__empty">还没有指令，输入后点击「添加」</div>');
+        return;
+    }
+    const items = settings.instructions.map((s, i) =>
+        `<div class="st-sd__instr"><span class="st-sd__instr-text">${i + 1}. ${escapeHtml(s)}</span><button type="button" class="st-sd__instr-del" data-index="${i}">×</button></div>`
+    ).join('');
+    list.html(items);
+}
+
 // ---------------- 图标 ----------------
 const ICONS = {
     menu: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`,
@@ -374,6 +397,7 @@ function buildPanel() {
       <div class="st-sd__tabs">
         <button type="button" class="st-sd__tab is-active" data-tab="memory">记忆</button>
         <button type="button" class="st-sd__tab" data-tab="censor">屏蔽词</button>
+        <button type="button" class="st-sd__tab" data-tab="instruct">指令</button>
       </div>
 
       <div class="st-sd__pane" data-pane="memory">
@@ -398,6 +422,15 @@ function buildPanel() {
         </div>
         <div class="st-sd__word-list"></div>
         <div class="st-sd__hint">添加后立即删除剧情与状态栏中的该词眼，并注入正文提示，禁止模型再输出这些词。</div>
+      </div>
+
+      <div class="st-sd__pane" data-pane="instruct" style="display:none">
+        <div class="st-sd__add-row">
+          <input type="text" class="st-sd__instr-input" placeholder="输入一条指令，如「每次回复都用中文」">
+          <button type="button" class="st-sd__add-instr">添加</button>
+        </div>
+        <div class="st-sd__instr-list"></div>
+        <div class="st-sd__hint">指令不限制数量，每轮生成都会读取并遵守；删除即停止生效。</div>
       </div>
     </div>`;
     $('body').append(html);
@@ -472,6 +505,33 @@ function bindPanelEvents() {
         renderBlockedWords();
         updatePromptInjection();
     });
+
+    // 添加指令
+    const addInstr = () => {
+        const input = panel.find('.st-sd__instr-input');
+        const v = input.val().trim();
+        if (!v) return;
+        if (!settings.instructions.includes(v)) {
+            settings.instructions.push(v);
+            saveSettings();
+            renderInstructions();
+            updatePromptInjection();
+        }
+        input.val('');
+    };
+    panel.find('.st-sd__add-instr').on('click', addInstr);
+    panel.find('.st-sd__instr-input').on('keydown', (e) => { if (e.key === 'Enter') addInstr(); });
+
+    // 删除指令
+    panel.on('click', '.st-sd__instr-del', function () {
+        const idx = parseInt($(this).data('index'), 10);
+        if (!isNaN(idx) && idx >= 0 && idx < settings.instructions.length) {
+            settings.instructions.splice(idx, 1);
+            saveSettings();
+            renderInstructions();
+            updatePromptInjection();
+        }
+    });
 }
 
 // 用真实视口尺寸定位面板，保证手机端一定不出屏（酒馆移动端 body 是 fixed+overflow:hidden，vh/bottom 会失真）
@@ -506,6 +566,7 @@ function togglePanel(force) {
         panel.show();
         renderMemories();
         renderBlockedWords();
+        renderInstructions();
     } else {
         panel.hide();
     }
@@ -537,4 +598,5 @@ jQuery(async () => {
 
     renderMemories();
     renderBlockedWords();
+    renderInstructions();
 });

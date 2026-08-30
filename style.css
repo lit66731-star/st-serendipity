@@ -289,6 +289,72 @@
 }
 .st-sd__word-del:hover { background: #d9534f; color: #ffffff; }
 
+/* 指令 */
+.st-sd__instr-input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid #dddddd;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    color: #333333;
+    outline: none;
+}
+.st-sd__instr-input:focus { border-color: #333333; }
+.st-sd__add-instr {
+    border: none;
+    background: #222222;
+    color: #ffffff;
+    border-radius: 8px;
+    padding: 0 16px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.st-sd__add-instr:hover { background: #444444; }
+
+.st-sd__instr-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+.st-sd__instr {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    background: #f2f2f2;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 9px 10px 9px 12px;
+    margin-bottom: 8px;
+    font-size: 12.5px;
+    color: #333333;
+}
+.st-sd__instr-text {
+    flex: 1;
+    min-width: 0;
+    line-height: 1.6;
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+.st-sd__instr-del {
+    width: 20px;
+    height: 20px;
+    border: none;
+    background: #dddddd;
+    color: #555555;
+    border-radius: 50%;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+}
+.st-sd__instr-del:hover { background: #d9534f; color: #ffffff; }
+
 .st-sd__hint {
     margin-top: 10px;
     font-size: 11px;
