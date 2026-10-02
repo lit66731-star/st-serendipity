@@ -145,6 +145,18 @@
 .st-sd__world-row {
     margin-bottom: 6px;
 }
+.st-sd__world-select {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid #dddddd;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    color: #333333;
+    background: #ffffff;
+    outline: none;
+}
+.st-sd__world-select:focus { border-color: #333333; }
 .st-sd__world-hint {
     margin-bottom: 8px;
     font-size: 11px;

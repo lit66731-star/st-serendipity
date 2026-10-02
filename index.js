@@ -10,7 +10,7 @@ import {
     setExtensionPrompt,
     extension_prompt_types,
 } from '../../../../script.js';
-import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo } from '../../../world-info.js';
+import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
 
@@ -41,6 +41,7 @@ function freshCharSettings() {
         instructions: [],       // 指令列表（每轮生成都注入）
         storyTime: '',          // 当前剧情时间（AI 接力维护，每次总结时更新）
         worldInjectedCount: 0,  // 已注入世界书的「第 x 次总结」计数
+        worldBook: '',          // 用户选择要注入的世界书名（不一定用角色绑定的那本）
     };
 }
 
@@ -54,6 +55,7 @@ function normalizeCharSettings(cs) {
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
     cs.worldInjectedCount = Number(cs.worldInjectedCount) || 0;
+    if (typeof cs.worldBook !== 'string') cs.worldBook = '';
     cs.instructions = cs.instructions.map(it => {
         if (typeof it === 'string') return { id: uid(), text: it, enabled: true };
         if (it && typeof it === 'object' && typeof it.text === 'string') {
@@ -319,21 +321,17 @@ function updatePromptInjection() {
 }
 
 // ---------------- 世界书自动注入 ----------------
-// 读取当前角色卡绑定的主世界书名（未绑定返回空字符串）
-function getBoundWorldName() {
-    if (this_chid !== undefined && characters && characters[this_chid]) {
-        const w = characters[this_chid].data?.extensions?.world;
-        if (typeof w === 'string' && w.trim()) return w.trim();
-    }
-    return '';
+// 用户自己选要注入的世界书名（存于每角色设置里，不一定用角色绑定的那本）
+function getSelectedWorldBook() {
+    return typeof settings.worldBook === 'string' ? settings.worldBook.trim() : '';
 }
 
-// 把当前剧情记忆作为一条新条目注入到角色绑定的世界书里（常驻、无关键词、扫描深度 1）
+// 把当前剧情记忆作为一条新条目注入到用户选择的世界书里（常驻、无关键词、扫描深度 1）
 async function injectToWorldBook() {
     activateCharacter();
-    const worldName = getBoundWorldName();
+    const worldName = getSelectedWorldBook();
     if (!worldName) {
-        toastr.warning('请先在世界书界面创建一个世界书并绑定到此角色，再将扫描深度改为 1');
+        toastr.warning('请先在上方选择一个世界书');
         renderWorldHint();
         return;
     }
@@ -345,7 +343,7 @@ async function injectToWorldBook() {
     try {
         const data = await loadWorldInfo(worldName);
         if (!data || typeof data !== 'object' || !data.entries) {
-            toastr.error('读取世界书「' + worldName + '」失败');
+            toastr.error('读取世界书「' + worldName + '」失败，可能已被删除，请重新选择');
             return;
         }
         settings.worldInjectedCount = (settings.worldInjectedCount || 0) + 1;
@@ -360,26 +358,40 @@ async function injectToWorldBook() {
         entry.selective = false;
         entry.key = [];           // 不加关键词
         entry.keysecondary = [];
-        entry.depth = 1;          // 扫描深度 1
+        entry.scanDepth = 1;      // 注入时直接把扫描深度改为 1
         await saveWorldInfo(worldName, data, true);
         saveSettings();
         renderWorldHint();
-        toastr.success('已注入世界书「' + worldName + '」：第' + settings.worldInjectedCount + '次总结');
+        toastr.success('已注入世界书「' + worldName + '」：第' + settings.worldInjectedCount + '次总结，请发一条消息测试是否读取成功');
     } catch (e) {
         console.error('[Serendipity] 注入世界书失败：', e);
         toastr.error('注入世界书失败');
     }
 }
 
-// 更新世界书注入区提示（显示已绑定世界书，或引导绑定 + 扫描深度 1）
+// 世界书下拉：列出全部世界书，让用户自己选要注入到哪一本
+function renderWorldSelect() {
+    const selectEl = $('#st-serendipity .st-sd__world-select');
+    if (!selectEl.length) return;
+    const names = Array.isArray(world_names) ? world_names : [];
+    const current = getSelectedWorldBook();
+    let html = '<option value="">未选择世界书</option>';
+    for (const n of names) {
+        const selected = n === current ? ' selected' : '';
+        html += `<option value="${escapeHtml(n)}"${selected}>${escapeHtml(n)}</option>`;
+    }
+    selectEl.html(html);
+}
+
+// 更新世界书注入区提示
 function renderWorldHint() {
     const el = $('#st-serendipity .st-sd__world-hint');
     if (!el.length) return;
-    const worldName = getBoundWorldName();
+    const worldName = getSelectedWorldBook();
     if (worldName) {
-        el.text('已绑定世界书：' + worldName + '。点击「注入世界书」会把当前记忆作为一条新条目写入（第' + ((settings.worldInjectedCount || 0) + 1) + '次总结，常驻、无关键词、扫描深度 1）。');
+        el.text('已选择世界书「' + worldName + '」。点击「注入世界书」写入第' + ((settings.worldInjectedCount || 0) + 1) + '次总结（常驻、无关键词、扫描深度 1），注入后请发一条消息测试是否读取成功。');
     } else {
-        el.text('提示：请先在世界书界面创建一个世界书并绑定到此角色，再将扫描深度改为 1，然后点击「注入世界书」。');
+        el.text('请先选择一个世界书，再点击「注入世界书」把当前记忆写入；注入后请发一条消息测试 AI 是否读取成功。');
     }
 }
 
@@ -427,6 +439,7 @@ function renderMemories() {
     if (!list.length) return;
 
     renderStoryTime();
+    renderWorldSelect();
     renderWorldHint();
 
     const hasAny = settings.memories.length || settings.longMemories.length || settings.permanentMemories.length;
@@ -634,6 +647,9 @@ function buildPanel() {
           <button type="button" class="st-sd__export">导出</button>
         </div>
         <div class="st-sd__world-row">
+          <select class="st-sd__world-select" title="选择要注入记忆的世界书"></select>
+        </div>
+        <div class="st-sd__world-row">
           <button type="button" class="st-sd__inject-world">注入世界书</button>
         </div>
         <div class="st-sd__world-hint"></div>
@@ -702,6 +718,12 @@ function bindPanelEvents() {
     panel.find('.st-sd__export').on('click', exportMemories);
     // 注入世界书
     panel.find('.st-sd__inject-world').on('click', injectToWorldBook);
+    // 选择要注入的世界书
+    panel.find('.st-sd__world-select').on('change', function () {
+        settings.worldBook = this.value || '';
+        saveSettings();
+        renderWorldHint();
+    });
 
     // 添加屏蔽词
     const addWord = () => {
@@ -854,6 +876,9 @@ jQuery(async () => {
     activateCharacter();
     buildMenuButton();
     buildPanel();
+
+    // 世界书列表可能尚未加载完成，异步刷新一次下拉
+    updateWorldInfoList().then(() => renderWorldSelect()).catch(() => {});
 
     // 初始屏蔽 + 注入正文提示
     applyCensorAll();
