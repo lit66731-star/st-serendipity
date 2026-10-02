@@ -26,6 +26,9 @@ const RELATIVE_DAYS = {
     '去年': -365, '明年': 365,
 };
 
+// 世界状态类别（列表格式，按类别分组展示/注入）
+const WORLD_CATS = ['年龄', '好感', '关系', '物品', '日程'];
+
 const defaultSettings = {
     chars: {},       // { [角色名]: 该角色的记忆/屏蔽词/指令等数据 }
 };
@@ -54,6 +57,7 @@ function freshCharSettings() {
         storyDay: null,         // 结构化时间轴：第X天（null=尚未建立）
         storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
         storyLocation: '',      // 当前地点
+        worldState: [],         // 世界状态列表 [{ id, cat: '年龄'|'好感'|'关系'|'物品'|'日程', text }]
         worldInjectedCount: 0,  // 已注入世界书的「第 x 次总结」计数
         worldBook: '',          // 用户选择要注入的世界书名（不一定用角色绑定的那本）
     };
@@ -62,9 +66,10 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'permanentMemories', 'blockedWords', 'instructions']) {
+    for (const key of ['memories', 'longMemories', 'permanentMemories', 'blockedWords', 'instructions', 'worldState']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
+    cs.worldState = cs.worldState.filter(e => e && typeof e.cat === 'string' && typeof e.text === 'string').map(e => ({ id: e.id || uid(), cat: e.cat, text: e.text }));
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
@@ -177,6 +182,10 @@ function buildSummaryPrompt(userMsg, charMsg, storyTime) {
     const timeAxisAnchor = (settings.storyDay != null)
         ? '当前剧情时间轴：第' + settings.storyDay + '天' + (settings.storyPeriod ? ' · ' + settings.storyPeriod : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '') + '。若本段剧情没有明确推进天数，请沿用第' + settings.storyDay + '天；若明确过了若干天，请给出推进后的天数。'
         : '请根据本段内容，从故事开始估算当前是「第几天」（第X天），以及当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）和发生地点；若未明确，请给出合理推断。';
+    // 世界状态锚点：把当前已知状态回传，让模型增量更新（某类别无变化写「无」），而不是每轮从零重造
+    const worldStateAnchor = settings.worldState.length
+        ? '当前已知的世界状态（请在此基础上增量更新，某个类别没有新变化就写「无」）：\n' + worldStateLines(worldStateByCat())
+        : '请根据本段内容提取当前世界状态（年龄/好感/关系/物品/日程），没有的类别写「无」。';
     return {
         systemPrompt: [
             '你是剧情记忆助手。请阅读下面这轮对话，提取信息并总结。只输出总结本身，不要复述、不要添加任何解释或客套。',
@@ -184,6 +193,8 @@ function buildSummaryPrompt(userMsg, charMsg, storyTime) {
             timeAnchor,
             '',
             timeAxisAnchor,
+            '',
+            worldStateAnchor,
             '',
             '严格按照以下格式逐行输出（除【时间】外，某项信息未提及时写「无」）：',
             '',
@@ -199,6 +210,7 @@ function buildSummaryPrompt(userMsg, charMsg, storyTime) {
             '【已完成约定】已完成的约定或承诺',
             '【详细总结】本段对话的详细总结',
             '【时间轴】本段结束时的剧情时间，严格写成「第X天|时段|地点」三段（X 是从故事开始算的天数，如「第27天|傍晚|北境营地」；地点未知写「无」）',
+            '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：年龄/好感/关系/物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」）',
         ].join('\n'),
         prompt: userMsg.name + '：' + userMsg.mes + '\n\n' + charMsg.name + '：' + charMsg.mes,
     };
@@ -227,6 +239,50 @@ function extractTimeAxis(text) {
     const location = (parts[2] && parts[2] !== '无') ? parts[2] : '';
     if (day == null && !period && !location) return null;
     return { day, period, location, raw };
+}
+
+// 把世界状态按类别分组（供注入与展示复用）
+function worldStateByCat() {
+    const map = {};
+    for (const cat of WORLD_CATS) map[cat] = [];
+    for (const e of settings.worldState) {
+        if (map[e.cat]) map[e.cat].push(e.text);
+    }
+    return map;
+}
+function worldStateLines(byCat) {
+    return WORLD_CATS.map(cat => cat + '：' + (byCat[cat] && byCat[cat].length ? byCat[cat].join('、') : '无')).join('\n');
+}
+// 从总结结果里解析【世界状态】行 → [{ cat, text }]
+function extractWorldState(text) {
+    const m = String(text).match(/【世界状态】\s*([^\n]+)/);
+    if (!m || !m[1]) return [];
+    const raw = m[1].trim();
+    if (!raw || raw === '无') return [];
+    const entries = [];
+    const segs = raw.split(/[；;]/).map(s => s.trim()).filter(Boolean);
+    for (const seg of segs) {
+        const ci = seg.indexOf('：');
+        const ci2 = seg.indexOf(':');
+        const idx = ci >= 0 ? ci : ci2;
+        if (idx <= 0) continue;
+        const cat = seg.slice(0, idx).trim();
+        const content = seg.slice(idx + 1).trim();
+        if (!content || content === '无') continue;
+        for (const item of content.split(/[、，,]/).map(s => s.trim()).filter(Boolean)) {
+            entries.push({ cat, text: item });
+        }
+    }
+    return entries;
+}
+// 快照式合并：某类别本次有输出就替换整类，无输出保留原样
+function applyWorldState(entries) {
+    for (const cat of WORLD_CATS) {
+        const items = entries.filter(e => e.cat === cat);
+        if (!items.length) continue;
+        settings.worldState = settings.worldState.filter(e => e.cat !== cat);
+        for (const it of items) settings.worldState.push({ id: uid(), cat, text: it.text });
+    }
 }
 
 // 把一组记忆合并成一段文本（带序号），用于晋级时“清空并总结”
@@ -299,8 +355,11 @@ async function summarizeLastRound() {
                 if (axis.period) settings.storyPeriod = axis.period;
                 if (axis.location) settings.storyLocation = axis.location;
             }
-            // 记忆正文去掉【时间轴】行（结构化数据已单独存，正文保持干净）
-            const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').trim();
+            // 世界状态：解析并按类别快照合并（某类别无输出则保留原样）
+            const wsEntries = extractWorldState(result);
+            if (wsEntries.length) applyWorldState(wsEntries);
+            // 记忆正文去掉【时间轴】【世界状态】行（结构化数据已单独存，正文保持干净）
+            const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
             settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, text: memoryText });
             const promoted = promoteMemories();
@@ -308,6 +367,7 @@ async function summarizeLastRound() {
             updatePromptInjection();
             renderMemories();
             renderTimeAxis();
+            renderWorldState();
 
             // 弹窗提示：总结成功 + 是否触发晋级
             let msg = '本轮记忆总结成功';
@@ -359,6 +419,15 @@ function updatePromptInjection() {
     setExtensionPrompt(
         'serendipity_time',
         axisLine ? '[Serendipity 当前时间]\n' + axisLine + '\n请在后续生成中与这个时间保持一致，不要随意跳转；若剧情需要推进时间，请自然推进。' : '',
+        extension_prompt_types.IN_PROMPT,
+        0,
+    );
+
+    // 世界状态注入（列表格式，模型每轮读取并遵守）
+    const worldLines = settings.worldState.length ? worldStateLines(worldStateByCat()) : '';
+    setExtensionPrompt(
+        'serendipity_world',
+        worldLines ? '[Serendipity 世界状态]\n' + worldLines + '\n请记住并在后续生成中遵守这些世界状态（年龄/好感/关系/物品/日程），剧情产生新变化时自然更新。' : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
@@ -611,6 +680,37 @@ function renderRelativeHints() {
     ).join(''));
 }
 
+// 世界状态（列表格式，按类别分组展示）
+let worldEditingId = null; // 当前编辑中的世界状态条目 id
+
+function renderWorldState() {
+    const list = $('#st-serendipity .st-sd__world-list');
+    if (!list.length) return;
+    if (!settings.worldState.length) {
+        list.html('<div class="st-sd__empty">暂无世界状态，总结后自动提取，或在上方手动添加</div>');
+        return;
+    }
+    let html = '';
+    for (const cat of WORLD_CATS) {
+        const items = settings.worldState.filter(e => e.cat === cat);
+        if (!items.length) continue;
+        html += '<div class="st-sd__world-cat-title">' + escapeHtml(cat) + '</div>';
+        html += items.map(e => {
+            if (e.id === worldEditingId) {
+                return '<div class="st-sd__world-item" data-id="' + e.id + '">'
+                    + '<input type="text" class="st-sd__world-edit-text" value="' + escapeHtml(e.text) + '">'
+                    + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__world-save" data-id="' + e.id + '">保存</button><button type="button" class="st-sd__world-cancel">取消</button></span>'
+                    + '</div>';
+            }
+            return '<div class="st-sd__world-item" data-id="' + e.id + '">'
+                + '<span class="st-sd__world-item-text">' + escapeHtml(e.text) + '</span>'
+                + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__world-edit" data-id="' + e.id + '">编辑</button><button type="button" class="st-sd__world-del" data-id="' + e.id + '">删除</button></span>'
+                + '</div>';
+        }).join('');
+    }
+    list.html(html);
+}
+
 // 导出全部记忆为 txt 文件
 function exportMemories() {
     const lines = ['Serendipity 剧情记忆导出', '导出时间：' + fmtTime(Date.now()), ''];
@@ -780,6 +880,7 @@ function buildPanel() {
         <button type="button" class="st-sd__tab" data-tab="censor">屏蔽词</button>
         <button type="button" class="st-sd__tab" data-tab="instruct">指令</button>
         <button type="button" class="st-sd__tab" data-tab="time">时间轴</button>
+        <button type="button" class="st-sd__tab" data-tab="world">世界</button>
       </div>
 
       <div class="st-sd__pane" data-pane="memory">
@@ -839,6 +940,18 @@ function buildPanel() {
         <div class="st-sd__hint">手动设定时间轴锚点（第X天 + 时段 + 地点），下次总结会从这里接力推进；相对时间词（昨天/前天…）会自动换算成第X天并提示核对。</div>
         <div class="st-sd__axis-hints"></div>
         <div class="st-sd__axis-list"></div>
+      </div>
+
+      <div class="st-sd__pane" data-pane="world" style="display:none">
+        <div class="st-sd__add-row">
+          <select class="st-sd__world-cat">
+            ${WORLD_CATS.map(c => `<option value="${c}">${c}</option>`).join('')}
+          </select>
+          <input type="text" class="st-sd__world-input" placeholder="如：艾莉丝 23岁">
+          <button type="button" class="st-sd__world-add">添加</button>
+        </div>
+        <div class="st-sd__hint">世界状态按类别分组列出，总结时自动快照更新（某类别有新内容就替换整类，无变化保留）。可手动添加/编辑/删除。</div>
+        <div class="st-sd__world-list"></div>
       </div>
     </div>`;
     $('body').append(html);
@@ -1008,6 +1121,51 @@ function bindPanelEvents() {
     };
     panel.find('.st-sd__axis-save').on('click', saveAxis);
     panel.find('.st-sd__axis-loc').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
+
+    // 世界状态：添加/编辑/删除
+    const addWorld = () => {
+        const cat = panel.find('.st-sd__world-cat').val() || WORLD_CATS[0];
+        const text = panel.find('.st-sd__world-input').val().trim();
+        if (!text) return;
+        settings.worldState.push({ id: uid(), cat, text });
+        saveSettings();
+        updatePromptInjection();
+        renderWorldState();
+        panel.find('.st-sd__world-input').val('');
+    };
+    panel.find('.st-sd__world-add').on('click', addWorld);
+    panel.find('.st-sd__world-input').on('keydown', (e) => { if (e.key === 'Enter') addWorld(); });
+
+    panel.on('click', '.st-sd__world-edit', function () {
+        worldEditingId = String($(this).data('id'));
+        renderWorldState();
+        const inp = panel.find('.st-sd__world-edit-text');
+        if (inp.length) { inp.focus(); const v = inp.val(); inp[0].setSelectionRange(v.length, v.length); }
+    });
+    panel.on('click', '.st-sd__world-cancel', function () {
+        worldEditingId = null;
+        renderWorldState();
+    });
+    panel.on('click', '.st-sd__world-save', function () {
+        const id = String($(this).data('id'));
+        const e = settings.worldState.find(x => x.id === id);
+        if (!e) { worldEditingId = null; renderWorldState(); return; }
+        const v = panel.find('.st-sd__world-edit-text').val().trim();
+        if (!v) { toastr.warning('内容不能为空'); return; }
+        e.text = v;
+        worldEditingId = null;
+        saveSettings();
+        updatePromptInjection();
+        renderWorldState();
+        toastr.success('已保存');
+    });
+    panel.on('click', '.st-sd__world-del', function () {
+        const id = String($(this).data('id'));
+        settings.worldState = settings.worldState.filter(x => x.id !== id);
+        saveSettings();
+        updatePromptInjection();
+        renderWorldState();
+    });
 }
 
 // 用真实视口尺寸定位面板，保证手机端一定不出屏（酒馆移动端 body 是 fixed+overflow:hidden，vh/bottom 会失真）
@@ -1042,6 +1200,7 @@ function togglePanel(force) {
         panel.show();
         renderMemories();
         renderTimeAxis();
+        renderWorldState();
         renderBlockedWords();
         renderInstructions();
         renderCharBinding();
@@ -1077,6 +1236,7 @@ jQuery(async () => {
             applyCensorAll();
             renderMemories();
             renderTimeAxis();
+            renderWorldState();
             renderBlockedWords();
             renderInstructions();
             renderCharBinding();
@@ -1089,6 +1249,7 @@ jQuery(async () => {
 
     renderMemories();
     renderTimeAxis();
+    renderWorldState();
     renderBlockedWords();
     renderInstructions();
     renderCharBinding();

@@ -557,6 +557,118 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     color: #222222;
 }
 
+/* 世界状态（列表格式，按类别分组） */
+.st-sd__world-cat {
+    flex: 0 0 auto;
+    border: 1px solid #dddddd;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    color: #333333;
+    background: #ffffff;
+    outline: none;
+}
+.st-sd__world-cat:focus { border-color: #333333; }
+.st-sd__world-input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid #dddddd;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    color: #333333;
+    outline: none;
+}
+.st-sd__world-input:focus { border-color: #333333; }
+.st-sd__world-add {
+    border: none;
+    background: #222222;
+    color: #ffffff;
+    border-radius: 8px;
+    padding: 0 16px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.st-sd__world-add:hover { background: #444444; }
+.st-sd__world-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+.st-sd__world-cat-title {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #777777;
+    letter-spacing: 0.3px;
+    margin: 8px 0 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #eeeeee;
+}
+.st-sd__world-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #f2f2f2;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 8px 10px 8px 12px;
+    margin-bottom: 8px;
+    font-size: 12.5px;
+    color: #333333;
+}
+.st-sd__world-item-text {
+    flex: 1;
+    min-width: 0;
+    line-height: 1.5;
+    word-break: break-word;
+}
+.st-sd__world-edit, .st-sd__world-del {
+    border: none;
+    background: transparent;
+    color: #999999;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 2px 6px;
+    transition: color 0.15s, background 0.15s;
+}
+.st-sd__world-edit:hover { color: #337ab7; background: #e8f0fb; }
+.st-sd__world-del:hover { color: #d9534f; background: #fdeaea; }
+.st-sd__world-save {
+    border: none;
+    background: #222222;
+    color: #ffffff;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 3px 8px;
+    transition: background 0.15s;
+}
+.st-sd__world-save:hover { background: #4caf50; }
+.st-sd__world-cancel {
+    border: none;
+    background: transparent;
+    color: #999999;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 3px 8px;
+    transition: color 0.15s, background 0.15s;
+}
+.st-sd__world-cancel:hover { color: #333333; background: #f0f0f0; }
+.st-sd__world-edit-text {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid #dddddd;
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 12.5px;
+    color: #333333;
+    outline: none;
+}
+.st-sd__world-edit-text:focus { border-color: #333333; }
+
 /* ========== 移动端（与酒馆一致：≤1000px 判定为移动） ========== */
 @media screen and (max-width: 1000px) {
     #st-serendipity {
