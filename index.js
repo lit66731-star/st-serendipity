@@ -49,6 +49,8 @@ function freshCharSettings() {
         memories: [],           // 短期记忆（详细总结）[{ id, time, text }]
         longMemories: [],       // 长期记忆（短期满 10 合并而来；满 10 提醒归档到世界书）
         memoryEnabled: true,    // 自动记忆开关
+        summarizeEvery: 1,      // 每 N 轮总结一次（1=每轮都总结）
+        roundsSinceSummary: 0,  // 距上次总结已过的轮数
         blockedWords: [],       // 屏蔽词列表
         censorEnabled: true,    // 屏蔽开关
         instructions: [],       // 指令列表（每轮生成都注入）
@@ -84,6 +86,9 @@ function normalizeCharSettings(cs) {
     }));
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
+    if (!(cs.summarizeEvery >= 1)) cs.summarizeEvery = 1;
+    else cs.summarizeEvery = Math.floor(cs.summarizeEvery);
+    cs.roundsSinceSummary = Number(cs.roundsSinceSummary) || 0;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
     if (cs.storyDay === undefined || cs.storyDay === null || isNaN(cs.storyDay)) cs.storyDay = null;
     else cs.storyDay = Number(cs.storyDay);
@@ -223,7 +228,7 @@ function buildSummaryPrompt(userMsg, charMsg, storyTime) {
             '【已完成约定】已完成的约定或承诺',
             '【详细总结】本段对话的详细总结',
             '【时间轴】本段结束时的剧情时间，严格写成「第X天|时段|地点|本段重要事情」四段（X 是从故事开始算的天数，如「第27天|傍晚|北境营地|与斥候队长会面」；地点或事情未知写「无」）',
-            '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：年龄/好感/关系/物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」）',
+            '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：年龄/好感/关系/物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」，需要清空某类写「空」）',
         ].join('\n'),
         prompt: userMsg.name + '：' + userMsg.mes + '\n\n' + charMsg.name + '：' + charMsg.mes,
     };
@@ -275,13 +280,15 @@ function worldStateByCat() {
 function worldStateLines(byCat) {
     return WORLD_CATS.map(cat => cat + '：' + (byCat[cat] && byCat[cat].length ? byCat[cat].join('、') : '无')).join('\n');
 }
-// 从总结结果里解析【世界状态】行 → [{ cat, text }]
+// 从总结结果里解析【世界状态】行 → { entries: [{ cat, text }], clearCats: [cat] }
+// 约定：某类别写「无」= 保留原样；写「空」= 清空该类
 function extractWorldState(text) {
     const m = String(text).match(/【世界状态】\s*([^\n]+)/);
-    if (!m || !m[1]) return [];
+    if (!m || !m[1]) return { entries: [], clearCats: [] };
     const raw = m[1].trim();
-    if (!raw || raw === '无') return [];
+    if (!raw || raw === '无') return { entries: [], clearCats: [] };
     const entries = [];
+    const clearCats = [];
     const segs = raw.split(/[；;]/).map(s => s.trim()).filter(Boolean);
     for (const seg of segs) {
         const ci = seg.indexOf('：');
@@ -291,14 +298,20 @@ function extractWorldState(text) {
         const cat = seg.slice(0, idx).trim();
         const content = seg.slice(idx + 1).trim();
         if (!content || content === '无') continue;
+        if (content === '空') { clearCats.push(cat); continue; }
         for (const item of content.split(/[、，,]/).map(s => s.trim()).filter(Boolean)) {
             entries.push({ cat, text: item });
         }
     }
-    return entries;
+    return { entries, clearCats };
 }
-// 快照式合并：某类别本次有输出就替换整类，无输出保留原样
-function applyWorldState(entries) {
+// 快照式合并：某类别本次有输出就替换整类；「空」则清空该类；无输出保留原样
+function applyWorldState(parsed) {
+    const entries = parsed.entries || [];
+    const clearCats = parsed.clearCats || [];
+    for (const cat of clearCats) {
+        settings.worldState = settings.worldState.filter(e => e.cat !== cat);
+    }
     for (const cat of WORLD_CATS) {
         const items = entries.filter(e => e.cat === cat);
         if (!items.length) continue;
@@ -371,9 +384,8 @@ async function summarizeLastRound() {
                 // 时间轴列表：叠加本段场景（第X天/时段/地点/重要事情）
                 pushTimelineEntry(axis.day, axis.period, axis.location, axis.event);
             }
-            // 世界状态：解析并按类别快照合并（某类别无输出则保留原样）
-            const wsEntries = extractWorldState(result);
-            if (wsEntries.length) applyWorldState(wsEntries);
+            // 世界状态：解析并按类别快照合并（「无」保留、「空」清空、有新内容替换）
+            applyWorldState(extractWorldState(result));
             // 记忆正文去掉【时间轴】【世界状态】行（结构化数据已单独存，正文保持干净）
             const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
@@ -399,6 +411,9 @@ async function summarizeLastRound() {
                 toastr.warning('长期记忆已满 ' + TIER_LIMIT + ' 条，建议点「注入世界书」归档并清空长期记忆，避免正文越塞越长', undefined, { timeOut: 8000 });
             }
             updateInjectHint();
+        } else {
+            // 模型偶发返回空内容：明确提示，避免无声跳过
+            toastr.warning('本轮总结返回空内容，已跳过（未写入记忆）');
         }
     } catch (e) {
         console.error('[Serendipity] 记忆总结失败：', e);
@@ -627,6 +642,8 @@ function renderMemories() {
     renderStoryTime();
     renderWorldSelect();
     updateInjectHint();
+    const everyInput = $('#st-serendipity .st-sd__every-input');
+    if (everyInput.length) everyInput.val(settings.summarizeEvery || 1);
 
     const hasAny = settings.memories.length || settings.longMemories.length;
     if (!hasAny) {
@@ -755,7 +772,7 @@ function renderWorldState() {
 
 // 导出全部记忆为 txt 文件
 function exportMemories() {
-    const lines = ['Serendipity 剧情记忆导出', '导出时间：' + fmtTime(Date.now()), ''];
+    const lines = ['Serendipity 剧情记忆·时间线·世界状态导出', '导出时间：' + fmtTime(Date.now()), ''];
 
     const tier = (title, arr) => {
         if (!arr.length) return;
@@ -769,12 +786,41 @@ function exportMemories() {
     tier('长期记忆', settings.longMemories);
     tier('短期记忆', settings.memories);
 
+    // 时间线
+    lines.push('========== 时间线 ==========');
+    const tl = settings.timeline.slice().sort((a, b) =>
+        (a.day == null ? 1 : 0) - (b.day == null ? 1 : 0) || (a.day || 0) - (b.day || 0)
+    );
+    if (tl.length) {
+        for (const e of tl) {
+            const day = e.day != null ? '第' + e.day + '天' : '—';
+            lines.push(day + (e.time ? ' · ' + e.time : '') + (e.location ? ' · ' + e.location : ''));
+            if (e.event) lines.push('    ' + e.event);
+            lines.push('');
+        }
+    } else {
+        lines.push('（暂无）');
+        lines.push('');
+    }
+
+    // 世界状态
+    lines.push('========== 世界状态 ==========');
+    if (settings.worldState.length) {
+        for (const cat of WORLD_CATS) {
+            const items = settings.worldState.filter(e => e.cat === cat);
+            if (!items.length) continue;
+            lines.push(cat + '：' + items.map(e => e.text).join('、'));
+        }
+    } else {
+        lines.push('（暂无）');
+    }
+
     const content = '﻿' + lines.join('\n'); // BOM，避免记事本中文乱码
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'serendipity-memories-' + new Date().toISOString().slice(0, 10) + '.txt';
+    a.download = 'serendipity-export-' + new Date().toISOString().slice(0, 10) + '.txt';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -931,6 +977,11 @@ function buildPanel() {
           <button type="button" class="st-sd__summarize">立即总结</button>
           <button type="button" class="st-sd__export">导出</button>
         </div>
+        <div class="st-sd__every-row">
+          <span class="st-sd__label">每</span>
+          <input type="number" class="st-sd__every-input" min="1" max="50" title="每 N 轮自动总结一次，1=每轮都总结">
+          <span class="st-sd__label">轮总结一次</span>
+        </div>
         <div class="st-sd__world-row">
           <select class="st-sd__world-select" title="选择要注入记忆的世界书"></select>
         </div>
@@ -1031,6 +1082,16 @@ function bindPanelEvents() {
     panel.find('.st-sd__summarize').on('click', () => summarizeLastRound());
     // 导出记忆
     panel.find('.st-sd__export').on('click', exportMemories);
+    // 每 N 轮总结一次
+    panel.find('.st-sd__every-input').on('change', function () {
+        let v = parseInt(this.value, 10);
+        if (isNaN(v) || v < 1) v = 1;
+        if (v > 50) v = 50;
+        settings.summarizeEvery = v;
+        this.value = v;
+        saveSettings();
+        toastr.success('每 ' + v + ' 轮总结一次');
+    });
     // 注入世界书（事件委托，按钮即使被重建也始终能触发）
     panel.on('click', '.st-sd__inject-world', injectToWorldBook);
     // 选择要注入的世界书（事件委托）
@@ -1295,9 +1356,17 @@ jQuery(async () => {
     initCensorObserver();
     updatePromptInjection();
 
-    // 每轮生成结束后自动总结
+    // 生成结束后按设定频率自动总结（每 N 轮一次）
     eventSource.on(event_types.GENERATION_ENDED, () => {
-        setTimeout(() => summarizeLastRound(), 200);
+        setTimeout(() => {
+            if (!settings || !settings.memoryEnabled) return;
+            settings.roundsSinceSummary = (settings.roundsSinceSummary || 0) + 1;
+            const every = settings.summarizeEvery || 1;
+            if (settings.roundsSinceSummary >= every) {
+                settings.roundsSinceSummary = 0;
+                summarizeLastRound();
+            }
+        }, 200);
     });
     // 切换聊天/角色后：切换到该角色对应的数据
     eventSource.on(event_types.CHAT_CHANGED, () => {
