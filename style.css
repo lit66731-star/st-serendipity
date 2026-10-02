@@ -17,6 +17,12 @@
     overflow: hidden;
 }
 
+/* 去掉酒馆全局加在文字上的黑色外发光（在白色面板上会显得很脏） */
+#st-serendipity,
+#st-serendipity * {
+    text-shadow: none !important;
+}
+
 .st-sd__head {
     display: flex;
     align-items: center;
