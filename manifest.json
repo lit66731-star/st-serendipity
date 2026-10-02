@@ -3,11 +3,14 @@
     "display_name": "Serendipity",
     "description": "自动剧情记忆总结 + 剧情屏蔽词 + 指令，入口在扩展菜单，白色面板。",
     "author": "cc_test",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "auto_update": false
+    "auto_update": true,
+    "hooks": {
+        "update": "reloadOnUpdate"
+    }
 }

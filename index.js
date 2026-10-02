@@ -189,20 +189,25 @@ function mergeEntries(arr) {
 }
 
 // 记忆三档晋级：短期满 10 → 合并入长期并清空短期；长期满 10 → 合并入永久并清空长期
+// 返回本次是否触发了晋级，供总结弹窗提示
 function promoteMemories() {
+    const promoted = { toLong: false, toPermanent: false };
     if (settings.memories.length >= TIER_LIMIT) {
         // 合并后的条目沿用「最新一条」的剧情时间，保持时间线可读
         const lastStoryTime = settings.memories[settings.memories.length - 1].storyTime || settings.storyTime || '';
         settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, text: mergeEntries(settings.memories) });
         settings.memories = [];
         saveSettings();
+        promoted.toLong = true;
     }
     if (settings.longMemories.length >= TIER_LIMIT) {
         const lastStoryTime = settings.longMemories[settings.longMemories.length - 1].storyTime || settings.storyTime || '';
         settings.permanentMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, text: mergeEntries(settings.longMemories) });
         settings.longMemories = [];
         saveSettings();
+        promoted.toPermanent = true;
     }
+    return promoted;
 }
 
 async function summarizeLastRound() {
@@ -232,13 +237,22 @@ async function summarizeLastRound() {
             settings.storyTime = newStoryTime;
             // 只追加，绝不覆盖或删除已有记忆
             settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, text: result.trim() });
-            promoteMemories();
+            const promoted = promoteMemories();
             saveSettings();
             updatePromptInjection();
             renderMemories();
+
+            // 弹窗提示：总结成功 + 是否触发晋级
+            let msg = '本轮记忆总结成功';
+            const parts = [];
+            if (promoted.toLong) parts.push('短期已满十轮，自动放入长期记忆');
+            if (promoted.toPermanent) parts.push('长期已满十轮，自动放入永久记忆');
+            if (parts.length) msg += '；' + parts.join('；');
+            toastr.success(msg);
         }
     } catch (e) {
         console.error('[Serendipity] 记忆总结失败：', e);
+        toastr.error('本轮记忆总结失败');
     } finally {
         isSummarizing = false;
     }
@@ -739,3 +753,10 @@ jQuery(async () => {
     renderInstructions();
     renderCharBinding();
 });
+
+// ST 自动更新扩展后会调用 manifest.hooks.update 指向的这个函数（此时新代码已 git pull 到磁盘），
+// 在这里刷新页面以加载新版本，无需手动刷新。
+export function reloadOnUpdate() {
+    toastr.info('Serendipity 已更新，正在刷新页面以应用新版本...', undefined, { timeOut: 1500 });
+    setTimeout(() => location.reload(), 1500);
+}
