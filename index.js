@@ -19,9 +19,10 @@ const defaultSettings = {
     chars: {},       // { [角色名]: 该角色的记忆/屏蔽词/指令等数据 }
 };
 
-let globalSettings = null;   // 顶层设置（按角色分组 + 按钮位置）
+let globalSettings = null;   // 顶层设置（按角色唯一键分组）
 let settings = null;         // 当前角色的数据（便捷引用）
-let activeChar = '';         // 当前绑定的角色名
+let activeChar = '';         // 当前绑定角色的显示名
+let activeCharKey = '';      // 当前绑定角色的唯一键（avatar，同名卡也唯一）
 let isSummarizing = false;
 let pendingMigration = null; // 旧版扁平数据迁移挂起（角色卡尚未加载完成时暂存）
 
@@ -67,21 +68,38 @@ function currentCharName() {
     return '';
 }
 
-function charData(name) {
-    if (!globalSettings.chars[name]) globalSettings.chars[name] = freshCharSettings();
-    return normalizeCharSettings(globalSettings.chars[name]);
+// 当前选中角色卡的唯一键：ST 里 avatar 是角色卡的唯一标识（同名不同图的两张卡 avatar 也不同）；无头像时退回 name
+function currentCharKey() {
+    if (this_chid !== undefined && characters && characters[this_chid]) {
+        const c = characters[this_chid];
+        if (c.avatar && c.avatar !== 'none') return 'avatar::' + c.avatar;
+        if (c.name) return 'name::' + c.name;
+    }
+    return '';
+}
+
+function charData(key) {
+    if (!globalSettings.chars[key]) globalSettings.chars[key] = freshCharSettings();
+    return normalizeCharSettings(globalSettings.chars[key]);
 }
 
 // 切换到当前角色卡的数据（换角色即换一套干净/对应的数据）
 function activateCharacter() {
     activeChar = currentCharName();
-    // 挂起的旧版扁平数据：等角色名真正可用时挂到该角色名下，避免启动时角色尚未加载导致丢数据
-    if (pendingMigration && activeChar) {
-        globalSettings.chars[activeChar] = normalizeCharSettings(pendingMigration);
+    activeCharKey = currentCharKey();
+    // 老版本按 name 存的数据 → 迁到唯一键下（每个角色一次）
+    if (activeCharKey && globalSettings.chars[activeChar] && !globalSettings.chars[activeCharKey]) {
+        globalSettings.chars[activeCharKey] = normalizeCharSettings(globalSettings.chars[activeChar]);
+        delete globalSettings.chars[activeChar];
+        saveSettings();
+    }
+    // 挂起的旧版扁平数据：等角色真正可用时挂到该角色名下，避免启动时角色尚未加载导致丢数据
+    if (pendingMigration && activeCharKey) {
+        globalSettings.chars[activeCharKey] = normalizeCharSettings(pendingMigration);
         pendingMigration = null;
         saveSettings();
     }
-    settings = charData(activeChar);
+    settings = charData(activeCharKey);
 }
 
 function loadSettings() {
@@ -100,11 +118,11 @@ function loadSettings() {
             instructions: Array.isArray(s.instructions) ? s.instructions : [],
         };
         s.chars = {};
-        const name = currentCharName();
-        if (name) {
-            s.chars[name] = normalizeCharSettings(migrated);
+        const key = currentCharKey();
+        if (key) {
+            s.chars[key] = normalizeCharSettings(migrated);
         } else {
-            // 角色卡此时尚未加载完成（currentCharName 为空），先暂存，待 activateCharacter 挂到真实角色名下
+            // 角色卡此时尚未加载完成（currentCharKey 为空），先暂存，待 activateCharacter 挂到真实角色名下
             pendingMigration = migrated;
         }
         for (const k of ['memories', 'longMemories', 'permanentMemories', 'memoryEnabled', 'blockedWords', 'censorEnabled', 'instructions']) {
@@ -188,6 +206,7 @@ function promoteMemories() {
 }
 
 async function summarizeLastRound() {
+    activateCharacter(); // 每次总结前重新绑定到当前角色，避免切换角色后总结写错档
     if (!settings.memoryEnabled || isSummarizing) return;
     if (!Array.isArray(chat) || chat.length < 2) return;
 
