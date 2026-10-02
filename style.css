@@ -4,7 +4,7 @@
     top: 72px;
     right: 20px;
     z-index: 2147483000 !important; /* 极高层级，避免被其他插件的浮层盖住导致点不到/被遮挡 */
-    width: 330px;
+    width: 460px;
     max-width: calc(100vw - 16px);
     max-height: calc(100vh - 90px);
     background: #ffffff;
