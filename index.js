@@ -16,6 +16,16 @@ const extensionName = 'serendipity';
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
+// 结构化时间轴：时段选项 + 相对时间词（单位：天，正=未来）
+const PERIODS = ['深夜', '清晨', '上午', '中午', '下午', '傍晚', '夜晚'];
+const RELATIVE_DAYS = {
+    '昨天': -1, '今天': 0, '明天': 1,
+    '前天': -2, '后天': 2,
+    '上周': -7, '下周': 7,
+    '上个月': -30, '下个月': 30,
+    '去年': -365, '明年': 365,
+};
+
 const defaultSettings = {
     chars: {},       // { [角色名]: 该角色的记忆/屏蔽词/指令等数据 }
 };
@@ -41,6 +51,9 @@ function freshCharSettings() {
         censorEnabled: true,    // 屏蔽开关
         instructions: [],       // 指令列表（每轮生成都注入）
         storyTime: '',          // 当前剧情时间（AI 接力维护，每次总结时更新）
+        storyDay: null,         // 结构化时间轴：第X天（null=尚未建立）
+        storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
+        storyLocation: '',      // 当前地点
         worldInjectedCount: 0,  // 已注入世界书的「第 x 次总结」计数
         worldBook: '',          // 用户选择要注入的世界书名（不一定用角色绑定的那本）
     };
@@ -55,6 +68,10 @@ function normalizeCharSettings(cs) {
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
+    if (cs.storyDay === undefined || cs.storyDay === null || isNaN(cs.storyDay)) cs.storyDay = null;
+    else cs.storyDay = Number(cs.storyDay);
+    if (typeof cs.storyPeriod !== 'string') cs.storyPeriod = '';
+    if (typeof cs.storyLocation !== 'string') cs.storyLocation = '';
     cs.worldInjectedCount = Number(cs.worldInjectedCount) || 0;
     if (typeof cs.worldBook !== 'string') cs.worldBook = '';
     cs.instructions = cs.instructions.map(it => {
@@ -156,11 +173,17 @@ function buildSummaryPrompt(userMsg, charMsg, storyTime) {
     const timeAnchor = storyTime
         ? '当前剧情时间基准（上一次剧情进行到）：' + storyTime + '。若本段对话没有明确推进时间，请沿用这个时间；若剧情明确推进了时间，请给出推进后的具体时间。'
         : '请根据本段内容判断剧情发生的大致时间（年/月/日 周几 几时几分）；若内容未明确，请给出合理推断的具体时间。';
+    // 结构化时间轴锚点（第X天 + 时段 + 地点）：让模型接力推进天数，而不是每轮孤立猜测
+    const timeAxisAnchor = (settings.storyDay != null)
+        ? '当前剧情时间轴：第' + settings.storyDay + '天' + (settings.storyPeriod ? ' · ' + settings.storyPeriod : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '') + '。若本段剧情没有明确推进天数，请沿用第' + settings.storyDay + '天；若明确过了若干天，请给出推进后的天数。'
+        : '请根据本段内容，从故事开始估算当前是「第几天」（第X天），以及当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）和发生地点；若未明确，请给出合理推断。';
     return {
         systemPrompt: [
             '你是剧情记忆助手。请阅读下面这轮对话，提取信息并总结。只输出总结本身，不要复述、不要添加任何解释或客套。',
             '',
             timeAnchor,
+            '',
+            timeAxisAnchor,
             '',
             '严格按照以下格式逐行输出（除【时间】外，某项信息未提及时写「无」）：',
             '',
@@ -175,6 +198,7 @@ function buildSummaryPrompt(userMsg, charMsg, storyTime) {
             '【约定/承诺】新产生的约定或承诺',
             '【已完成约定】已完成的约定或承诺',
             '【详细总结】本段对话的详细总结',
+            '【时间轴】本段结束时的剧情时间，严格写成「第X天|时段|地点」三段（X 是从故事开始算的天数，如「第27天|傍晚|北境营地」；地点未知写「无」）',
         ].join('\n'),
         prompt: userMsg.name + '：' + userMsg.mes + '\n\n' + charMsg.name + '：' + charMsg.mes,
     };
@@ -188,6 +212,21 @@ function extractStoryTime(text) {
         if (t && t !== '无') return t;
     }
     return '';
+}
+
+// 从总结结果里解析【时间轴】行 → { day, period, location }（解析不出返回 null）
+function extractTimeAxis(text) {
+    const m = String(text).match(/【时间轴】\s*([^\n]+)/);
+    if (!m || !m[1]) return null;
+    const raw = m[1].trim();
+    if (!raw || raw === '无') return null;
+    const parts = raw.split(/[|｜]/).map(s => s.trim()).filter(Boolean);
+    const dayM = parts[0] && parts[0].match(/第\s*(\d+)\s*天/);
+    const day = dayM ? parseInt(dayM[1], 10) : null;
+    const period = (parts[1] && parts[1] !== '无') ? parts[1] : '';
+    const location = (parts[2] && parts[2] !== '无') ? parts[2] : '';
+    if (day == null && !period && !location) return null;
+    return { day, period, location, raw };
 }
 
 // 把一组记忆合并成一段文本（带序号），用于晋级时“清空并总结”
@@ -209,16 +248,18 @@ function findMemory(id) {
 function promoteMemories() {
     const promoted = { toLong: false, toPermanent: false };
     if (settings.memories.length >= TIER_LIMIT) {
-        // 合并后的条目沿用「最新一条」的剧情时间，保持时间线可读
-        const lastStoryTime = settings.memories[settings.memories.length - 1].storyTime || settings.storyTime || '';
-        settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, text: mergeEntries(settings.memories) });
+        // 合并后的条目沿用「最新一条」的剧情时间与时间轴，保持时间线可读
+        const last = settings.memories[settings.memories.length - 1];
+        const lastStoryTime = last.storyTime || settings.storyTime || '';
+        settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, text: mergeEntries(settings.memories) });
         settings.memories = [];
         saveSettings();
         promoted.toLong = true;
     }
     if (settings.longMemories.length >= TIER_LIMIT) {
-        const lastStoryTime = settings.longMemories[settings.longMemories.length - 1].storyTime || settings.storyTime || '';
-        settings.permanentMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, text: mergeEntries(settings.longMemories) });
+        const last = settings.longMemories[settings.longMemories.length - 1];
+        const lastStoryTime = last.storyTime || settings.storyTime || '';
+        settings.permanentMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, text: mergeEntries(settings.longMemories) });
         settings.longMemories = [];
         saveSettings();
         promoted.toPermanent = true;
@@ -251,12 +292,22 @@ async function summarizeLastRound() {
             // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
             const newStoryTime = extractStoryTime(result) || settings.storyTime;
             settings.storyTime = newStoryTime;
+            // 解析结构化时间轴（第X天/时段/地点），解析失败则沿用上一次，保证时间轴不倒退
+            const axis = extractTimeAxis(result);
+            if (axis) {
+                if (axis.day != null) settings.storyDay = axis.day;
+                if (axis.period) settings.storyPeriod = axis.period;
+                if (axis.location) settings.storyLocation = axis.location;
+            }
+            // 记忆正文去掉【时间轴】行（结构化数据已单独存，正文保持干净）
+            const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
-            settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, text: result.trim() });
+            settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, text: memoryText });
             const promoted = promoteMemories();
             saveSettings();
             updatePromptInjection();
             renderMemories();
+            renderTimeAxis();
 
             // 弹窗提示：总结成功 + 是否触发晋级
             let msg = '本轮记忆总结成功';
@@ -296,6 +347,18 @@ function updatePromptInjection() {
     setExtensionPrompt(
         'serendipity_memory',
         mem ? '[Serendipity 剧情记忆]\n以下是此前剧情的记忆总结，请在后续生成中严格遵守并延续这些设定、人物、事件与承诺，避免遗忘或前后矛盾。\n\n' + mem : '',
+        extension_prompt_types.IN_PROMPT,
+        0,
+    );
+
+    // 结构化时间轴注入（一行极简锚点，让模型知道当前第X天/时段/地点，保持时间一致）
+    const hasAxis = settings.storyDay != null || settings.storyPeriod || settings.storyLocation;
+    const axisLine = hasAxis
+        ? '当前剧情时间：第' + (settings.storyDay != null ? settings.storyDay : '?') + '天' + (settings.storyPeriod ? ' · ' + settings.storyPeriod : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '')
+        : '';
+    setExtensionPrompt(
+        'serendipity_time',
+        axisLine ? '[Serendipity 当前时间]\n' + axisLine + '\n请在后续生成中与这个时间保持一致，不要随意跳转；若剧情需要推进时间，请自然推进。' : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
@@ -482,6 +545,72 @@ function renderMemories() {
     list.html(html);
 }
 
+// ---------------- 时间轴 UI ----------------
+// 当前锚点 + 场景时间线（从记忆条目里提取 storyDay，去重排序）
+function renderTimeAxis() {
+    const cur = $('#st-serendipity .st-sd__axis-current');
+    if (cur.length) {
+        const day = settings.storyDay != null ? '第' + settings.storyDay + '天' : '（待首次总结）';
+        const parts = [day];
+        if (settings.storyPeriod) parts.push(settings.storyPeriod);
+        if (settings.storyLocation) parts.push(settings.storyLocation);
+        cur.text(parts.join(' · '));
+    }
+    const list = $('#st-serendipity .st-sd__axis-list');
+    if (list.length) {
+        const seen = new Set();
+        const anchors = [];
+        const collect = (arr) => {
+            for (const m of arr) {
+                if (m.storyDay == null) continue;
+                const key = m.storyDay + '|' + (m.storyPeriod || '') + '|' + (m.storyLocation || '');
+                if (seen.has(key)) continue;
+                seen.add(key);
+                anchors.push(m);
+            }
+        };
+        collect(settings.permanentMemories);
+        collect(settings.longMemories);
+        collect(settings.memories);
+        anchors.sort((a, b) => a.storyDay - b.storyDay);
+        if (!anchors.length) {
+            list.html('<div class="st-sd__empty">暂无时间轴，总结后自动生成场景锚点</div>');
+        } else {
+            list.html(anchors.map(m => {
+                const period = m.storyPeriod ? ' · ' + escapeHtml(m.storyPeriod) : '';
+                const loc = m.storyLocation ? ' · ' + escapeHtml(m.storyLocation) : '';
+                return '<div class="st-sd__axis-item"><span class="st-sd__axis-item-day">第' + m.storyDay + '天</span>' + period + loc + '</div>';
+            }).join(''));
+        }
+    }
+    renderRelativeHints();
+}
+
+// 检测最新一条 AI 回复里的相对时间词（昨天/前天…），换算成第X天供用户核对
+function detectRelativeTimeHints() {
+    const hints = [];
+    if (!Array.isArray(chat) || !chat.length) return hints;
+    const last = chat[chat.length - 1];
+    if (!last || last.is_user || last.is_system || typeof last.mes !== 'string') return hints;
+    const text = last.mes;
+    const currentDay = settings.storyDay;
+    for (const [word, offset] of Object.entries(RELATIVE_DAYS)) {
+        if (!text.includes(word)) continue;
+        hints.push({ word, offset, implied: currentDay != null ? '第' + (currentDay + offset) + '天' : '' });
+    }
+    return hints;
+}
+
+function renderRelativeHints() {
+    const box = $('#st-serendipity .st-sd__axis-hints');
+    if (!box.length) return;
+    const hints = detectRelativeTimeHints();
+    if (!hints.length) { box.html(''); return; }
+    box.html(hints.map(h =>
+        '<div class="st-sd__axis-hint">⚠ 本段使用了「' + escapeHtml(h.word) + '」' + (h.implied ? '（约等于 ' + h.implied + '）' : '') + '，请核对是否与时间轴一致</div>'
+    ).join(''));
+}
+
 // 导出全部记忆为 txt 文件
 function exportMemories() {
     const lines = ['Serendipity 剧情记忆导出', '导出时间：' + fmtTime(Date.now()), ''];
@@ -650,6 +779,7 @@ function buildPanel() {
         <button type="button" class="st-sd__tab is-active" data-tab="memory">记忆</button>
         <button type="button" class="st-sd__tab" data-tab="censor">屏蔽词</button>
         <button type="button" class="st-sd__tab" data-tab="instruct">指令</button>
+        <button type="button" class="st-sd__tab" data-tab="time">时间轴</button>
       </div>
 
       <div class="st-sd__pane" data-pane="memory">
@@ -690,6 +820,25 @@ function buildPanel() {
         </div>
         <div class="st-sd__instr-list"></div>
         <div class="st-sd__hint">指令不限制数量，每轮生成都会读取并遵守；可用每条前面的开关单独开启/关闭，删除则彻底移除。</div>
+      </div>
+
+      <div class="st-sd__pane" data-pane="time" style="display:none">
+        <div class="st-sd__toolbar">
+          <span class="st-sd__label">当前时间轴</span>
+          <span class="st-sd__axis-current"></span>
+        </div>
+        <div class="st-sd__add-row">
+          <input type="number" class="st-sd__axis-day" placeholder="第几天" min="0">
+          <select class="st-sd__axis-period">
+            <option value="">时段</option>
+            ${PERIODS.map(p => `<option value="${p}">${p}</option>`).join('')}
+          </select>
+          <input type="text" class="st-sd__axis-loc" placeholder="地点">
+          <button type="button" class="st-sd__axis-save">设定</button>
+        </div>
+        <div class="st-sd__hint">手动设定时间轴锚点（第X天 + 时段 + 地点），下次总结会从这里接力推进；相对时间词（昨天/前天…）会自动换算成第X天并提示核对。</div>
+        <div class="st-sd__axis-hints"></div>
+        <div class="st-sd__axis-list"></div>
       </div>
     </div>`;
     $('body').append(html);
@@ -840,6 +989,25 @@ function bindPanelEvents() {
         renderInstructions();
         updatePromptInjection();
     });
+
+    // 时间轴：手动设定锚点
+    const saveAxis = () => {
+        const dayVal = parseInt(panel.find('.st-sd__axis-day').val(), 10);
+        const period = panel.find('.st-sd__axis-period').val() || '';
+        const location = panel.find('.st-sd__axis-loc').val().trim();
+        if (isNaN(dayVal) && !period && !location) { toastr.warning('请至少填一项（天数/时段/地点）'); return; }
+        if (!isNaN(dayVal) && dayVal >= 0) settings.storyDay = dayVal;
+        if (period) settings.storyPeriod = period;
+        if (location) settings.storyLocation = location;
+        saveSettings();
+        updatePromptInjection();
+        renderTimeAxis();
+        panel.find('.st-sd__axis-day').val('');
+        panel.find('.st-sd__axis-loc').val('');
+        toastr.success('已设定时间轴');
+    };
+    panel.find('.st-sd__axis-save').on('click', saveAxis);
+    panel.find('.st-sd__axis-loc').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
 }
 
 // 用真实视口尺寸定位面板，保证手机端一定不出屏（酒馆移动端 body 是 fixed+overflow:hidden，vh/bottom 会失真）
@@ -873,6 +1041,7 @@ function togglePanel(force) {
         fitPanelToViewport();
         panel.show();
         renderMemories();
+        renderTimeAxis();
         renderBlockedWords();
         renderInstructions();
         renderCharBinding();
@@ -907,6 +1076,7 @@ jQuery(async () => {
             updatePromptInjection();
             applyCensorAll();
             renderMemories();
+            renderTimeAxis();
             renderBlockedWords();
             renderInstructions();
             renderCharBinding();
@@ -918,6 +1088,7 @@ jQuery(async () => {
     $(window).on('orientationchange.st-sd', () => setTimeout(fitPanelToViewport, 300));
 
     renderMemories();
+    renderTimeAxis();
     renderBlockedWords();
     renderInstructions();
     renderCharBinding();
