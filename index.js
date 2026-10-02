@@ -339,7 +339,7 @@ function isWorldBookActive(name) {
     return false;
 }
 
-// 把当前剧情记忆作为一条新条目注入到用户选择的世界书里（常驻、无关键词、扫描深度 1）
+// 把当前剧情记忆作为一条新条目注入到用户选择的世界书里（常驻、无关键词、扫描深度 1、绑定角色名、创作者注释匹配、系统插入深度@4）
 async function injectToWorldBook() {
     if (isInjecting) return; // 上一次注入还没结束，忽略重复点击
     isInjecting = true;
@@ -377,6 +377,9 @@ async function injectToWorldBook() {
         entry.matchCreatorNotes = true;          // 额外匹配来源：创作者注释
         entry.characterFilterNames = [currentCharName()]; // 绑定到当前角色（按名字）
         entry.characterFilterExclude = false;
+        entry.position = 4;            // 插入位置：插入深度 @D（4 = atDepth）
+        entry.role = 0;                // 系统角色 [系统]（0 = SYSTEM）
+        entry.depth = 4;               // 插入深度值 @4
         await saveWorldInfo(worldName, data, true);
         saveSettings();
         if (isWorldBookActive(worldName)) {
