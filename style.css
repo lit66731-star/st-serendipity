@@ -3,7 +3,7 @@
     position: fixed;
     top: 72px;
     right: 20px;
-    z-index: 40000;
+    z-index: 2147483000 !important; /* 极高层级，避免被其他插件的浮层盖住导致点不到/被遮挡 */
     width: 330px;
     max-width: calc(100vw - 16px);
     max-height: calc(100vh - 90px);
@@ -17,10 +17,17 @@
     overflow: hidden;
 }
 
-/* 去掉酒馆全局加在文字上的黑色外发光（在白色面板上会显得很脏） */
+/* 与其他插件隔离：清掉酒馆/别的插件加在文字和元素上的外发光与阴影，避免面板被污染 */
 #st-serendipity,
 #st-serendipity * {
     text-shadow: none !important;
+    box-shadow: none !important;
+    -webkit-tap-highlight-color: transparent !important;
+}
+#st-serendipity {
+    touch-action: manipulation; /* 消除移动端点按延迟，保证按钮点击即时响应 */
+    -webkit-user-select: text;
+    user-select: text;
 }
 
 .st-sd__head {

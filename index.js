@@ -27,6 +27,7 @@ let activeCharKey = '';      // 当前绑定角色的唯一键（avatar，同名
 let isSummarizing = false;
 let pendingMigration = null; // 旧版扁平数据迁移挂起（角色卡尚未加载完成时暂存）
 let editingId = null;        // 当前处于编辑态的记忆条目 id（null 表示无）
+let isInjecting = false;     // 世界书注入进行中标记（防连点/并发注入）
 
 // ---------------- 设置 ----------------
 // 每张角色卡独立的干净数据
@@ -328,19 +329,22 @@ function getSelectedWorldBook() {
 
 // 把当前剧情记忆作为一条新条目注入到用户选择的世界书里（常驻、无关键词、扫描深度 1）
 async function injectToWorldBook() {
-    activateCharacter();
-    const worldName = getSelectedWorldBook();
-    if (!worldName) {
-        toastr.warning('请先在上方选择一个世界书');
-        renderWorldHint();
-        return;
-    }
-    const memBlock = buildMemoryBlock().trim();
-    if (!memBlock) {
-        toastr.warning('当前还没有记忆，先积累一些记忆再注入');
-        return;
-    }
+    if (isInjecting) return; // 上一次注入还没结束，忽略重复点击
+    isInjecting = true;
+    toastr.info('正在注入世界书…', undefined, { timeOut: 1500 });
     try {
+        activateCharacter();
+        const worldName = getSelectedWorldBook();
+        if (!worldName) {
+            toastr.warning('请先在上方选择一个世界书');
+            renderWorldHint();
+            return;
+        }
+        const memBlock = buildMemoryBlock().trim();
+        if (!memBlock) {
+            toastr.warning('当前还没有记忆，先积累一些记忆再注入');
+            return;
+        }
         const data = await loadWorldInfo(worldName);
         if (!data || typeof data !== 'object' || !data.entries) {
             toastr.error('读取世界书「' + worldName + '」失败，可能已被删除，请重新选择');
@@ -365,7 +369,9 @@ async function injectToWorldBook() {
         toastr.success('已注入世界书「' + worldName + '」：第' + settings.worldInjectedCount + '次总结，请发一条消息测试是否读取成功');
     } catch (e) {
         console.error('[Serendipity] 注入世界书失败：', e);
-        toastr.error('注入世界书失败');
+        toastr.error('注入世界书失败' + (e && e.message ? '：' + e.message : ''));
+    } finally {
+        isInjecting = false;
     }
 }
 
@@ -716,10 +722,10 @@ function bindPanelEvents() {
     panel.find('.st-sd__summarize').on('click', () => summarizeLastRound());
     // 导出记忆
     panel.find('.st-sd__export').on('click', exportMemories);
-    // 注入世界书
-    panel.find('.st-sd__inject-world').on('click', injectToWorldBook);
-    // 选择要注入的世界书
-    panel.find('.st-sd__world-select').on('change', function () {
+    // 注入世界书（事件委托，按钮即使被重建也始终能触发）
+    panel.on('click', '.st-sd__inject-world', injectToWorldBook);
+    // 选择要注入的世界书（事件委托）
+    panel.on('change', '.st-sd__world-select', function () {
         settings.worldBook = this.value || '';
         saveSettings();
         renderWorldHint();
