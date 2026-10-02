@@ -51,6 +51,7 @@ function freshCharSettings() {
         memoryEnabled: true,    // 自动记忆开关
         summarizeEvery: 1,      // 每 N 轮总结一次（1=每轮都总结）
         roundsSinceSummary: 0,  // 距上次总结已过的轮数
+        lastSummaryIndex: -1,   // 上次总结到的聊天消息下标（-1=尚未总结），用于跨轮总结窗口不丢剧情
         blockedWords: [],       // 屏蔽词列表
         censorEnabled: true,    // 屏蔽开关
         instructions: [],       // 指令列表（每轮生成都注入）
@@ -62,6 +63,7 @@ function freshCharSettings() {
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         worldReminderShown: false, // 长期记忆满 10 的归档提醒是否已弹过（归档后重置）
         worldBook: '',          // 用户选择要注入的世界书名（不一定用角色绑定的那本）
+        archivedWorldBook: '',  // 上次归档到哪本世界书（用于「未激活」常驻黄条提醒）
     };
 }
 
@@ -89,6 +91,7 @@ function normalizeCharSettings(cs) {
     if (!(cs.summarizeEvery >= 1)) cs.summarizeEvery = 1;
     else cs.summarizeEvery = Math.floor(cs.summarizeEvery);
     cs.roundsSinceSummary = Number(cs.roundsSinceSummary) || 0;
+    cs.lastSummaryIndex = (typeof cs.lastSummaryIndex === 'number' && cs.lastSummaryIndex >= 0) ? Math.floor(cs.lastSummaryIndex) : -1;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
     if (cs.storyDay === undefined || cs.storyDay === null || isNaN(cs.storyDay)) cs.storyDay = null;
     else cs.storyDay = Number(cs.storyDay);
@@ -96,6 +99,7 @@ function normalizeCharSettings(cs) {
     if (typeof cs.storyLocation !== 'string') cs.storyLocation = '';
     if (cs.worldReminderShown === undefined) cs.worldReminderShown = false;
     if (typeof cs.worldBook !== 'string') cs.worldBook = '';
+    if (typeof cs.archivedWorldBook !== 'string') cs.archivedWorldBook = '';
     cs.instructions = cs.instructions.map(it => {
         if (typeof it === 'string') return { id: uid(), text: it, enabled: true };
         if (it && typeof it === 'object' && typeof it.text === 'string') {
@@ -191,7 +195,7 @@ function escapeHtml(str) {
 }
 
 // ---------------- 记忆功能 ----------------
-function buildSummaryPrompt(userMsg, charMsg, storyTime) {
+function buildSummaryPrompt(transcript, userName, charName, storyTime) {
     // 时间锚点：把上一次剧情时间传进去，让模型接力推进，避免每轮孤立猜测导致时间线乱掉
     const timeAnchor = storyTime
         ? '当前剧情时间基准（上一次剧情进行到）：' + storyTime + '。若本段对话没有明确推进时间，请沿用这个时间；若剧情明确推进了时间，请给出推进后的具体时间。'
@@ -206,7 +210,7 @@ function buildSummaryPrompt(userMsg, charMsg, storyTime) {
         : '请根据本段内容提取当前世界状态（年龄/好感/关系/物品/日程），没有的类别写「无」。';
     return {
         systemPrompt: [
-            '你是剧情记忆助手。请阅读下面这轮对话，提取信息并总结。只输出总结本身，不要复述、不要添加任何解释或客套。',
+            '你是剧情记忆助手。请阅读下面这段对话，提取信息并总结。只输出总结本身，不要复述、不要添加任何解释或客套。',
             '',
             timeAnchor,
             '',
@@ -221,8 +225,8 @@ function buildSummaryPrompt(userMsg, charMsg, storyTime) {
             '【在场人物】有哪些人在场',
             '【地点】发生地点/场景',
             '【关键事件】本段发生的关键事件',
-            '【角色衣着】' + charMsg.name + '的衣着',
-            '【用户衣着】' + userMsg.name + '的衣着',
+            '【角色衣着】' + charName + '的衣着',
+            '【用户衣着】' + userName + '的衣着',
             '【物品】出现或获得的物品',
             '【约定/承诺】新产生的约定或承诺',
             '【已完成约定】已完成的约定或承诺',
@@ -230,7 +234,7 @@ function buildSummaryPrompt(userMsg, charMsg, storyTime) {
             '【时间轴】本段结束时的剧情时间，严格写成「第X天|时段|地点|本段重要事情」四段（X 是从故事开始算的天数，如「第27天|傍晚|北境营地|与斥候队长会面」；地点或事情未知写「无」）',
             '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：年龄/好感/关系/物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」，需要清空某类写「空」）',
         ].join('\n'),
-        prompt: userMsg.name + '：' + userMsg.mes + '\n\n' + charMsg.name + '：' + charMsg.mes,
+        prompt: transcript,
     };
 }
 
@@ -355,21 +359,33 @@ async function summarizeLastRound() {
     if (!settings.memoryEnabled || isSummarizing) return;
     if (!Array.isArray(chat) || chat.length < 2) return;
 
-    // 过滤掉系统消息，取最近一轮：最后一条 char 回复 + 它前面最近的 user 消息
-    const msgs = chat.filter(m => m && typeof m.mes === 'string' && m.mes.trim() && !m.is_system);
-    if (msgs.length < 2) return;
-    const last = msgs[msgs.length - 1];
-    if (last.is_user) return; // 最后一条是用户消息（尚未回复），跳过
-
-    let userMsg = null;
-    for (let i = msgs.length - 2; i >= 0; i--) {
-        if (msgs[i].is_user) { userMsg = msgs[i]; break; }
+    // 取「上次总结以来」的新消息窗口：每 N 轮才总结时，把中间跳过的几轮一并带上，避免漏剧情
+    const indexed = chat.map((m, i) => ({ m, i })).filter(x => x.m && typeof x.m.mes === 'string' && x.m.mes.trim() && !x.m.is_system);
+    if (indexed.length < 2) return;
+    const start = (settings.lastSummaryIndex != null && settings.lastSummaryIndex >= 0) ? settings.lastSummaryIndex + 1 : 0;
+    let sel = indexed.filter(x => x.i >= start);
+    if (sel.length < 2) {
+        // 水位线越界（消息被删除/回滚等）：退化为最近一轮，避免从此再也不总结
+        let lastCharIdx = -1;
+        for (let i = indexed.length - 1; i >= 0; i--) { if (!indexed[i].m.is_user) { lastCharIdx = i; break; } }
+        if (lastCharIdx < 0) return;
+        let userIdx = -1;
+        for (let i = lastCharIdx - 1; i >= 0; i--) { if (indexed[i].m.is_user) { userIdx = i; break; } }
+        if (userIdx < 0) return;
+        sel = [indexed[userIdx], indexed[lastCharIdx]];
     }
-    if (!userMsg) return;
+    const lastMsg = sel[sel.length - 1].m;
+    if (lastMsg.is_user) return; // 最后一条是用户消息（尚未回复），跳过
+
+    const lastCharMsg = [...sel].reverse().find(x => !x.m.is_user).m;
+    const lastUserMsg = [...sel].reverse().find(x => x.m.is_user).m;
+    if (!lastCharMsg || !lastUserMsg) return;
+
+    const transcript = sel.map(x => (x.m.name || (x.m.is_user ? '用户' : '角色')) + '：' + x.m.mes).join('\n\n');
 
     isSummarizing = true;
     try {
-        const { systemPrompt, prompt } = buildSummaryPrompt(userMsg, last, settings.storyTime);
+        const { systemPrompt, prompt } = buildSummaryPrompt(transcript, lastUserMsg.name || '用户', lastCharMsg.name || '角色', settings.storyTime);
         const result = await generateRaw({ prompt, systemPrompt });
         if (result && result.trim()) {
             // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
@@ -390,6 +406,7 @@ async function summarizeLastRound() {
             const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
             settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, text: memoryText });
+            settings.lastSummaryIndex = chat.length - 1; // 记录已总结到的消息下标，下次只总结新增部分
             const promoted = promoteMemories();
             saveSettings();
             updatePromptInjection();
@@ -554,6 +571,7 @@ async function injectToWorldBook() {
         entry.role = 0;                // 系统角色 [系统]（0 = SYSTEM）
         entry.depth = 4;               // 插入深度值 @4
         await saveWorldInfo(worldName, data, true);
+        settings.archivedWorldBook = worldName; // 记录归档目标，用于「未激活」常驻黄条提醒
         // 归档后清空长期记忆（正文注入保持有界），并重置提醒
         settings.longMemories = [];
         settings.worldReminderShown = false;
@@ -594,6 +612,19 @@ function updateInjectHint() {
     const full = settings.longMemories.length >= TIER_LIMIT;
     btn.toggleClass('st-sd__inject-world--hint', full);
     btn.attr('title', full ? '长期记忆已满，建议归档到世界书' : '把长期记忆归档到世界书');
+}
+
+// 世界书未激活的常驻黄条：归档过后若那本世界书一直没被激活，就一直在面板上提醒
+function renderWorldAlert() {
+    const el = $('#st-serendipity .st-sd__world-alert');
+    if (!el.length) return;
+    const name = settings.archivedWorldBook || '';
+    if (name && !isWorldBookActive(name)) {
+        el.text('世界书「' + name + '」里已归档了长期记忆，但它尚未激活，模型读不到。请到酒馆「世界书」界面把它设为全局世界书，或绑定到当前角色。');
+        el.show();
+    } else {
+        el.hide();
+    }
 }
 
 // ---------------- 记忆 UI ----------------
@@ -642,6 +673,7 @@ function renderMemories() {
     renderStoryTime();
     renderWorldSelect();
     updateInjectHint();
+    renderWorldAlert();
     const everyInput = $('#st-serendipity .st-sd__every-input');
     if (everyInput.length) everyInput.val(settings.summarizeEvery || 1);
 
@@ -827,6 +859,47 @@ function exportMemories() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// 手动补记一条记忆：不等自动总结，直接把手写的设定/事件塞进短期记忆（沿用当前剧情时间）
+function addManualNote() {
+    activateCharacter();
+    const input = $('#st-serendipity .st-sd__note-input');
+    if (!input.length) return;
+    const text = input.val().trim();
+    if (!text) { toastr.warning('先写点内容再补记'); return; }
+    settings.memories.push({
+        id: uid(),
+        time: Date.now(),
+        storyTime: settings.storyTime || '',
+        storyDay: settings.storyDay,
+        storyPeriod: settings.storyPeriod || '',
+        storyLocation: settings.storyLocation || '',
+        text: text,
+    });
+    saveSettings();
+    updatePromptInjection();
+    renderMemories();
+    input.val('');
+    toastr.success('已补记一条记忆');
+}
+
+// 一键清空当前角色数据（二次确认），重开这个角色时插件就是干净的一套
+function resetCurrentChar() {
+    activateCharacter();
+    const name = activeChar || '当前角色';
+    if (!confirm('确定清空「' + name + '」的全部 Serendipity 数据吗？记忆、时间轴、世界状态、屏蔽词、指令都会被清空，且不可撤销。')) return;
+    const keepWorldBook = settings.worldBook;
+    Object.assign(settings, freshCharSettings());
+    settings.worldBook = keepWorldBook; // 保留用户选择的世界书，方便下次直接注入
+    saveSettings();
+    updatePromptInjection();
+    renderMemories();
+    renderTimeAxis();
+    renderWorldState();
+    renderBlockedWords();
+    renderInstructions();
+    toastr.success('已清空「' + name + '」的 Serendipity 数据');
+}
+
 // ---------------- 屏蔽词功能 ----------------
 const CENSOR_EXCLUDE = 'script, style, textarea, input, select, option, #st-serendipity, .st-sd, [contenteditable]';
 
@@ -982,15 +1055,23 @@ function buildPanel() {
           <input type="number" class="st-sd__every-input" min="1" max="50" title="每 N 轮自动总结一次，1=每轮都总结">
           <span class="st-sd__label">轮总结一次</span>
         </div>
+        <div class="st-sd__add-row">
+          <input type="text" class="st-sd__note-input" placeholder="手动补记一条记忆（立刻记下某个设定/事件，不等自动总结）">
+          <button type="button" class="st-sd__add-note">补记</button>
+        </div>
         <div class="st-sd__world-row">
           <select class="st-sd__world-select" title="选择要注入记忆的世界书"></select>
         </div>
         <div class="st-sd__world-row">
           <button type="button" class="st-sd__inject-world">注入世界书</button>
         </div>
+        <div class="st-sd__world-alert" style="display:none"></div>
         <div class="st-sd__story-time"></div>
         <div class="st-sd__memory-list"></div>
         <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期；长期满 ${TIER_LIMIT} 条会提醒你「注入世界书」归档并清空。记忆会注入正文，防止模型失忆。</div>
+        <div class="st-sd__reset-row">
+          <button type="button" class="st-sd__reset">清空本角色数据</button>
+        </div>
       </div>
 
       <div class="st-sd__pane" data-pane="censor" style="display:none">
@@ -1099,6 +1180,11 @@ function bindPanelEvents() {
         settings.worldBook = this.value || '';
         saveSettings();
     });
+    // 手动补记一条记忆
+    panel.find('.st-sd__add-note').on('click', addManualNote);
+    panel.find('.st-sd__note-input').on('keydown', (e) => { if (e.key === 'Enter') addManualNote(); });
+    // 一键清空当前角色数据
+    panel.find('.st-sd__reset').on('click', resetCurrentChar);
 
     // 添加屏蔽词
     const addWord = () => {

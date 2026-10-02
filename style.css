@@ -196,6 +196,17 @@
     outline: none;
 }
 .st-sd__world-select:focus { border-color: #333333; }
+.st-sd__world-alert {
+    display: none;
+    background: #fff7e0;
+    border: 1px solid #f0d48a;
+    color: #8a6d3b;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    margin-bottom: 8px;
+}
 
 /* 开关 */
 .st-sd__switch {
@@ -389,6 +400,30 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 }
 .st-sd__add-word:hover { background: #444444; }
 
+/* 手动补记记忆 */
+.st-sd__note-input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid #dddddd;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    color: #333333;
+    outline: none;
+}
+.st-sd__note-input:focus { border-color: #333333; }
+.st-sd__add-note {
+    border: none;
+    background: #222222;
+    color: #ffffff;
+    border-radius: 8px;
+    padding: 0 16px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.st-sd__add-note:hover { background: #444444; }
+
 .st-sd__word-list {
     flex: 1;
     min-height: 0;
@@ -498,6 +533,18 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     color: #aaaaaa;
     line-height: 1.5;
 }
+.st-sd__reset-row { margin-top: 10px; }
+.st-sd__reset {
+    border: 1px solid #e0b4b4;
+    background: transparent;
+    color: #c0392b;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.st-sd__reset:hover { background: #c0392b; color: #ffffff; }
 .st-sd__empty {
     padding: 20px 10px;
     text-align: center;
