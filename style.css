@@ -1,25 +1,3 @@
-/* ========== 顶部控制按钮（可拖动） ========== */
-#st-serendipity-button {
-    position: fixed;
-    top: 10px;
-    left: 20px;
-    z-index: 50000;
-    width: 42px;
-    height: 42px;
-    border-radius: 50%;
-    background: #ffffff;
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    color: #333333;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: grab;
-    transition: background 0.2s, color 0.2s;
-}
-#st-serendipity-button:active { cursor: grabbing; }
-#st-serendipity-button svg { width: 20px; height: 20px; }
-#st-serendipity-button:hover { background: #f4f4f4; }
-
 /* ========== 面板：实色白 ========== */
 #st-serendipity {
     position: fixed;
@@ -183,6 +161,12 @@
 .st-sd__switch input:checked + .st-sd__switch-slider::before { transform: translateX(18px); }
 
 /* 记忆列表 */
+.st-sd__story-time {
+    font-size: 12px;
+    font-weight: 600;
+    color: #555555;
+    margin-bottom: 8px;
+}
 .st-sd__memory-list {
     flex: 1;
     min-height: 0;
@@ -401,12 +385,6 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 
 /* ========== 移动端（与酒馆一致：≤1000px 判定为移动） ========== */
 @media screen and (max-width: 1000px) {
-    #st-serendipity-button {
-        top: auto;
-        left: auto;
-        right: 16px;
-        bottom: 90px;
-    }
     #st-serendipity {
         top: 56px;
         bottom: auto;

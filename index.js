@@ -17,8 +17,6 @@ const TIER_LIMIT = 10; // 满 10 条晋级
 
 const defaultSettings = {
     chars: {},       // { [角色名]: 该角色的记忆/屏蔽词/指令等数据 }
-    btnLeft: null,   // 主按钮位置（可拖动，全局，不随角色）
-    btnTop: null,
 };
 
 let globalSettings = null;   // 顶层设置（按角色分组 + 按钮位置）
@@ -33,11 +31,12 @@ function freshCharSettings() {
     return {
         memories: [],           // 短期记忆（详细总结）[{ id, time, text }]
         longMemories: [],       // 长期记忆（短期满 10 合并而来）
-        permanentMemories: [],  // 永久记忆（长期满 10 合并而来，只增不删）
+        permanentMemories: [],  // 永久记忆（长期满 10 合并而来，默认只增，可手动删）
         memoryEnabled: true,    // 自动记忆开关
         blockedWords: [],       // 屏蔽词列表
         censorEnabled: true,    // 屏蔽开关
         instructions: [],       // 指令列表（每轮生成都注入）
+        storyTime: '',          // 当前剧情时间（AI 接力维护，每次总结时更新）
     };
 }
 
@@ -49,6 +48,7 @@ function normalizeCharSettings(cs) {
     }
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
+    if (typeof cs.storyTime !== 'string') cs.storyTime = '';
     cs.instructions = cs.instructions.map(it => {
         if (typeof it === 'string') return { id: uid(), text: it, enabled: true };
         if (it && typeof it === 'object' && typeof it.text === 'string') {
@@ -112,8 +112,6 @@ function loadSettings() {
         }
     }
     if (!s.chars || typeof s.chars !== 'object' || Array.isArray(s.chars)) s.chars = {};
-    if (s.btnLeft === undefined) s.btnLeft = null;
-    if (s.btnTop === undefined) s.btnTop = null;
     return s;
 }
 function saveSettings() { saveSettingsDebounced(); }
@@ -128,12 +126,20 @@ function escapeHtml(str) {
 }
 
 // ---------------- 记忆功能 ----------------
-function buildSummaryPrompt(userMsg, charMsg) {
+function buildSummaryPrompt(userMsg, charMsg, storyTime) {
+    // 时间锚点：把上一次剧情时间传进去，让模型接力推进，避免每轮孤立猜测导致时间线乱掉
+    const timeAnchor = storyTime
+        ? '当前剧情时间基准（上一次剧情进行到）：' + storyTime + '。若本段对话没有明确推进时间，请沿用这个时间；若剧情明确推进了时间，请给出推进后的具体时间。'
+        : '请根据本段内容判断剧情发生的大致时间（年/月/日 周几 几时几分）；若内容未明确，请给出合理推断的具体时间。';
     return {
         systemPrompt: [
-            '你是剧情记忆助手。请阅读下面这轮对话，提取信息并总结。只输出总结本身，不要复述、不要添加任何解释或客套。严格按照以下格式逐行输出（某项信息未提及时写「无」）：',
+            '你是剧情记忆助手。请阅读下面这轮对话，提取信息并总结。只输出总结本身，不要复述、不要添加任何解释或客套。',
             '',
-            '【时间】剧情中的具体时间（年/月/日 周几 几时几分）',
+            timeAnchor,
+            '',
+            '严格按照以下格式逐行输出（除【时间】外，某项信息未提及时写「无」）：',
+            '',
+            '【时间】剧情中的具体时间（年/月/日 周几 几时几分，必须给出具体时间，不要写「无」）',
             '【天气】天气情况',
             '【在场人物】有哪些人在场',
             '【地点】发生地点/场景',
@@ -149,20 +155,33 @@ function buildSummaryPrompt(userMsg, charMsg) {
     };
 }
 
+// 从总结结果里解析【时间】行，作为剧情时间锚点
+function extractStoryTime(text) {
+    const m = String(text).match(/【时间】\s*([^\n]+)/);
+    if (m && m[1]) {
+        const t = m[1].trim();
+        if (t && t !== '无') return t;
+    }
+    return '';
+}
+
 // 把一组记忆合并成一段文本（带序号），用于晋级时“清空并总结”
 function mergeEntries(arr) {
     return arr.map((m, i) => `(${i + 1}) ${m.text}`).join('\n\n');
 }
 
-// 记忆三档晋级：短期满 10 → 合并入长期并清空短期；长期满 10 → 合并入永久并清空长期；永久只增不删
+// 记忆三档晋级：短期满 10 → 合并入长期并清空短期；长期满 10 → 合并入永久并清空长期
 function promoteMemories() {
     if (settings.memories.length >= TIER_LIMIT) {
-        settings.longMemories.push({ id: uid(), time: Date.now(), text: mergeEntries(settings.memories) });
+        // 合并后的条目沿用「最新一条」的剧情时间，保持时间线可读
+        const lastStoryTime = settings.memories[settings.memories.length - 1].storyTime || settings.storyTime || '';
+        settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, text: mergeEntries(settings.memories) });
         settings.memories = [];
         saveSettings();
     }
     if (settings.longMemories.length >= TIER_LIMIT) {
-        settings.permanentMemories.push({ id: uid(), time: Date.now(), text: mergeEntries(settings.longMemories) });
+        const lastStoryTime = settings.longMemories[settings.longMemories.length - 1].storyTime || settings.storyTime || '';
+        settings.permanentMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, text: mergeEntries(settings.longMemories) });
         settings.longMemories = [];
         saveSettings();
     }
@@ -186,11 +205,14 @@ async function summarizeLastRound() {
 
     isSummarizing = true;
     try {
-        const { systemPrompt, prompt } = buildSummaryPrompt(userMsg, last);
+        const { systemPrompt, prompt } = buildSummaryPrompt(userMsg, last, settings.storyTime);
         const result = await generateRaw({ prompt, systemPrompt });
         if (result && result.trim()) {
+            // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
+            const newStoryTime = extractStoryTime(result) || settings.storyTime;
+            settings.storyTime = newStoryTime;
             // 只追加，绝不覆盖或删除已有记忆
-            settings.memories.push({ id: uid(), time: Date.now(), text: result.trim() });
+            settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, text: result.trim() });
             promoteMemories();
             saveSettings();
             updatePromptInjection();
@@ -255,18 +277,29 @@ function memoryItemHtml(m, deletable, tier) {
     const del = deletable
         ? `<button type="button" class="st-sd__memory-del" data-id="${m.id}" data-tier="${tier}" title="删除此条记忆">删除</button>`
         : '';
+    // 优先显示剧情时间（时间线连贯），真实记录时间放在 tooltip 里备查
+    const timeLabel = m.storyTime ? escapeHtml(m.storyTime) : escapeHtml(fmtTime(m.time));
+    const wallTitle = m.storyTime ? ` title="记录于 ${fmtTime(m.time)}"` : '';
     return `<div class="st-sd__memory" data-id="${m.id}">
         <div class="st-sd__memory-head">
-            <span class="st-sd__memory-time">${escapeHtml(fmtTime(m.time))}</span>
+            <span class="st-sd__memory-time"${wallTitle}>${timeLabel}</span>
             ${del}
         </div>
         <pre class="st-sd__memory-text">${escapeHtml(m.text)}</pre>
     </div>`;
 }
 
+function renderStoryTime() {
+    const el = $('#st-serendipity .st-sd__story-time');
+    if (!el.length) return;
+    el.text(settings.storyTime ? ('当前剧情时间：' + settings.storyTime) : '剧情时间：待首次总结');
+}
+
 function renderMemories() {
     const list = $('#st-serendipity .st-sd__memory-list');
     if (!list.length) return;
+
+    renderStoryTime();
 
     const hasAny = settings.memories.length || settings.longMemories.length || settings.permanentMemories.length;
     if (!hasAny) {
@@ -286,10 +319,10 @@ function renderMemories() {
         html += [...settings.longMemories].reverse().map(m => memoryItemHtml(m, true, 'long')).join('');
         html += '</details>';
     }
-    // 永久记忆：可折叠，默认收起，只增不删
+    // 永久记忆：可折叠，默认收起，也可手动删除
     if (settings.permanentMemories.length) {
-        html += `<details class="st-sd__tier"><summary class="st-sd__tier-title">永久记忆（只增不删）</summary>`;
-        html += [...settings.permanentMemories].reverse().map(m => memoryItemHtml(m, false, 'permanent')).join('');
+        html += `<details class="st-sd__tier"><summary class="st-sd__tier-title">永久记忆（${settings.permanentMemories.length}）</summary>`;
+        html += [...settings.permanentMemories].reverse().map(m => memoryItemHtml(m, true, 'permanent')).join('');
         html += '</details>';
     }
     list.html(html);
@@ -430,56 +463,21 @@ function renderCharBinding() {
 
 // ---------------- 图标 ----------------
 const ICONS = {
-    menu: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`,
     close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
 };
 
-// ---------------- 顶部按钮 ----------------
-function buildTopBarButton() {
-    if ($('#st-serendipity-button').length) return;
-    const btn = $(`<div id="st-serendipity-button" class="st-sd" title="Serendipity（可拖动）">${ICONS.menu}</div>`);
-    btn.appendTo('body');
-    initButtonDrag(btn);
-}
-
-function initButtonDrag(btn) {
-    const clampBtn = (x, y) => {
-        const w = btn[0].offsetWidth || 42;
-        const h = btn[0].offsetHeight || 42;
-        return {
-            left: Math.min(Math.max(0, x), window.innerWidth - w),
-            top: Math.min(Math.max(0, y), window.innerHeight - h),
-        };
-    };
-    if (globalSettings.btnLeft != null && globalSettings.btnTop != null) {
-        const p = clampBtn(globalSettings.btnLeft, globalSettings.btnTop);
-        btn.css({ left: p.left + 'px', top: p.top + 'px', right: 'auto' });
-    }
-    let drag = null;
-    btn.on('pointerdown', (e) => {
-        const r = btn[0].getBoundingClientRect();
-        drag = { sx: e.clientX, sy: e.clientY, left: r.left, top: r.top, active: false };
-    });
-    $(document).on('pointermove.st-sd-btn', (e) => {
-        if (!drag) return;
-        const dx = e.clientX - drag.sx;
-        const dy = e.clientY - drag.sy;
-        if (!drag.active && Math.hypot(dx, dy) < 6) return;
-        drag.active = true;
-        const p = clampBtn(drag.left + dx, drag.top + dy);
-        btn.css({ right: 'auto', left: p.left + 'px', top: p.top + 'px' });
-    });
-    $(document).on('pointerup.st-sd-btn', () => {
-        if (!drag) return;
-        if (drag.active) {
-            globalSettings.btnLeft = parseFloat(btn.css('left'));
-            globalSettings.btnTop = parseFloat(btn.css('top'));
-            saveSettings();
-        } else {
-            togglePanel(); // 单击（未拖动）→ 打开/关闭面板
-        }
-        drag = null;
-    });
+// ---------------- 扩展菜单入口 ----------------
+// 把入口挂到酒馆的「扩展」菜单（#extensionsMenu，即 wand 菜单），替代悬浮球，不遮挡聊天区
+function buildMenuButton() {
+    if ($('#st-serendipity-menu-button').length) return;
+    const btn = $(`
+        <div id="st-serendipity-menu-button" class="list-group-item flex-container flexGap5 interactable"
+             title="Serendipity：剧情记忆 + 屏蔽词 + 指令" tabindex="0" role="listitem">
+            <div class="fa-fw fa-solid fa-book-open extensionsMenuExtensionButton"></div>
+            <span>Serendipity</span>
+        </div>`);
+    btn.on('click', () => togglePanel());
+    $('#extensionsMenu').append(btn);
 }
 
 // ---------------- 面板 ----------------
@@ -507,8 +505,9 @@ function buildPanel() {
           <button type="button" class="st-sd__summarize">立即总结</button>
           <button type="button" class="st-sd__export">导出</button>
         </div>
+        <div class="st-sd__story-time"></div>
         <div class="st-sd__memory-list"></div>
-        <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期，长期满 ${TIER_LIMIT} 条合并入永久（永久只增不删）。记忆会注入正文，防止模型失忆。</div>
+        <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期，长期满 ${TIER_LIMIT} 条合并入永久。记忆会注入正文，防止模型失忆；剧情时间由 AI 每轮接力推进。</div>
       </div>
 
       <div class="st-sd__pane" data-pane="censor" style="display:none">
@@ -587,10 +586,11 @@ function bindPanelEvents() {
     panel.find('.st-sd__add-word').on('click', addWord);
     panel.find('.st-sd__word-input').on('keydown', (e) => { if (e.key === 'Enter') addWord(); });
 
-    // 事件委托：删除记忆（永久记忆无删除按钮）/ 删除屏蔽词
+    // 事件委托：删除记忆 / 删除屏蔽词
     panel.on('click', '.st-sd__memory-del', function () {
         const id = $(this).data('id');
         const tier = $(this).data('tier');
+        if (tier === 'permanent' && !confirm('确定删除这条永久记忆？此操作不可恢复。')) return;
         if (tier === 'short') settings.memories = settings.memories.filter(m => m.id !== id);
         else if (tier === 'long') settings.longMemories = settings.longMemories.filter(m => m.id !== id);
         else if (tier === 'permanent') settings.permanentMemories = settings.permanentMemories.filter(m => m.id !== id);
@@ -686,7 +686,7 @@ function togglePanel(force) {
 jQuery(async () => {
     globalSettings = loadSettings();
     activateCharacter();
-    buildTopBarButton();
+    buildMenuButton();
     buildPanel();
 
     // 初始屏蔽 + 注入正文提示
