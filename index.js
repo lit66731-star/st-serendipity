@@ -47,8 +47,7 @@ let isInjecting = false;     // 世界书注入进行中标记（防连点/并�
 function freshCharSettings() {
     return {
         memories: [],           // 短期记忆（详细总结）[{ id, time, text }]
-        longMemories: [],       // 长期记忆（短期满 10 合并而来）
-        permanentMemories: [],  // 永久记忆（长期满 10 合并而来，默认只增，可手动删）
+        longMemories: [],       // 长期记忆（短期满 10 合并而来；满 10 提醒归档到世界书）
         memoryEnabled: true,    // 自动记忆开关
         blockedWords: [],       // 屏蔽词列表
         censorEnabled: true,    // 屏蔽开关
@@ -59,7 +58,7 @@ function freshCharSettings() {
         storyLocation: '',      // 当前地点
         worldState: [],         // 世界状态列表 [{ id, cat: '年龄'|'好感'|'关系'|'物品'|'日程', text }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
-        worldInjectedCount: 0,  // 已注入世界书的「第 x 次总结」计数
+        worldReminderShown: false, // 长期记忆满 10 的归档提醒是否已弹过（归档后重置）
         worldBook: '',          // 用户选择要注入的世界书名（不一定用角色绑定的那本）
     };
 }
@@ -67,9 +66,14 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'permanentMemories', 'blockedWords', 'instructions', 'worldState', 'timeline']) {
+    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'timeline']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
+    // 迁移：旧版「永久记忆」档已取消，原永久记忆并入长期记忆（随后一起归档到世界书）
+    if (Array.isArray(cs.permanentMemories) && cs.permanentMemories.length) {
+        cs.longMemories = [...cs.permanentMemories, ...cs.longMemories];
+    }
+    delete cs.permanentMemories;
     cs.worldState = cs.worldState.filter(e => e && typeof e.cat === 'string' && typeof e.text === 'string').map(e => ({ id: e.id || uid(), cat: e.cat, text: e.text }));
     cs.timeline = cs.timeline.filter(e => e && e.id).map(e => ({
         id: e.id,
@@ -85,7 +89,7 @@ function normalizeCharSettings(cs) {
     else cs.storyDay = Number(cs.storyDay);
     if (typeof cs.storyPeriod !== 'string') cs.storyPeriod = '';
     if (typeof cs.storyLocation !== 'string') cs.storyLocation = '';
-    cs.worldInjectedCount = Number(cs.worldInjectedCount) || 0;
+    if (cs.worldReminderShown === undefined) cs.worldReminderShown = false;
     if (typeof cs.worldBook !== 'string') cs.worldBook = '';
     cs.instructions = cs.instructions.map(it => {
         if (typeof it === 'string') return { id: uid(), text: it, enabled: true };
@@ -145,10 +149,11 @@ function loadSettings() {
 
     // 旧版扁平结构 → 新版按角色分组（迁移一次，挂到当前角色名下）
     if (s.chars === undefined) {
+        const oldLong = Array.isArray(s.longMemories) ? s.longMemories : [];
+        const oldPerm = Array.isArray(s.permanentMemories) ? s.permanentMemories : [];
         const migrated = {
             memories: Array.isArray(s.memories) ? s.memories : [],
-            longMemories: Array.isArray(s.longMemories) ? s.longMemories : [],
-            permanentMemories: Array.isArray(s.permanentMemories) ? s.permanentMemories : [],
+            longMemories: [...oldPerm, ...oldLong], // 旧永久记忆并入长期
             memoryEnabled: s.memoryEnabled !== false,
             blockedWords: Array.isArray(s.blockedWords) ? s.blockedWords : [],
             censorEnabled: s.censorEnabled !== false,
@@ -309,17 +314,17 @@ function mergeEntries(arr) {
 
 // 按 id 在三档记忆里查找某条记忆（用于编辑/保存）
 function findMemory(id) {
-    for (const arr of [settings.memories, settings.longMemories, settings.permanentMemories]) {
+    for (const arr of [settings.memories, settings.longMemories]) {
         const m = arr.find(x => x.id === id);
         if (m) return m;
     }
     return null;
 }
 
-// 记忆三档晋级：短期满 10 → 合并入长期并清空短期；长期满 10 → 合并入永久并清空长期
+// 记忆晋级：短期满 10 → 合并入长期并清空短期（长期不再自动晋级，满 10 时提醒归档到世界书）
 // 返回本次是否触发了晋级，供总结弹窗提示
 function promoteMemories() {
-    const promoted = { toLong: false, toPermanent: false };
+    let toLong = false;
     if (settings.memories.length >= TIER_LIMIT) {
         // 合并后的条目沿用「最新一条」的剧情时间与时间轴，保持时间线可读
         const last = settings.memories[settings.memories.length - 1];
@@ -327,17 +332,9 @@ function promoteMemories() {
         settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, text: mergeEntries(settings.memories) });
         settings.memories = [];
         saveSettings();
-        promoted.toLong = true;
+        toLong = true;
     }
-    if (settings.longMemories.length >= TIER_LIMIT) {
-        const last = settings.longMemories[settings.longMemories.length - 1];
-        const lastStoryTime = last.storyTime || settings.storyTime || '';
-        settings.permanentMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, text: mergeEntries(settings.longMemories) });
-        settings.longMemories = [];
-        saveSettings();
-        promoted.toPermanent = true;
-    }
-    return promoted;
+    return { toLong };
 }
 
 async function summarizeLastRound() {
@@ -392,9 +389,16 @@ async function summarizeLastRound() {
             let msg = '本轮记忆总结成功';
             const parts = [];
             if (promoted.toLong) parts.push('短期已满十轮，自动放入长期记忆');
-            if (promoted.toPermanent) parts.push('长期已满十轮，自动放入永久记忆');
             if (parts.length) msg += '；' + parts.join('；');
             toastr.success(msg);
+
+            // 长期记忆满 10 条：提醒归档到世界书（只提醒一次，归档后重置）
+            if (settings.longMemories.length >= TIER_LIMIT && !settings.worldReminderShown) {
+                settings.worldReminderShown = true;
+                saveSettings();
+                toastr.warning('长期记忆已满 ' + TIER_LIMIT + ' 条，建议点「注入世界书」归档并清空长期记忆，避免正文越塞越长', undefined, { timeOut: 8000 });
+            }
+            updateInjectHint();
         }
     } catch (e) {
         console.error('[Serendipity] 记忆总结失败：', e);
@@ -407,9 +411,6 @@ async function summarizeLastRound() {
 // ---------------- 记忆注入正文（防失忆） ----------------
 function buildMemoryBlock() {
     const parts = [];
-    if (settings.permanentMemories.length) {
-        parts.push('【永久记忆】\n' + settings.permanentMemories.map(m => m.text).join('\n\n'));
-    }
     if (settings.longMemories.length) {
         parts.push('【长期记忆】\n' + settings.longMemories.map(m => m.text).join('\n\n'));
     }
@@ -490,11 +491,11 @@ function isWorldBookActive(name) {
     return false;
 }
 
-// 把当前剧情记忆作为一条新条目注入到用户选择的世界书里（常驻、无关键词、扫描深度 1、绑定角色名、创作者注释匹配、系统插入深度@4）
+// 把长期记忆归档到用户选择的世界书：合并进同一条常驻条目（避免世界书越攒越多条），归档后清空长期记忆
 async function injectToWorldBook() {
     if (isInjecting) return; // 上一次注入还没结束，忽略重复点击
     isInjecting = true;
-    toastr.info('正在注入世界书…', undefined, { timeOut: 1500 });
+    toastr.info('正在归档长期记忆到世界书…', undefined, { timeOut: 1500 });
     try {
         activateCharacter();
         const worldName = getSelectedWorldBook();
@@ -502,9 +503,9 @@ async function injectToWorldBook() {
             toastr.warning('请先在上方选择一个世界书');
             return;
         }
-        const memBlock = buildMemoryBlock().trim();
+        const memBlock = settings.longMemories.length ? mergeEntries(settings.longMemories).trim() : '';
         if (!memBlock) {
-            toastr.warning('当前还没有记忆，先积累一些记忆再注入');
+            toastr.warning('当前还没有长期记忆，先积累一些记忆再归档');
             return;
         }
         const data = await loadWorldInfo(worldName);
@@ -512,14 +513,20 @@ async function injectToWorldBook() {
             toastr.error('读取世界书「' + worldName + '」失败，可能已被删除，请重新选择');
             return;
         }
-        settings.worldInjectedCount = (settings.worldInjectedCount || 0) + 1;
-        const entry = createWorldInfoEntry(worldName, data);
+        // 找到既有的归档条目并追加，找不到才新建一条
+        const MARK = '[Serendipity] 剧情记忆归档';
+        let entry = data.entries.find(e => e && e.comment === MARK);
         if (!entry) {
-            toastr.error('在世界书中创建新条目失败');
-            return;
+            entry = createWorldInfoEntry(worldName, data);
+            if (!entry) {
+                toastr.error('在世界书中创建新条目失败');
+                return;
+            }
+            entry.comment = MARK;
+            entry.content = memBlock;
+        } else {
+            entry.content = entry.content ? entry.content + '\n\n' + memBlock : memBlock;
         }
-        entry.comment = '第' + settings.worldInjectedCount + '次总结';
-        entry.content = memBlock;
         entry.constant = true;    // 常驻：每轮都注入，不靠关键词触发
         entry.selective = false;
         entry.key = [];           // 不加关键词
@@ -532,11 +539,16 @@ async function injectToWorldBook() {
         entry.role = 0;                // 系统角色 [系统]（0 = SYSTEM）
         entry.depth = 4;               // 插入深度值 @4
         await saveWorldInfo(worldName, data, true);
+        // 归档后清空长期记忆（正文注入保持有界），并重置提醒
+        settings.longMemories = [];
+        settings.worldReminderShown = false;
         saveSettings();
+        updatePromptInjection();
+        renderMemories();
         if (isWorldBookActive(worldName)) {
-            toastr.success('已注入世界书「' + worldName + '」：第' + settings.worldInjectedCount + '次总结，请发一条消息测试是否读取成功');
+            toastr.success('已归档长期记忆到世界书「' + worldName + '」并清空长期记忆');
         } else {
-            toastr.warning('已写入世界书「' + worldName + '」（第' + settings.worldInjectedCount + '次总结），但这本世界书还没激活，模型暂时读不到。请到酒馆世界书界面把它设为全局世界书，或绑定到此角色。');
+            toastr.warning('已归档到世界书「' + worldName + '」，但这本世界书还没激活，模型暂时读不到。请到酒馆世界书界面把它设为全局世界书，或绑定到此角色。');
         }
     } catch (e) {
         console.error('[Serendipity] 注入世界书失败：', e);
@@ -558,6 +570,15 @@ function renderWorldSelect() {
         html += `<option value="${escapeHtml(n)}"${selected}>${escapeHtml(n)}</option>`;
     }
     selectEl.html(html);
+}
+
+// 长期记忆满 10 时高亮「注入世界书」按钮，提醒用户归档
+function updateInjectHint() {
+    const btn = $('#st-serendipity .st-sd__inject-world');
+    if (!btn.length) return;
+    const full = settings.longMemories.length >= TIER_LIMIT;
+    btn.toggleClass('st-sd__inject-world--hint', full);
+    btn.attr('title', full ? '长期记忆已满，建议归档到世界书' : '把长期记忆归档到世界书');
 }
 
 // ---------------- 记忆 UI ----------------
@@ -605,8 +626,9 @@ function renderMemories() {
 
     renderStoryTime();
     renderWorldSelect();
+    updateInjectHint();
 
-    const hasAny = settings.memories.length || settings.longMemories.length || settings.permanentMemories.length;
+    const hasAny = settings.memories.length || settings.longMemories.length;
     if (!hasAny) {
         list.html('<div class="st-sd__empty">暂无记忆，每轮对话结束后会自动总结叠加</div>');
         return;
@@ -618,16 +640,10 @@ function renderMemories() {
         html += `<div class="st-sd__tier-title st-sd__tier-title--static">短期记忆（${settings.memories.length}/${TIER_LIMIT}）</div>`;
         html += [...settings.memories].reverse().map(m => memoryItemHtml(m, true, 'short')).join('');
     }
-    // 长期记忆：可折叠，默认收起
+    // 长期记忆：可折叠，默认收起；满 10 条会提醒归档到世界书
     if (settings.longMemories.length) {
         html += `<details class="st-sd__tier"><summary class="st-sd__tier-title">长期记忆（${settings.longMemories.length}/${TIER_LIMIT}）</summary>`;
         html += [...settings.longMemories].reverse().map(m => memoryItemHtml(m, true, 'long')).join('');
-        html += '</details>';
-    }
-    // 永久记忆：可折叠，默认收起，也可手动删除
-    if (settings.permanentMemories.length) {
-        html += `<details class="st-sd__tier"><summary class="st-sd__tier-title">永久记忆（${settings.permanentMemories.length}）</summary>`;
-        html += [...settings.permanentMemories].reverse().map(m => memoryItemHtml(m, true, 'permanent')).join('');
         html += '</details>';
     }
     list.html(html);
@@ -750,7 +766,6 @@ function exportMemories() {
             lines.push('');
         }
     };
-    tier('永久记忆', settings.permanentMemories);
     tier('长期记忆', settings.longMemories);
     tier('短期记忆', settings.memories);
 
@@ -924,7 +939,7 @@ function buildPanel() {
         </div>
         <div class="st-sd__story-time"></div>
         <div class="st-sd__memory-list"></div>
-        <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期，长期满 ${TIER_LIMIT} 条合并入永久。记忆会注入正文，防止模型失忆；剧情时间由 AI 每轮接力推进。</div>
+        <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期；长期满 ${TIER_LIMIT} 条会提醒你「注入世界书」归档并清空。记忆会注入正文，防止模型失忆。</div>
       </div>
 
       <div class="st-sd__pane" data-pane="censor" style="display:none">
@@ -1077,10 +1092,8 @@ function bindPanelEvents() {
     panel.on('click', '.st-sd__memory-del', function () {
         const id = $(this).data('id');
         const tier = $(this).data('tier');
-        if (tier === 'permanent' && !confirm('确定删除这条永久记忆？此操作不可恢复。')) return;
         if (tier === 'short') settings.memories = settings.memories.filter(m => m.id !== id);
         else if (tier === 'long') settings.longMemories = settings.longMemories.filter(m => m.id !== id);
-        else if (tier === 'permanent') settings.permanentMemories = settings.permanentMemories.filter(m => m.id !== id);
         saveSettings();
         updatePromptInjection();
         renderMemories();
