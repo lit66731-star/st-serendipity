@@ -46,39 +46,6 @@ SillyTavern 第三方扩展：自动剧情记忆总结、结构化剧情时间�
 ### 角色卡绑定
 - 整插件（记忆、屏蔽词、指令）**按角色卡绑定**（以角色卡唯一标识 avatar 为准，同名卡也各自独立）：换到新角色卡时插件是干净的一套，切回旧角色卡则恢复该角色卡自己的记忆/屏蔽词/指令，互不串扰。
 
-## 安装
-
-> **为什么有时点了「安装」却没有任何提示、扩展列表里也没有？** 酒馆的「安装扩展」本质是在**服务器上执行 `git clone`**，如果你的服务器在国内（阿里云/腾讯云等）连不上 GitHub，就会静默失败（无弹窗、列表里不出现）。此时请用下面的 **Gitee 地址**（国内服务器推荐）或手动安装。
-
-### 手动安装（最可靠，推荐国内服务器）
-
-1. 把本仓库的 `index.js`、`manifest.json`、`style.css` 三个文件放到酒馆目录：
-   ```
-   public/scripts/extensions/third-party/serendipity/
-   ```
-   可在本机「Code → Download ZIP」下载后解压上传；服务器能访问 Git 时也可直接 clone（国内服务器用 **Gitee**）：
-   ```bash
-   cd /你的/SillyTavern/public/scripts/extensions/third-party/
-   # 国内服务器推荐 Gitee
-   git clone https://gitee.com/jiangzaizai/st-serendipity.git serendipity
-   # 备选 GitHub（国内可能连不上）
-   # git clone https://github.com/lit66731-star/st-serendipity.git serendipity
-   ```
-2. 重启酒馆（或刷新页面），在「扩展」列表勾选 **Serendipity** 启用。
-
-### 扩展面板安装
-
-1. 酒馆「扩展 → 安装扩展（Install Extension）」粘贴 URL，**国内服务器用 Gitee**：
-   ```
-   https://gitee.com/jiangzaizai/st-serendipity
-   ```
-   备选 GitHub（国内可能连不上）：
-   ```
-   https://github.com/lit66731-star/st-serendipity
-   ```
-   只粘贴一行，不要带空格、引号、换行或句尾标点，否则报 `Bad Request`。
-2. 扩展列表勾选 **Serendipity** 启用，刷新。
-
 ## 说明
 
 - 记忆总结每次会额外调用一次模型，消耗少量额度（这是「自动总结」的正常开销）。
