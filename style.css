@@ -170,12 +170,6 @@
     outline: none;
 }
 .st-sd__world-select:focus { border-color: #333333; }
-.st-sd__world-hint {
-    margin-bottom: 8px;
-    font-size: 11px;
-    color: #999999;
-    line-height: 1.5;
-}
 
 /* 开关 */
 .st-sd__switch {

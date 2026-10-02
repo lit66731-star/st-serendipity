@@ -349,7 +349,6 @@ async function injectToWorldBook() {
         const worldName = getSelectedWorldBook();
         if (!worldName) {
             toastr.warning('请先在上方选择一个世界书');
-            renderWorldHint();
             return;
         }
         const memBlock = buildMemoryBlock().trim();
@@ -374,10 +373,12 @@ async function injectToWorldBook() {
         entry.selective = false;
         entry.key = [];           // 不加关键词
         entry.keysecondary = [];
-        entry.scanDepth = 1;      // 注入时直接把扫描深度改为 1
+        entry.scanDepth = 1;                    // 注入时直接把扫描深度改为 1
+        entry.matchCreatorNotes = true;          // 额外匹配来源：创作者注释
+        entry.characterFilterNames = [currentCharName()]; // 绑定到当前角色（按名字）
+        entry.characterFilterExclude = false;
         await saveWorldInfo(worldName, data, true);
         saveSettings();
-        renderWorldHint();
         if (isWorldBookActive(worldName)) {
             toastr.success('已注入世界书「' + worldName + '」：第' + settings.worldInjectedCount + '次总结，请发一条消息测试是否读取成功');
         } else {
@@ -403,22 +404,6 @@ function renderWorldSelect() {
         html += `<option value="${escapeHtml(n)}"${selected}>${escapeHtml(n)}</option>`;
     }
     selectEl.html(html);
-}
-
-// 更新世界书注入区提示
-function renderWorldHint() {
-    const el = $('#st-serendipity .st-sd__world-hint');
-    if (!el.length) return;
-    const worldName = getSelectedWorldBook();
-    if (worldName) {
-        if (isWorldBookActive(worldName)) {
-            el.text('已选择世界书「' + worldName + '」，且已激活（模型会读到）。点击「注入世界书」写入第' + ((settings.worldInjectedCount || 0) + 1) + '次总结（常驻、无关键词）。');
-        } else {
-            el.text('已选择世界书「' + worldName + '」，但还没激活——请到酒馆「世界书」把它设为全局世界书，或绑定到此角色，否则写入的记忆模型读不到。');
-        }
-    } else {
-        el.text('请先选择一个世界书，再点击「注入世界书」把当前记忆写入；注入后请发一条消息测试 AI 是否读取成功。');
-    }
 }
 
 // ---------------- 记忆 UI ----------------
@@ -466,7 +451,6 @@ function renderMemories() {
 
     renderStoryTime();
     renderWorldSelect();
-    renderWorldHint();
 
     const hasAny = settings.memories.length || settings.longMemories.length || settings.permanentMemories.length;
     if (!hasAny) {
@@ -678,7 +662,6 @@ function buildPanel() {
         <div class="st-sd__world-row">
           <button type="button" class="st-sd__inject-world">注入世界书</button>
         </div>
-        <div class="st-sd__world-hint"></div>
         <div class="st-sd__story-time"></div>
         <div class="st-sd__memory-list"></div>
         <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期，长期满 ${TIER_LIMIT} 条合并入永久。记忆会注入正文，防止模型失忆；剧情时间由 AI 每轮接力推进。</div>
@@ -748,7 +731,6 @@ function bindPanelEvents() {
     panel.on('change', '.st-sd__world-select', function () {
         settings.worldBook = this.value || '';
         saveSettings();
-        renderWorldHint();
     });
 
     // 添加屏蔽词
