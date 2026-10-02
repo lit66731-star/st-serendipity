@@ -10,7 +10,7 @@ import {
     setExtensionPrompt,
     extension_prompt_types,
 } from '../../../../script.js';
-import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList } from '../../../world-info.js';
+import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
 
@@ -327,6 +327,18 @@ function getSelectedWorldBook() {
     return typeof settings.worldBook === 'string' ? settings.worldBook.trim() : '';
 }
 
+// 判断这本世界书当前是否已「激活」（设为全局世界书，或绑定为当前角色的主要世界书）。
+// 只有激活的世界书，酒馆才会把里面的条目拼进发给模型的 prompt，否则模型读不到。
+function isWorldBookActive(name) {
+    if (!name) return false;
+    if (Array.isArray(selected_world_info) && selected_world_info.includes(name)) return true;
+    if (this_chid !== undefined && characters && characters[this_chid]) {
+        const w = characters[this_chid].data?.extensions?.world;
+        if (typeof w === 'string' && w === name) return true;
+    }
+    return false;
+}
+
 // 把当前剧情记忆作为一条新条目注入到用户选择的世界书里（常驻、无关键词、扫描深度 1）
 async function injectToWorldBook() {
     if (isInjecting) return; // 上一次注入还没结束，忽略重复点击
@@ -366,7 +378,11 @@ async function injectToWorldBook() {
         await saveWorldInfo(worldName, data, true);
         saveSettings();
         renderWorldHint();
-        toastr.success('已注入世界书「' + worldName + '」：第' + settings.worldInjectedCount + '次总结，请发一条消息测试是否读取成功');
+        if (isWorldBookActive(worldName)) {
+            toastr.success('已注入世界书「' + worldName + '」：第' + settings.worldInjectedCount + '次总结，请发一条消息测试是否读取成功');
+        } else {
+            toastr.warning('已写入世界书「' + worldName + '」（第' + settings.worldInjectedCount + '次总结），但这本世界书还没激活，模型暂时读不到。请到酒馆世界书界面把它设为全局世界书，或绑定到此角色。');
+        }
     } catch (e) {
         console.error('[Serendipity] 注入世界书失败：', e);
         toastr.error('注入世界书失败' + (e && e.message ? '：' + e.message : ''));
@@ -395,7 +411,11 @@ function renderWorldHint() {
     if (!el.length) return;
     const worldName = getSelectedWorldBook();
     if (worldName) {
-        el.text('已选择世界书「' + worldName + '」。点击「注入世界书」写入第' + ((settings.worldInjectedCount || 0) + 1) + '次总结（常驻、无关键词、扫描深度 1），注入后请发一条消息测试是否读取成功。');
+        if (isWorldBookActive(worldName)) {
+            el.text('已选择世界书「' + worldName + '」，且已激活（模型会读到）。点击「注入世界书」写入第' + ((settings.worldInjectedCount || 0) + 1) + '次总结（常驻、无关键词）。');
+        } else {
+            el.text('已选择世界书「' + worldName + '」，但还没激活——请到酒馆「世界书」把它设为全局世界书，或绑定到此角色，否则写入的记忆模型读不到。');
+        }
     } else {
         el.text('请先选择一个世界书，再点击「注入世界书」把当前记忆写入；注入后请发一条消息测试 AI 是否读取成功。');
     }
