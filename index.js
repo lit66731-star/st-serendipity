@@ -58,6 +58,7 @@ function freshCharSettings() {
         storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
         storyLocation: '',      // 当前地点
         worldState: [],         // 世界状态列表 [{ id, cat: '年龄'|'好感'|'关系'|'物品'|'日程', text }]
+        timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         worldInjectedCount: 0,  // 已注入世界书的「第 x 次总结」计数
         worldBook: '',          // 用户选择要注入的世界书名（不一定用角色绑定的那本）
     };
@@ -66,10 +67,17 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'permanentMemories', 'blockedWords', 'instructions', 'worldState']) {
+    for (const key of ['memories', 'longMemories', 'permanentMemories', 'blockedWords', 'instructions', 'worldState', 'timeline']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
     cs.worldState = cs.worldState.filter(e => e && typeof e.cat === 'string' && typeof e.text === 'string').map(e => ({ id: e.id || uid(), cat: e.cat, text: e.text }));
+    cs.timeline = cs.timeline.filter(e => e && e.id).map(e => ({
+        id: e.id,
+        day: (e.day == null || isNaN(e.day)) ? null : Number(e.day),
+        time: typeof e.time === 'string' ? e.time : '',
+        location: typeof e.location === 'string' ? e.location : '',
+        event: typeof e.event === 'string' ? e.event : '',
+    }));
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
@@ -209,7 +217,7 @@ function buildSummaryPrompt(userMsg, charMsg, storyTime) {
             '【约定/承诺】新产生的约定或承诺',
             '【已完成约定】已完成的约定或承诺',
             '【详细总结】本段对话的详细总结',
-            '【时间轴】本段结束时的剧情时间，严格写成「第X天|时段|地点」三段（X 是从故事开始算的天数，如「第27天|傍晚|北境营地」；地点未知写「无」）',
+            '【时间轴】本段结束时的剧情时间，严格写成「第X天|时段|地点|本段重要事情」四段（X 是从故事开始算的天数，如「第27天|傍晚|北境营地|与斥候队长会面」；地点或事情未知写「无」）',
             '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：年龄/好感/关系/物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」）',
         ].join('\n'),
         prompt: userMsg.name + '：' + userMsg.mes + '\n\n' + charMsg.name + '：' + charMsg.mes,
@@ -226,7 +234,7 @@ function extractStoryTime(text) {
     return '';
 }
 
-// 从总结结果里解析【时间轴】行 → { day, period, location }（解析不出返回 null）
+// 从总结结果里解析【时间轴】行 → { day, period, location, event }（解析不出返回 null）
 function extractTimeAxis(text) {
     const m = String(text).match(/【时间轴】\s*([^\n]+)/);
     if (!m || !m[1]) return null;
@@ -237,8 +245,17 @@ function extractTimeAxis(text) {
     const day = dayM ? parseInt(dayM[1], 10) : null;
     const period = (parts[1] && parts[1] !== '无') ? parts[1] : '';
     const location = (parts[2] && parts[2] !== '无') ? parts[2] : '';
-    if (day == null && !period && !location) return null;
-    return { day, period, location, raw };
+    const event = (parts[3] && parts[3] !== '无') ? parts[3] : '';
+    if (day == null && !period && !location && !event) return null;
+    return { day, period, location, event, raw };
+}
+
+// 时间线列表：叠加新场景（第X天/时段/地点/重要事情）；连续完全重复的场景不重复叠加
+function pushTimelineEntry(day, time, location, event) {
+    if (day == null && !time && !location && !event) return;
+    const last = settings.timeline[settings.timeline.length - 1];
+    if (last && last.day === day && last.time === time && last.location === location && last.event === event) return;
+    settings.timeline.push({ id: uid(), day, time, location, event });
 }
 
 // 把世界状态按类别分组（供注入与展示复用）
@@ -354,6 +371,8 @@ async function summarizeLastRound() {
                 if (axis.day != null) settings.storyDay = axis.day;
                 if (axis.period) settings.storyPeriod = axis.period;
                 if (axis.location) settings.storyLocation = axis.location;
+                // 时间轴列表：叠加本段场景（第X天/时段/地点/重要事情）
+                pushTimelineEntry(axis.day, axis.period, axis.location, axis.event);
             }
             // 世界状态：解析并按类别快照合并（某类别无输出则保留原样）
             const wsEntries = extractWorldState(result);
@@ -615,7 +634,9 @@ function renderMemories() {
 }
 
 // ---------------- 时间轴 UI ----------------
-// 当前锚点 + 场景时间线（从记忆条目里提取 storyDay，去重排序）
+// 当前锚点 + 时间线列表（第X天/时段/地点/重要事情，不断叠加，可编辑/删除）
+let timelineEditingId = null;
+
 function renderTimeAxis() {
     const cur = $('#st-serendipity .st-sd__axis-current');
     if (cur.length) {
@@ -627,28 +648,33 @@ function renderTimeAxis() {
     }
     const list = $('#st-serendipity .st-sd__axis-list');
     if (list.length) {
-        const seen = new Set();
-        const anchors = [];
-        const collect = (arr) => {
-            for (const m of arr) {
-                if (m.storyDay == null) continue;
-                const key = m.storyDay + '|' + (m.storyPeriod || '') + '|' + (m.storyLocation || '');
-                if (seen.has(key)) continue;
-                seen.add(key);
-                anchors.push(m);
-            }
-        };
-        collect(settings.permanentMemories);
-        collect(settings.longMemories);
-        collect(settings.memories);
-        anchors.sort((a, b) => a.storyDay - b.storyDay);
-        if (!anchors.length) {
-            list.html('<div class="st-sd__empty">暂无时间轴，总结后自动生成场景锚点</div>');
+        const entries = settings.timeline.slice().sort((a, b) =>
+            (a.day == null ? 1 : 0) - (b.day == null ? 1 : 0) || (a.day || 0) - (b.day || 0)
+        );
+        if (!entries.length) {
+            list.html('<div class="st-sd__empty">暂无时间轴，总结后自动叠加场景（第X天 / 时段 / 地点 / 重要事情）</div>');
         } else {
-            list.html(anchors.map(m => {
-                const period = m.storyPeriod ? ' · ' + escapeHtml(m.storyPeriod) : '';
-                const loc = m.storyLocation ? ' · ' + escapeHtml(m.storyLocation) : '';
-                return '<div class="st-sd__axis-item"><span class="st-sd__axis-item-day">第' + m.storyDay + '天</span>' + period + loc + '</div>';
+            list.html(entries.map(e => {
+                if (e.id === timelineEditingId) {
+                    return '<div class="st-sd__tl-item st-sd__tl-item--edit" data-id="' + e.id + '">'
+                        + '<div class="st-sd__tl-edit-row">'
+                        + '<input type="number" class="st-sd__tl-e-day" placeholder="第几天" min="0" value="' + (e.day != null ? e.day : '') + '">'
+                        + '<input type="text" class="st-sd__tl-e-time" placeholder="时段" value="' + escapeHtml(e.time) + '">'
+                        + '<input type="text" class="st-sd__tl-e-loc" placeholder="地点" value="' + escapeHtml(e.location) + '">'
+                        + '</div>'
+                        + '<input type="text" class="st-sd__tl-e-event" placeholder="重要事情" value="' + escapeHtml(e.event) + '">'
+                        + '<div class="st-sd__tl-edit-actions"><button type="button" class="st-sd__tl-save" data-id="' + e.id + '">保存</button><button type="button" class="st-sd__tl-cancel">取消</button></div>'
+                        + '</div>';
+                }
+                return '<div class="st-sd__tl-item" data-id="' + e.id + '">'
+                    + '<div class="st-sd__tl-head">'
+                    + '<span class="st-sd__tl-day">' + (e.day != null ? '第' + e.day + '天' : '—') + '</span>'
+                    + (e.time ? '<span class="st-sd__tl-time">' + escapeHtml(e.time) + '</span>' : '')
+                    + (e.location ? '<span class="st-sd__tl-loc">' + escapeHtml(e.location) + '</span>' : '')
+                    + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__tl-edit" data-id="' + e.id + '">编辑</button><button type="button" class="st-sd__tl-del" data-id="' + e.id + '">删除</button></span>'
+                    + '</div>'
+                    + (e.event ? '<div class="st-sd__tl-event">' + escapeHtml(e.event) + '</div>' : '')
+                    + '</div>';
             }).join(''));
         }
     }
@@ -937,7 +963,7 @@ function buildPanel() {
           <input type="text" class="st-sd__axis-loc" placeholder="地点">
           <button type="button" class="st-sd__axis-save">设定</button>
         </div>
-        <div class="st-sd__hint">手动设定时间轴锚点（第X天 + 时段 + 地点），下次总结会从这里接力推进；相对时间词（昨天/前天…）会自动换算成第X天并提示核对。</div>
+        <div class="st-sd__hint">手动设定时间轴锚点（第X天 + 时段 + 地点），下次总结从这里接力推进。下方时间线按「第X天 / 时段 / 地点 / 重要事情」不断叠加，可编辑/删除。</div>
         <div class="st-sd__axis-hints"></div>
         <div class="st-sd__axis-list"></div>
       </div>
@@ -1165,6 +1191,38 @@ function bindPanelEvents() {
         saveSettings();
         updatePromptInjection();
         renderWorldState();
+    });
+
+    // 时间线列表：编辑/删除/保存
+    panel.on('click', '.st-sd__tl-edit', function () {
+        timelineEditingId = String($(this).data('id'));
+        renderTimeAxis();
+        const inp = panel.find('.st-sd__tl-e-event');
+        if (inp.length) inp.focus();
+    });
+    panel.on('click', '.st-sd__tl-cancel', function () {
+        timelineEditingId = null;
+        renderTimeAxis();
+    });
+    panel.on('click', '.st-sd__tl-save', function () {
+        const id = String($(this).data('id'));
+        const e = settings.timeline.find(x => x.id === id);
+        if (!e) { timelineEditingId = null; renderTimeAxis(); return; }
+        const dayVal = parseInt(panel.find('.st-sd__tl-e-day').val(), 10);
+        e.day = isNaN(dayVal) ? null : dayVal;
+        e.time = panel.find('.st-sd__tl-e-time').val().trim();
+        e.location = panel.find('.st-sd__tl-e-loc').val().trim();
+        e.event = panel.find('.st-sd__tl-e-event').val().trim();
+        timelineEditingId = null;
+        saveSettings();
+        renderTimeAxis();
+        toastr.success('已保存');
+    });
+    panel.on('click', '.st-sd__tl-del', function () {
+        const id = String($(this).data('id'));
+        settings.timeline = settings.timeline.filter(x => x.id !== id);
+        saveSettings();
+        renderTimeAxis();
     });
 }
 
