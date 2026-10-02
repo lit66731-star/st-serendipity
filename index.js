@@ -10,6 +10,7 @@ import {
     setExtensionPrompt,
     extension_prompt_types,
 } from '../../../../script.js';
+import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
 
@@ -25,6 +26,7 @@ let activeChar = '';         // 当前绑定角色的显示名
 let activeCharKey = '';      // 当前绑定角色的唯一键（avatar，同名卡也唯一）
 let isSummarizing = false;
 let pendingMigration = null; // 旧版扁平数据迁移挂起（角色卡尚未加载完成时暂存）
+let editingId = null;        // 当前处于编辑态的记忆条目 id（null 表示无）
 
 // ---------------- 设置 ----------------
 // 每张角色卡独立的干净数据
@@ -38,6 +40,7 @@ function freshCharSettings() {
         censorEnabled: true,    // 屏蔽开关
         instructions: [],       // 指令列表（每轮生成都注入）
         storyTime: '',          // 当前剧情时间（AI 接力维护，每次总结时更新）
+        worldInjectedCount: 0,  // 已注入世界书的「第 x 次总结」计数
     };
 }
 
@@ -50,6 +53,7 @@ function normalizeCharSettings(cs) {
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
+    cs.worldInjectedCount = Number(cs.worldInjectedCount) || 0;
     cs.instructions = cs.instructions.map(it => {
         if (typeof it === 'string') return { id: uid(), text: it, enabled: true };
         if (it && typeof it === 'object' && typeof it.text === 'string') {
@@ -188,6 +192,15 @@ function mergeEntries(arr) {
     return arr.map((m, i) => `(${i + 1}) ${m.text}`).join('\n\n');
 }
 
+// 按 id 在三档记忆里查找某条记忆（用于编辑/保存）
+function findMemory(id) {
+    for (const arr of [settings.memories, settings.longMemories, settings.permanentMemories]) {
+        const m = arr.find(x => x.id === id);
+        if (m) return m;
+    }
+    return null;
+}
+
 // 记忆三档晋级：短期满 10 → 合并入长期并清空短期；长期满 10 → 合并入永久并清空长期
 // 返回本次是否触发了晋级，供总结弹窗提示
 function promoteMemories() {
@@ -305,18 +318,99 @@ function updatePromptInjection() {
     );
 }
 
+// ---------------- 世界书自动注入 ----------------
+// 读取当前角色卡绑定的主世界书名（未绑定返回空字符串）
+function getBoundWorldName() {
+    if (this_chid !== undefined && characters && characters[this_chid]) {
+        const w = characters[this_chid].data?.extensions?.world;
+        if (typeof w === 'string' && w.trim()) return w.trim();
+    }
+    return '';
+}
+
+// 把当前剧情记忆作为一条新条目注入到角色绑定的世界书里（常驻、无关键词、扫描深度 1）
+async function injectToWorldBook() {
+    activateCharacter();
+    const worldName = getBoundWorldName();
+    if (!worldName) {
+        toastr.warning('请先在世界书界面创建一个世界书并绑定到此角色，再将扫描深度改为 1');
+        renderWorldHint();
+        return;
+    }
+    const memBlock = buildMemoryBlock().trim();
+    if (!memBlock) {
+        toastr.warning('当前还没有记忆，先积累一些记忆再注入');
+        return;
+    }
+    try {
+        const data = await loadWorldInfo(worldName);
+        if (!data || typeof data !== 'object' || !data.entries) {
+            toastr.error('读取世界书「' + worldName + '」失败');
+            return;
+        }
+        settings.worldInjectedCount = (settings.worldInjectedCount || 0) + 1;
+        const entry = createWorldInfoEntry(worldName, data);
+        if (!entry) {
+            toastr.error('在世界书中创建新条目失败');
+            return;
+        }
+        entry.comment = '第' + settings.worldInjectedCount + '次总结';
+        entry.content = memBlock;
+        entry.constant = true;    // 常驻：每轮都注入，不靠关键词触发
+        entry.selective = false;
+        entry.key = [];           // 不加关键词
+        entry.keysecondary = [];
+        entry.depth = 1;          // 扫描深度 1
+        await saveWorldInfo(worldName, data, true);
+        saveSettings();
+        renderWorldHint();
+        toastr.success('已注入世界书「' + worldName + '」：第' + settings.worldInjectedCount + '次总结');
+    } catch (e) {
+        console.error('[Serendipity] 注入世界书失败：', e);
+        toastr.error('注入世界书失败');
+    }
+}
+
+// 更新世界书注入区提示（显示已绑定世界书，或引导绑定 + 扫描深度 1）
+function renderWorldHint() {
+    const el = $('#st-serendipity .st-sd__world-hint');
+    if (!el.length) return;
+    const worldName = getBoundWorldName();
+    if (worldName) {
+        el.text('已绑定世界书：' + worldName + '。点击「注入世界书」会把当前记忆作为一条新条目写入（第' + ((settings.worldInjectedCount || 0) + 1) + '次总结，常驻、无关键词、扫描深度 1）。');
+    } else {
+        el.text('提示：请先在世界书界面创建一个世界书并绑定到此角色，再将扫描深度改为 1，然后点击「注入世界书」。');
+    }
+}
+
 // ---------------- 记忆 UI ----------------
 function memoryItemHtml(m, deletable, tier) {
-    const del = deletable
-        ? `<button type="button" class="st-sd__memory-del" data-id="${m.id}" data-tier="${tier}" title="删除此条记忆">删除</button>`
-        : '';
     // 优先显示剧情时间（时间线连贯），真实记录时间放在 tooltip 里备查
     const timeLabel = m.storyTime ? escapeHtml(m.storyTime) : escapeHtml(fmtTime(m.time));
     const wallTitle = m.storyTime ? ` title="记录于 ${fmtTime(m.time)}"` : '';
+
+    if (m.id === editingId) {
+        // 编辑态：文本变为可编辑 textarea，操作区换成保存/取消
+        return `<div class="st-sd__memory is-editing" data-id="${m.id}">
+            <div class="st-sd__memory-head">
+                <span class="st-sd__memory-time"${wallTitle}>${timeLabel}</span>
+                <span class="st-sd__memory-actions">
+                    <button type="button" class="st-sd__memory-save" data-id="${m.id}" title="保存修改">保存</button>
+                    <button type="button" class="st-sd__memory-cancel" data-id="${m.id}" title="放弃修改">取消</button>
+                </span>
+            </div>
+            <textarea class="st-sd__memory-edit-text" spellcheck="false">${escapeHtml(m.text)}</textarea>
+        </div>`;
+    }
+
+    const edit = `<button type="button" class="st-sd__memory-edit" data-id="${m.id}" data-tier="${tier}" title="修改此条记忆">编辑</button>`;
+    const del = deletable
+        ? `<button type="button" class="st-sd__memory-del" data-id="${m.id}" data-tier="${tier}" title="删除此条记忆">删除</button>`
+        : '';
     return `<div class="st-sd__memory" data-id="${m.id}">
         <div class="st-sd__memory-head">
             <span class="st-sd__memory-time"${wallTitle}>${timeLabel}</span>
-            ${del}
+            <span class="st-sd__memory-actions">${edit}${del}</span>
         </div>
         <pre class="st-sd__memory-text">${escapeHtml(m.text)}</pre>
     </div>`;
@@ -333,6 +427,7 @@ function renderMemories() {
     if (!list.length) return;
 
     renderStoryTime();
+    renderWorldHint();
 
     const hasAny = settings.memories.length || settings.longMemories.length || settings.permanentMemories.length;
     if (!hasAny) {
@@ -538,6 +633,10 @@ function buildPanel() {
           <button type="button" class="st-sd__summarize">立即总结</button>
           <button type="button" class="st-sd__export">导出</button>
         </div>
+        <div class="st-sd__world-row">
+          <button type="button" class="st-sd__inject-world">注入世界书</button>
+        </div>
+        <div class="st-sd__world-hint"></div>
         <div class="st-sd__story-time"></div>
         <div class="st-sd__memory-list"></div>
         <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期，长期满 ${TIER_LIMIT} 条合并入永久。记忆会注入正文，防止模型失忆；剧情时间由 AI 每轮接力推进。</div>
@@ -601,6 +700,8 @@ function bindPanelEvents() {
     panel.find('.st-sd__summarize').on('click', () => summarizeLastRound());
     // 导出记忆
     panel.find('.st-sd__export').on('click', exportMemories);
+    // 注入世界书
+    panel.find('.st-sd__inject-world').on('click', injectToWorldBook);
 
     // 添加屏蔽词
     const addWord = () => {
@@ -618,6 +719,38 @@ function bindPanelEvents() {
     };
     panel.find('.st-sd__add-word').on('click', addWord);
     panel.find('.st-sd__word-input').on('keydown', (e) => { if (e.key === 'Enter') addWord(); });
+
+    // 进入编辑态
+    panel.on('click', '.st-sd__memory-edit', function () {
+        editingId = String($(this).data('id'));
+        renderMemories();
+        const ta = panel.find('.st-sd__memory-edit-text');
+        if (ta.length) {
+            ta.focus();
+            const v = ta.val();
+            ta[0].setSelectionRange(v.length, v.length);
+        }
+    });
+    // 取消编辑
+    panel.on('click', '.st-sd__memory-cancel', function () {
+        editingId = null;
+        renderMemories();
+    });
+    // 保存编辑
+    panel.on('click', '.st-sd__memory-save', function () {
+        const id = String($(this).data('id'));
+        const m = findMemory(id);
+        if (!m) { editingId = null; renderMemories(); return; }
+        const ta = panel.find('.st-sd__memory-edit-text');
+        const v = (ta.val() || '').trim();
+        if (!v) { toastr.warning('内容不能为空'); return; }
+        m.text = v;
+        editingId = null;
+        saveSettings();
+        updatePromptInjection();
+        renderMemories();
+        toastr.success('已保存修改');
+    });
 
     // 事件委托：删除记忆 / 删除屏蔽词
     panel.on('click', '.st-sd__memory-del', function () {
