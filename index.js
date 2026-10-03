@@ -1,6 +1,7 @@
 import { extension_settings } from '../../../extensions.js';
 import {
     chat,
+    chat_metadata,
     characters,
     this_chid,
     event_types,
@@ -128,12 +129,27 @@ function currentCharKey() {
     return '';
 }
 
+// 当前聊天的唯一标识（ST 会给每个聊天文件一个 chat_id）；取不到时退回空，退化为「按角色」存储
+function currentChatId() {
+    if (typeof chat_metadata === 'object' && chat_metadata && (chat_metadata.chat_id || chat_metadata.chatId)) {
+        return String(chat_metadata.chat_id || chat_metadata.chatId);
+    }
+    return '';
+}
+
+// 数据存储键：角色 + 聊天双维度，同一角色卡的不同聊天界面各自独立、互不串扰
+function currentDataKey() {
+    const ck = currentCharKey();
+    const cid = currentChatId();
+    return (ck && cid) ? (ck + '::' + cid) : ck;
+}
+
 function charData(key) {
     if (!globalSettings.chars[key]) globalSettings.chars[key] = freshCharSettings();
     return normalizeCharSettings(globalSettings.chars[key]);
 }
 
-// 切换到当前角色卡的数据（换角色即换一套干净/对应的数据）
+// 切换到当前角色卡 + 当前聊天的数据（换角色/换聊天即换一套干净/对应的数据）
 function activateCharacter() {
     activeChar = currentCharName();
     activeCharKey = currentCharKey();
@@ -149,7 +165,17 @@ function activateCharacter() {
         pendingMigration = null;
         saveSettings();
     }
-    settings = charData(activeCharKey);
+    // 旧版「按角色」存的数据 → 迁到「按角色+聊天」键下；仅当当前聊天有历史才迁，空的新对话不迁（避免旧记忆带进新对话）
+    const dataKey = currentDataKey();
+    if (dataKey && dataKey !== activeCharKey && !globalSettings.chars[dataKey] && globalSettings.chars[activeCharKey]) {
+        const hasHistory = Array.isArray(chat) && chat.some(m => m && typeof m.mes === 'string' && m.mes.trim() && !m.is_system);
+        if (hasHistory) {
+            globalSettings.chars[dataKey] = normalizeCharSettings(globalSettings.chars[activeCharKey]);
+            delete globalSettings.chars[activeCharKey];
+            saveSettings();
+        }
+    }
+    settings = charData(dataKey);
 }
 
 function loadSettings() {
@@ -1479,12 +1505,15 @@ jQuery(async () => {
             }
         }, 200);
     });
-    // 切换聊天/角色后：切换到该角色对应的数据；开启新对话（空聊天）时清空上一段聊天的剧情记录
+    // 切换聊天/角色后：切换到「该角色 + 该聊天」对应的数据（不同聊天界面各自独立）
     eventSource.on(event_types.CHAT_CHANGED, () => {
         setTimeout(() => {
             activateCharacter();
-            const msgs = Array.isArray(chat) ? chat.filter(m => m && typeof m.mes === 'string' && m.mes.trim() && !m.is_system) : [];
-            if (msgs.length <= 1) resetStoryRecords(); // 新对话几乎为空 → 视为新开一局
+            // 兜底：取不到 chat_id 时退化为「按角色」存储，此时用空聊天判断清空上一段记录
+            if (!currentChatId()) {
+                const msgs = Array.isArray(chat) ? chat.filter(m => m && typeof m.mes === 'string' && m.mes.trim() && !m.is_system) : [];
+                if (msgs.length <= 1) resetStoryRecords();
+            }
             saveSettings();
             updatePromptInjection();
             applyCensorAll();
