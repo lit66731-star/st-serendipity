@@ -434,6 +434,8 @@
 .st-sd__every-input { width: 64px; flex: 0 0 auto; text-align: center; }
 .st-sd__world-row { margin-bottom: 8px; }
 .st-sd__world-select { width: 100%; }
+.st-sd__vec-switch { margin-left: 10px; vertical-align: middle; }
+.st-sd__vec-label { margin-left: 8px; font-size: 12px; color: var(--sd-text-2); vertical-align: middle; }
 .st-sd__world-alert {
     display: none;
     background: var(--sd-warn-bg);

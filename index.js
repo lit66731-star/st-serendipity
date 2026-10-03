@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.28.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.29.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -346,6 +346,7 @@ function freshCharSettings() {
         worldReminderShown: false, // 长期记忆满 10 的归档提醒是否已弹过（归档后重置）
         worldBook: '',          // 用户选择要注入的世界书名（不一定用角色绑定的那本）
         archivedWorldBook: '',  // 上次归档到哪本世界书（用于「未激活」常驻黄条提醒）
+        archiveVectorized: false, // 归档条目是否标记 vectorized（交给酒馆向量存储做语义召回，需 ST 向量存储已启用并配好 embedding 源）
     };
 }
 
@@ -494,6 +495,7 @@ function normalizeCharSettings(cs) {
     if (cs.worldReminderShown === undefined) cs.worldReminderShown = false;
     if (typeof cs.worldBook !== 'string') cs.worldBook = '';
     if (typeof cs.archivedWorldBook !== 'string') cs.archivedWorldBook = '';
+    if (cs.archiveVectorized === undefined) cs.archiveVectorized = false;
     cs.instructions = cs.instructions.map(it => {
         if (typeof it === 'string') return { id: uid(), text: it, enabled: true };
         if (it && typeof it === 'object' && typeof it.text === 'string') {
@@ -1544,6 +1546,7 @@ async function injectToWorldBook() {
             entry.selective = true;               // 选择性触发（关键词匹配）
             entry.characterFilterNames = charName ? [charName] : []; // 绑定当前角色
             entry.characterFilterExclude = false;
+            entry.vectorized = !!settings.archiveVectorized; // 语义召回：标 true 交给酒馆向量存储按语义召回（需 ST 向量存储已启用并配好 embedding 源）
             entry.position = 0;                   // 注入位置：角色设定之前（召回时作为权威背景）
             entry.role = 0;                       // 系统角色
             written++;
@@ -2387,6 +2390,10 @@ function buildPanel() {
         </div>
         <div class="st-sd__world-row">
           <button type="button" class="st-sd__inject-world">注入世界书</button>
+          <label class="st-sd__switch st-sd__vec-switch" title="开启后，归档条目会标记 vectorized，交给酒馆内置「向量存储」按语义召回原文（需在酒馆扩展里启用向量存储的「世界书向量化」并配好 embedding 源，否则这些条目召回不到）">
+            <input type="checkbox" class="st-sd__vec-toggle"><span class="st-sd__switch-slider"></span>
+          </label>
+          <span class="st-sd__vec-label">归档用向量召回</span>
         </div>
         <div class="st-sd__world-alert" style="display:none"></div>
         <div class="st-sd__memory-list"></div>
@@ -2609,6 +2616,11 @@ function bindPanelEvents() {
     // 选择要注入的世界书（事件委托）
     panel.on('change', '.st-sd__world-select', function () {
         settings.worldBook = this.value || '';
+        saveSettings();
+    });
+    // 归档条目是否标记 vectorized（语义召回）
+    panel.find('.st-sd__vec-toggle').prop('checked', !!settings.archiveVectorized).on('change', function () {
+        settings.archiveVectorized = this.checked;
         saveSettings();
     });
     // 手动补记一条记忆
