@@ -3,7 +3,7 @@
     "display_name": "Serendipity",
     "description": "自动剧情记忆总结 + 剧情时间线 + 世界状态列表 + 剧情一致性检查 + 伏笔管理 + 屏蔽词 + 指令 + 手动补记 + 一键清空，入口在扩展菜单，白色面板。",
     "author": "cc_test",
-    "version": "1.13.0",
+    "version": "1.13.1",
     "loading_order": 100,
     "requires": [],
     "optional": [],

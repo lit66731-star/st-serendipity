@@ -1,54 +1,52 @@
 /* ==========================================================================
    Serendipity 面板样式
-   风格：暖白底 + 深灰文字 + 灰粉点缀 + 低对比度 + 大面积留白
-   Editorial Design / Swiss Design / Minimal / Luxury SaaS
-   视觉参考：Linear · Notion · Arc · Stripe
+   风格：暖白底 + 深灰文字 + 灰粉点缀 + 低对比度 + 大面积留白 + 扁平列表行
+   视觉参考：Linear · Notion · Arc · Stripe（网页感，非海报感）
    ========================================================================== */
 
 #st-serendipity {
     /* —— 设计 token —— */
-    --sd-bg: #F8F6F2;          /* 主背景：暖白/米白 */
-    --sd-surface: #FDFCFA;     /* 卡片表面：更浅的暖白 */
-    --sd-surface-2: #F2EFE9;   /* 次级表面/悬浮底 */
-    --sd-text: #292724;        /* 主文字：深灰黑 */
+    --sd-bg: #FAF9F6;          /* 主背景：暖白/米白 */
+    --sd-surface: #FFFFFF;     /* 输入框等需要更亮表面的地方 */
+    --sd-surface-2: #F3F1EC;   /* 悬浮底 */
+    --sd-text: #292724;        /* 主文字 */
     --sd-text-2: #5E5952;      /* 次级文字 */
-    --sd-text-3: #9A948B;      /* 弱文字/占位 */
-    --sd-border: #E9E5DD;      /* 细边框 */
-    --sd-border-2: #DCD7CD;    /* 稍深边框 */
-    --sd-accent: #D8B8B5;      /* 灰粉点缀（按钮/标签/图标底） */
-    --sd-accent-hover: #C6A29F;
-    --sd-accent-deep: #A87E7A; /* 灰粉文字 */
-    --sd-accent-bg: #F1E8E6;   /* 灰粉浅底 */
-    --sd-ok: #7D9B80;          /* 成功：低饱和鼠尾草绿 */
-    --sd-ok-bg: #E7EEE5;
-    --sd-warn: #AD8A55;        /* 提醒：低饱和驼色 */
-    --sd-warn-bg: #F3ECE1;
-    --sd-danger: #B0716B;      /* 危险：低饱和陶土红 */
-    --sd-danger-bg: #F3E7E5;
+    --sd-text-3: #A09A91;      /* 弱文字/占位 */
+    --sd-border: #ECE9E2;      /* 细分隔线 */
+    --sd-border-2: #DCD7CC;    /* 边框（输入/按钮） */
+    --sd-accent: #D8B8B5;      /* 灰粉点缀 */
+    --sd-accent-hover: #C8A6A2;
+    --sd-accent-deep: #A87E7A;
+    --sd-accent-bg: #F3E9E7;   /* 灰粉浅底 */
+    --sd-ok: #7D9B80;
+    --sd-ok-bg: #E9F0E7;
+    --sd-warn: #AD8A55;
+    --sd-warn-bg: #F4EDE1;
+    --sd-danger: #B0716B;
+    --sd-danger-bg: #F4E8E6;
 
     position: fixed;
     top: 72px;
     right: 20px;
-    z-index: 2147483000 !important; /* 极高层级，避免被其他插件浮层盖住 */
-    width: 460px;
+    z-index: 2147483000 !important;
+    width: 520px;
     max-width: calc(100vw - 16px);
     max-height: calc(100vh - 90px);
     background: var(--sd-bg);
     border: 1px solid var(--sd-border);
-    border-radius: 12px;
+    border-radius: 14px;
     color: var(--sd-text);
     font-size: 13px;
-    line-height: 1.6;
+    line-height: 1.65;
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    /* 阴影极轻，主要靠边框与留白制造层次 */
-    box-shadow: 0 1px 2px rgba(41, 39, 36, 0.04), 0 12px 40px rgba(41, 39, 36, 0.07);
+    box-shadow: 0 1px 3px rgba(41, 39, 36, 0.05), 0 16px 48px rgba(41, 39, 36, 0.10);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
         "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
 }
 
-/* 与其他插件隔离：清掉文字外发光与阴影 */
+/* 与其他插件隔离 */
 #st-serendipity,
 #st-serendipity * {
     text-shadow: none !important;
@@ -58,7 +56,7 @@
     box-shadow: none !important;
 }
 #st-serendipity {
-    touch-action: manipulation; /* 消除移动端点按延迟 */
+    touch-action: manipulation;
     -webkit-user-select: text;
     user-select: text;
 }
@@ -68,7 +66,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 16px 20px 14px;
+    padding: 18px 24px 16px;
     border-bottom: 1px solid var(--sd-border);
 }
 .st-sd__head-left {
@@ -78,28 +76,27 @@
     min-width: 0;
 }
 .st-sd__title {
-    font-family: "Songti SC", "Noto Serif SC", "Source Han Serif SC", Georgia, "Times New Roman", serif;
-    font-size: 17px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
     color: var(--sd-text);
-    letter-spacing: 0.6px;
 }
 .st-sd__char {
     font-size: 11px;
     color: var(--sd-text-3);
-    letter-spacing: 0.3px;
+    letter-spacing: 0.2px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 180px;
+    max-width: 220px;
 }
 .st-sd__close {
-    width: 28px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
     border: none;
     background: transparent;
     color: var(--sd-text-3);
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -107,25 +104,26 @@
     transition: background 0.15s, color 0.15s;
 }
 .st-sd__close:hover { background: var(--sd-surface-2); color: var(--sd-text); }
-.st-sd__close svg { width: 15px; height: 15px; }
+.st-sd__close svg { width: 16px; height: 16px; }
 
 /* ============ tab ============ */
 .st-sd__tabs {
     display: flex;
-    padding: 0 20px;
+    padding: 0 16px;
     border-bottom: 1px solid var(--sd-border);
 }
 .st-sd__tab {
     flex: 1;
     border: none;
     background: transparent;
-    padding: 12px 0 11px;
-    font-size: 12.5px;
+    padding: 13px 4px 12px;
+    font-size: 12px;
     color: var(--sd-text-3);
-    letter-spacing: 0.3px;
+    letter-spacing: 0.4px;
     cursor: pointer;
     border-bottom: 2px solid transparent;
     transition: color 0.15s, border-color 0.15s;
+    white-space: nowrap;
 }
 .st-sd__tab.is-active {
     color: var(--sd-text);
@@ -133,10 +131,7 @@
     border-bottom-color: var(--sd-accent);
 }
 .st-sd__tab:hover { color: var(--sd-text); }
-.st-sd__tab--warn {
-    color: var(--sd-accent-deep) !important;
-    font-weight: 600;
-}
+.st-sd__tab--warn { color: var(--sd-accent-deep) !important; font-weight: 600; }
 
 /* ============ 面板内容 ============ */
 .st-sd__pane {
@@ -144,7 +139,7 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    padding: 18px 20px 20px;
+    padding: 20px 24px 24px;
 }
 
 /* 工具栏 */
@@ -152,75 +147,66 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 14px;
+    margin-bottom: 16px;
 }
 .st-sd__label {
     font-size: 12px;
     font-weight: 600;
-    color: var(--sd-text-2);
-    letter-spacing: 0.4px;
+    color: var(--sd-text);
+    letter-spacing: 0.2px;
 }
 
 /* ============ 按钮 ============ */
-/* 主操作（灰粉实底 + 深灰文字） */
+/* 主操作：灰粉实底 + 深灰文字 */
 .st-sd__summarize,
 .st-sd__inject-world,
 .st-sd__check-run {
     border: 1px solid var(--sd-accent);
     background: var(--sd-accent);
     color: var(--sd-text);
-    border-radius: 6px;
-    padding: 7px 14px;
+    border-radius: 8px;
+    padding: 7px 16px;
     font-size: 12.5px;
-    font-weight: 500;
+    font-weight: 550;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
+    transition: background 0.15s, border-color 0.15s, transform 0.05s;
 }
 .st-sd__summarize { margin-left: auto; }
+.st-sd__check-run { margin-left: auto; }
 .st-sd__summarize:hover, .st-sd__inject-world:hover, .st-sd__check-run:hover {
     background: var(--sd-accent-hover);
     border-color: var(--sd-accent-hover);
 }
-/* 注入世界书：满 10 提醒时的脉冲改灰粉 */
-.st-sd__inject-world--hint {
-    background: var(--sd-accent-hover) !important;
-    animation: st-sd-pulse 1.4s infinite;
-}
-@keyframes st-sd-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(216, 184, 181, 0.5); }
-    50% { box-shadow: 0 0 0 6px rgba(216, 184, 181, 0); }
-}
+.st-sd__summarize:active, .st-sd__inject-world:active, .st-sd__check-run:active { transform: translateY(1px); }
 
-/* 次操作（细边框 + 透明底） */
+/* 次操作：细边框 + 透明底 */
 .st-sd__export,
 .st-sd__check-clear {
     border: 1px solid var(--sd-border-2);
     background: transparent;
     color: var(--sd-text-2);
-    border-radius: 6px;
+    border-radius: 8px;
     padding: 7px 14px;
     font-size: 12.5px;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-.st-sd__export { margin-left: 6px; }
-.st-sd__check-run { margin-left: auto; }
 .st-sd__export:hover, .st-sd__check-clear:hover {
     background: var(--sd-surface-2);
     border-color: var(--sd-border-2);
     color: var(--sd-text);
 }
 
-/* 添加/确认（灰粉实底，随输入行拉伸） */
+/* 添加/确认：灰粉实底，随输入行拉伸 */
 .st-sd__add-word, .st-sd__add-note, .st-sd__add-instr,
 .st-sd__world-add, .st-sd__fore-add, .st-sd__axis-save {
     border: 1px solid var(--sd-accent);
     background: var(--sd-accent);
     color: var(--sd-text);
-    border-radius: 6px;
-    padding: 0 16px;
+    border-radius: 8px;
+    padding: 0 18px;
     font-size: 12.5px;
-    font-weight: 500;
+    font-weight: 550;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
 }
@@ -230,43 +216,44 @@
     border-color: var(--sd-accent-hover);
 }
 
-/* 危险（细边框陶土红） */
+/* 注入世界书：满 10 提醒脉冲 */
+.st-sd__inject-world--hint {
+    background: var(--sd-accent-hover) !important;
+    animation: st-sd-pulse 1.4s infinite;
+}
+@keyframes st-sd-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(216, 184, 181, 0.45); }
+    50% { box-shadow: 0 0 0 6px rgba(216, 184, 181, 0); }
+}
+
+/* 危险：细边框陶土红 */
 .st-sd__reset {
     border: 1px solid var(--sd-border-2);
     background: transparent;
     color: var(--sd-danger);
-    border-radius: 6px;
-    padding: 7px 14px;
+    border-radius: 8px;
+    padding: 7px 16px;
     font-size: 12px;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    transition: background 0.15s, border-color 0.15s;
 }
-.st-sd__reset:hover { background: var(--sd-danger-bg); border-color: var(--sd-danger); color: var(--sd-danger); }
+.st-sd__reset:hover { background: var(--sd-danger-bg); border-color: var(--sd-danger); }
 
-/* 内联小按钮：编辑 / 删除 / 保存 / 取消 */
-.st-sd__memory-edit, .st-sd__tl-edit, .st-sd__world-edit, .st-sd__fore-edit {
-    border: none;
-    background: transparent;
-    color: var(--sd-text-3);
-    font-size: 11px;
-    cursor: pointer;
-    border-radius: 4px;
-    padding: 2px 6px;
-    transition: color 0.15s, background 0.15s;
-}
-.st-sd__memory-edit:hover, .st-sd__tl-edit:hover, .st-sd__world-edit:hover, .st-sd__fore-edit:hover {
-    color: var(--sd-accent-deep);
-    background: var(--sd-accent-bg);
-}
+/* 内联小按钮：编辑 / 删除 */
+.st-sd__memory-edit, .st-sd__tl-edit, .st-sd__world-edit, .st-sd__fore-edit,
 .st-sd__memory-del, .st-sd__tl-del, .st-sd__world-del, .st-sd__fore-del {
     border: none;
     background: transparent;
     color: var(--sd-text-3);
     font-size: 11px;
     cursor: pointer;
-    border-radius: 4px;
-    padding: 2px 6px;
+    border-radius: 6px;
+    padding: 3px 7px;
     transition: color 0.15s, background 0.15s;
+}
+.st-sd__memory-edit:hover, .st-sd__tl-edit:hover, .st-sd__world-edit:hover, .st-sd__fore-edit:hover {
+    color: var(--sd-accent-deep);
+    background: var(--sd-accent-bg);
 }
 .st-sd__memory-del:hover, .st-sd__tl-del:hover, .st-sd__world-del:hover, .st-sd__fore-del:hover {
     color: var(--sd-danger);
@@ -277,10 +264,10 @@
     background: var(--sd-accent);
     color: var(--sd-text);
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 550;
     cursor: pointer;
-    border-radius: 4px;
-    padding: 3px 9px;
+    border-radius: 6px;
+    padding: 3px 10px;
     transition: background 0.15s;
 }
 .st-sd__memory-save:hover, .st-sd__tl-save:hover, .st-sd__world-save:hover, .st-sd__fore-save:hover {
@@ -292,8 +279,8 @@
     color: var(--sd-text-3);
     font-size: 11px;
     cursor: pointer;
-    border-radius: 4px;
-    padding: 3px 9px;
+    border-radius: 6px;
+    padding: 3px 10px;
     transition: color 0.15s, background 0.15s;
 }
 .st-sd__memory-cancel:hover, .st-sd__tl-cancel:hover, .st-sd__world-cancel:hover, .st-sd__fore-cancel:hover {
@@ -305,8 +292,8 @@
 .st-sd__switch {
     position: relative;
     display: inline-block;
-    width: 36px;
-    height: 20px;
+    width: 38px;
+    height: 21px;
     flex: 0 0 auto;
 }
 .st-sd__switch input { opacity: 0; width: 0; height: 0; }
@@ -315,20 +302,20 @@
     cursor: pointer;
     top: 0; left: 0; right: 0; bottom: 0;
     background: var(--sd-border-2);
-    border-radius: 20px;
+    border-radius: 21px;
     transition: background 0.2s;
 }
 .st-sd__switch-slider::before {
     content: '';
     position: absolute;
-    width: 16px; height: 16px;
+    width: 17px; height: 17px;
     left: 2px; bottom: 2px;
     background: #ffffff;
     border-radius: 50%;
     transition: transform 0.2s;
 }
 .st-sd__switch input:checked + .st-sd__switch-slider { background: var(--sd-ok); }
-.st-sd__switch input:checked + .st-sd__switch-slider::before { transform: translateX(16px); }
+.st-sd__switch input:checked + .st-sd__switch-slider::before { transform: translateX(17px); }
 
 /* ============ 输入框（统一外观） ============ */
 .st-sd__every-input, .st-sd__word-input, .st-sd__note-input, .st-sd__instr-input,
@@ -338,13 +325,13 @@
 .st-sd__tl-e-day, .st-sd__tl-e-time, .st-sd__tl-e-loc, .st-sd__tl-e-event,
 .st-sd__world-select, .st-sd__world-cat {
     border: 1px solid var(--sd-border-2);
-    border-radius: 6px;
-    padding: 7px 10px;
+    border-radius: 8px;
+    padding: 8px 12px;
     font-size: 12.5px;
     color: var(--sd-text);
     background: var(--sd-surface);
     outline: none;
-    transition: border-color 0.15s, background 0.15s;
+    transition: border-color 0.15s, box-shadow 0.15s;
 }
 .st-sd__every-input:focus, .st-sd__word-input:focus, .st-sd__note-input:focus,
 .st-sd__instr-input:focus, .st-sd__axis-day:focus, .st-sd__axis-time:focus,
@@ -353,6 +340,7 @@
 .st-sd__tl-e-day:focus, .st-sd__tl-e-time:focus, .st-sd__tl-e-loc:focus,
 .st-sd__tl-e-event:focus, .st-sd__world-select:focus, .st-sd__world-cat:focus {
     border-color: var(--sd-accent);
+    box-shadow: 0 0 0 3px rgba(216, 184, 181, 0.22);
 }
 
 /* 记忆编辑 textarea */
@@ -361,8 +349,8 @@
     min-height: 120px;
     box-sizing: border-box;
     border: 1px solid var(--sd-border-2);
-    border-radius: 6px;
-    padding: 9px 11px;
+    border-radius: 8px;
+    padding: 10px 12px;
     font-family: inherit;
     font-size: 12.5px;
     line-height: 1.7;
@@ -373,21 +361,21 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
-.st-sd__memory-edit-text:focus { border-color: var(--sd-accent); }
+.st-sd__memory-edit-text:focus { border-color: var(--sd-accent); box-shadow: 0 0 0 3px rgba(216, 184, 181, 0.22); }
 
 /* ============ 通用行 / 提示 ============ */
 .st-sd__add-row {
     display: flex;
     gap: 8px;
-    margin-bottom: 14px;
+    margin-bottom: 16px;
 }
 .st-sd__every-row {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin-bottom: 12px;
+    gap: 8px;
+    margin-bottom: 14px;
 }
-.st-sd__every-input { width: 60px; flex: 0 0 auto; }
+.st-sd__every-input { width: 64px; flex: 0 0 auto; text-align: center; }
 .st-sd__world-row { margin-bottom: 8px; }
 .st-sd__world-select { width: 100%; box-sizing: border-box; }
 .st-sd__world-alert {
@@ -395,34 +383,34 @@
     background: var(--sd-warn-bg);
     border: 1px solid var(--sd-border-2);
     color: var(--sd-warn);
-    border-radius: 6px;
-    padding: 9px 11px;
+    border-radius: 8px;
+    padding: 10px 12px;
     font-size: 12px;
     line-height: 1.6;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
 }
 .st-sd__hint {
-    margin-top: 12px;
+    margin-top: 14px;
     font-size: 11px;
     color: var(--sd-text-3);
     line-height: 1.7;
 }
-.st-sd__reset-row { margin-top: 12px; }
+.st-sd__reset-row { margin-top: 14px; }
 .st-sd__empty {
-    padding: 24px 12px;
+    padding: 28px 12px;
     text-align: center;
     color: var(--sd-text-3);
     font-size: 12px;
     line-height: 1.7;
 }
 
-/* ============ 记忆列表 ============ */
+/* ============ 记忆列表（扁平行 + 细分隔线） ============ */
 .st-sd__story-time {
     font-size: 12px;
     font-weight: 600;
     color: var(--sd-text-2);
-    margin-bottom: 12px;
-    letter-spacing: 0.3px;
+    margin-bottom: 6px;
+    letter-spacing: 0.2px;
 }
 .st-sd__memory-list {
     flex: 1;
@@ -430,20 +418,20 @@
     overflow-y: auto;
 }
 .st-sd__tier-title {
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 10.5px;
+    font-weight: 650;
     color: var(--sd-text-3);
-    letter-spacing: 0.6px;
+    letter-spacing: 1.2px;
     text-transform: uppercase;
-    margin: 4px 0 10px;
-    padding-bottom: 6px;
+    margin: 6px 0 4px;
+    padding: 6px 0;
     border-bottom: 1px solid var(--sd-border);
     cursor: pointer;
     user-select: none;
     list-style: none;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
 }
 .st-sd__tier-title::-webkit-details-marker { display: none; }
 .st-sd__tier-title::before {
@@ -456,31 +444,43 @@
 details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotate(90deg); }
 .st-sd__tier-title--static { cursor: default; }
 .st-sd__tier-title--static::before { content: ''; display: none; }
+
 .st-sd__memory {
-    border: 1px solid var(--sd-border);
-    border-radius: 8px;
-    margin-bottom: 10px;
-    padding: 12px 14px;
-    background: var(--sd-surface);
+    padding: 13px 2px;
+    border-bottom: 1px solid var(--sd-border);
+    background: transparent;
 }
-.st-sd__memory.is-editing { background: var(--sd-surface); border-color: var(--sd-accent); }
+.st-sd__memory:last-child { border-bottom: none; }
+.st-sd__memory.is-editing {
+    background: var(--sd-surface);
+    border: 1px solid var(--sd-accent);
+    border-radius: 8px;
+    padding: 13px 14px;
+    margin: 4px 0 12px;
+}
 .st-sd__memory-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 6px;
+    margin-bottom: 5px;
 }
 .st-sd__memory-time {
     font-size: 11px;
     color: var(--sd-text-3);
-    letter-spacing: 0.2px;
+    letter-spacing: 0.3px;
 }
 .st-sd__memory-actions {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
     flex: 0 0 auto;
+    opacity: 0;
+    transition: opacity 0.15s;
 }
+.st-sd__memory:hover .st-sd__memory-actions,
+.st-sd__tl-item:hover .st-sd__memory-actions,
+.st-sd__world-item:hover .st-sd__memory-actions,
+.st-sd__fore:hover .st-sd__memory-actions { opacity: 1; }
 .st-sd__memory-text {
     margin: 0;
     font-family: inherit;
@@ -508,7 +508,6 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     align-items: center;
     gap: 6px;
     background: var(--sd-accent-bg);
-    border: 1px solid transparent;
     border-radius: 999px;
     padding: 5px 8px 5px 12px;
     font-size: 12px;
@@ -531,7 +530,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 }
 .st-sd__word-del:hover { background: var(--sd-danger); color: #ffffff; }
 
-/* ============ 指令 ============ */
+/* ============ 指令（扁平行） ============ */
 .st-sd__instr-input { flex: 1; min-width: 0; }
 .st-sd__instr-list {
     flex: 1;
@@ -541,15 +540,13 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__instr {
     display: flex;
     align-items: center;
-    gap: 10px;
-    background: var(--sd-surface);
-    border: 1px solid var(--sd-border);
-    border-radius: 8px;
-    padding: 11px 12px 11px 14px;
-    margin-bottom: 8px;
+    gap: 12px;
+    padding: 12px 2px;
+    border-bottom: 1px solid var(--sd-border);
     font-size: 12.5px;
     color: var(--sd-text);
 }
+.st-sd__instr:last-child { border-bottom: none; }
 .st-sd__instr-text {
     flex: 1;
     min-width: 0;
@@ -559,13 +556,13 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     color: var(--sd-text-2);
 }
 .st-sd__instr-del {
-    width: 20px;
-    height: 20px;
+    width: 22px;
+    height: 22px;
     border: none;
     background: transparent;
     color: var(--sd-text-3);
     border-radius: 50%;
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1;
     cursor: pointer;
     flex: 0 0 auto;
@@ -583,7 +580,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     color: var(--sd-text);
     letter-spacing: 0.2px;
 }
-.st-sd__axis-day { width: 80px; flex: 0 0 auto; }
+.st-sd__axis-day { width: 84px; flex: 0 0 auto; }
 .st-sd__axis-time { flex: 1; min-width: 0; }
 .st-sd__axis-loc { flex: 1; min-width: 0; }
 .st-sd__axis-hints { margin-bottom: 10px; }
@@ -600,17 +597,22 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     overflow-y: auto;
 }
 .st-sd__tl-item {
-    background: var(--sd-surface);
-    border: 1px solid var(--sd-border);
-    border-radius: 8px;
-    padding: 10px 14px;
-    margin-bottom: 8px;
+    padding: 11px 2px;
+    border-bottom: 1px solid var(--sd-border);
+    background: transparent;
 }
-.st-sd__tl-item--edit { border-color: var(--sd-accent); }
+.st-sd__tl-item:last-child { border-bottom: none; }
+.st-sd__tl-item--edit {
+    background: var(--sd-surface);
+    border: 1px solid var(--sd-accent);
+    border-radius: 8px;
+    padding: 11px 12px;
+    margin: 4px 0 10px;
+}
 .st-sd__tl-head {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     font-size: 12px;
     color: var(--sd-text-2);
 }
@@ -632,8 +634,8 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     word-break: break-word;
 }
 .st-sd__tl-edit-row { display: flex; gap: 6px; margin-bottom: 6px; }
-.st-sd__tl-e-day { width: 80px; flex: 0 0 auto; }
-.st-sd__tl-e-time { width: 90px; flex: 0 0 auto; }
+.st-sd__tl-e-day { width: 84px; flex: 0 0 auto; }
+.st-sd__tl-e-time { width: 96px; flex: 0 0 auto; }
 .st-sd__tl-e-loc { flex: 1; min-width: 0; }
 .st-sd__tl-e-event {
     display: block;
@@ -652,27 +654,25 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     overflow-y: auto;
 }
 .st-sd__world-cat-title {
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 10.5px;
+    font-weight: 650;
     color: var(--sd-text-3);
-    letter-spacing: 0.6px;
+    letter-spacing: 1.2px;
     text-transform: uppercase;
-    margin: 10px 0 8px;
-    padding-bottom: 5px;
+    margin: 10px 0 2px;
+    padding: 6px 0;
     border-bottom: 1px solid var(--sd-border);
 }
 .st-sd__world-item {
     display: flex;
     align-items: center;
     gap: 8px;
-    background: var(--sd-surface);
-    border: 1px solid var(--sd-border);
-    border-radius: 8px;
-    padding: 9px 10px 9px 14px;
-    margin-bottom: 8px;
+    padding: 10px 2px;
+    border-bottom: 1px solid var(--sd-border);
     font-size: 12.5px;
     color: var(--sd-text);
 }
+.st-sd__world-item:last-child { border-bottom: none; }
 .st-sd__world-item-text {
     flex: 1;
     min-width: 0;
@@ -682,7 +682,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 }
 .st-sd__world-edit-text { flex: 1; min-width: 0; }
 
-/* ============ 剧情一致性检查 ============ */
+/* ============ 剧情一致性检查（左侧色条 + 扁平行） ============ */
 .st-sd__check-list {
     flex: 1;
     min-height: 0;
@@ -692,13 +692,12 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     display: flex;
     align-items: flex-start;
     gap: 10px;
-    border: 1px solid var(--sd-border);
+    padding: 12px 2px 12px 12px;
     border-left: 3px solid var(--sd-border-2);
-    background: var(--sd-surface);
-    border-radius: 6px;
-    padding: 11px 12px;
-    margin-bottom: 8px;
+    border-bottom: 1px solid var(--sd-border);
+    background: transparent;
 }
+.st-sd__check:last-child { border-bottom: none; }
 .st-sd__check--time { border-left-color: var(--sd-warn); }
 .st-sd__check--state { border-left-color: var(--sd-danger); }
 .st-sd__check-badge {
@@ -737,7 +736,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 }
 .st-sd__check-del:hover { background: var(--sd-danger-bg); color: var(--sd-danger); }
 
-/* ============ 伏笔 / 未完成事项 ============ */
+/* ============ 伏笔 / 未完成事项（扁平行） ============ */
 .st-sd__fore-input { flex: 1; min-width: 0; }
 .st-sd__fore-list {
     flex: 1;
@@ -745,13 +744,18 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     overflow-y: auto;
 }
 .st-sd__fore {
-    background: var(--sd-surface);
-    border: 1px solid var(--sd-border);
-    border-radius: 8px;
-    padding: 10px 14px;
-    margin-bottom: 8px;
+    padding: 11px 2px;
+    border-bottom: 1px solid var(--sd-border);
+    background: transparent;
 }
-.st-sd__fore--edit { border-color: var(--sd-accent); }
+.st-sd__fore:last-child { border-bottom: none; }
+.st-sd__fore--edit {
+    background: var(--sd-surface);
+    border: 1px solid var(--sd-accent);
+    border-radius: 8px;
+    padding: 11px 12px;
+    margin: 4px 0 10px;
+}
 .st-sd__fore-head {
     display: flex;
     align-items: center;
@@ -763,7 +767,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     border-radius: 999px;
     padding: 2px 10px;
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 550;
     letter-spacing: 0.2px;
     cursor: pointer;
     transition: filter 0.15s;
@@ -795,8 +799,8 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__fore-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
 /* ============ 滚动条 ============ */
-#st-serendipity ::-webkit-scrollbar { width: 6px; height: 6px; }
-#st-serendipity ::-webkit-scrollbar-thumb { background: var(--sd-border-2); border-radius: 3px; }
+#st-serendipity ::-webkit-scrollbar { width: 8px; height: 8px; }
+#st-serendipity ::-webkit-scrollbar-thumb { background: var(--sd-border-2); border-radius: 4px; border: 2px solid var(--sd-bg); }
 #st-serendipity ::-webkit-scrollbar-thumb:hover { background: var(--sd-text-3); }
 #st-serendipity ::-webkit-scrollbar-track { background: transparent; }
 
@@ -813,4 +817,5 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
         max-height: calc(100vh - 110px);
         max-height: calc(100dvh - 110px);
     }
+    .st-sd__memory-actions { opacity: 1; }
 }
