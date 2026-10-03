@@ -1027,18 +1027,26 @@ function renderWorldAlert() {
 
 // ---------------- 记忆 UI ----------------
 function memoryItemHtml(m, deletable, tier) {
-    // 优先显示剧情时间（时间线连贯），真实记录时间放在 tooltip 里备查
-    const timeLabel = m.storyTime ? escapeHtml(m.storyTime) : escapeHtml(fmtTime(m.time));
-    const wallTitle = m.storyTime ? ` title="记录于 ${fmtTime(m.time)}"` : '';
+    // 剧情档案式排版：第X天 / 年月日几时几分 / 地点 / 事件内容 / 记录时间
+    const dayLabel = m.storyDay != null ? ('第 ' + m.storyDay + ' 天') : '';
+    let timeLabel = m.storyTime ? escapeHtml(m.storyTime) : '';
+    const locLabel = [m.storyLocation, m.storyPeriod].filter(Boolean).map(escapeHtml).join(' · ');
+    const recLabel = escapeHtml(fmtTime(m.time));
+    const hasStory = !!(dayLabel || timeLabel);
+    if (!hasStory) timeLabel = recLabel; // 无剧情时间时回退显示记录时间
 
     if (m.id === editingId) {
         // 编辑态：文本变为可编辑 textarea，操作区换成保存/取消
         return `<div class="st-sd__memory is-editing" data-id="${m.id}">
             <div class="st-sd__memory-head">
-                <span class="st-sd__memory-time"${wallTitle}>${timeLabel}</span>
+                <div class="st-sd__memory-meta">
+                    ${dayLabel ? `<span class="st-sd__memory-day">${dayLabel}</span>` : ''}
+                    ${timeLabel ? `<span class="st-sd__memory-clock">${timeLabel}</span>` : ''}
+                </div>
+                ${locLabel ? `<div class="st-sd__memory-loc">${locLabel}</div>` : ''}
                 <span class="st-sd__memory-actions">
                     <button type="button" class="st-sd__memory-save" data-id="${m.id}" title="保存修改">保存</button>
-                    <button type="button" class="st-sd__memory-cancel" data-id="${m.id}" title="放弃修改">取消</button>
+                    <button type="button" class="st-sd__memory-cancel" title="放弃修改">取消</button>
                 </span>
             </div>
             <textarea class="st-sd__memory-edit-text" spellcheck="false">${escapeHtml(m.text)}</textarea>
@@ -1051,17 +1059,42 @@ function memoryItemHtml(m, deletable, tier) {
         : '';
     return `<div class="st-sd__memory" data-id="${m.id}">
         <div class="st-sd__memory-head">
-            <span class="st-sd__memory-time"${wallTitle}>${timeLabel}</span>
-            <span class="st-sd__memory-actions">${edit}${del}</span>
+            <div class="st-sd__memory-meta">
+                ${dayLabel ? `<span class="st-sd__memory-day">${dayLabel}</span>` : ''}
+                ${timeLabel ? `<span class="st-sd__memory-clock">${timeLabel}</span>` : ''}
+            </div>
+            ${locLabel ? `<div class="st-sd__memory-loc">${locLabel}</div>` : ''}
         </div>
         <pre class="st-sd__memory-text">${escapeHtml(m.text)}</pre>
+        <div class="st-sd__memory-foot">
+            ${hasStory ? `<span class="st-sd__memory-rec">记录于 ${recLabel}</span>` : ''}
+            <span class="st-sd__memory-actions">${edit}${del}</span>
+        </div>
     </div>`;
 }
 
 function renderStoryTime() {
     const el = $('#st-serendipity .st-sd__story-time');
     if (!el.length) return;
-    el.text(settings.storyTime ? ('当前剧情时间：' + settings.storyTime) : '剧情时间：待首次总结');
+    const day = settings.storyDay != null ? ('第 ' + settings.storyDay + ' 天') : '';
+    const time = settings.storyTime ? escapeHtml(settings.storyTime) : '';
+    let hero = time || day || '';
+    const metaParts = [day, settings.storyPeriod, settings.storyLocation].filter(Boolean);
+    if (hero === day) { // 主角时间用了「第X天」时，副行不再重复它
+        const i = metaParts.indexOf(day);
+        if (i >= 0) metaParts.splice(i, 1);
+    }
+    if (!hero) {
+        el.html(`<div class="st-sd__story-eyebrow">STORY TIME</div>
+            <div class="st-sd__story-hero is-empty">尚未开始</div>
+            <div class="st-sd__story-meta"><span>等待首次总结，时间锚点会从这里自动推进</span></div>`);
+        return;
+    }
+    const metaHtml = metaParts.length
+        ? '<div class="st-sd__story-meta">' + metaParts.map(s => `<span>${escapeHtml(s)}</span>`).join('<span class="st-sd__story-dot">·</span>') + '</div>'
+        : '';
+    el.html(`<div class="st-sd__story-eyebrow">STORY TIME</div>
+        <div class="st-sd__story-hero">${hero}</div>${metaHtml}`);
 }
 
 function renderMemories() {
@@ -1186,7 +1219,7 @@ function renderWorldState() {
         html += '<div class="st-sd__world-cat-title">' + escapeHtml(cat) + '</div>';
         html += items.map(e => {
             if (e.id === worldEditingId) {
-                return '<div class="st-sd__world-item" data-id="' + e.id + '">'
+                return '<div class="st-sd__world-item is-editing" data-id="' + e.id + '">'
                     + '<input type="text" class="st-sd__world-edit-text" value="' + escapeHtml(e.text) + '">'
                     + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__world-save" data-id="' + e.id + '">保存</button><button type="button" class="st-sd__world-cancel">取消</button></span>'
                     + '</div>';
@@ -1426,7 +1459,7 @@ function updateCheckBadge() {
     const tab = $('#st-serendipity .st-sd__tab[data-tab="check"]');
     if (!tab.length) return;
     const n = settings.checks.length;
-    tab.text(n ? ('检查 ' + n) : '检查');
+    tab.html(n ? ('检查<span class="st-sd__tab-badge">' + n + '</span>') : '检查');
     tab.toggleClass('st-sd__tab--warn', n > 0);
 }
 
@@ -1456,7 +1489,7 @@ function updateForeshadowBadge() {
     const tab = $('#st-serendipity .st-sd__tab[data-tab="fore"]');
     if (!tab.length) return;
     const n = settings.foreshadows.filter(f => f.status !== '已回收').length;
-    tab.text(n ? ('伏笔 ' + n) : '伏笔');
+    tab.html(n ? ('伏笔<span class="st-sd__tab-badge">' + n + '</span>') : '伏笔');
     tab.toggleClass('st-sd__tab--warn', n > 0);
 }
 
@@ -1544,6 +1577,7 @@ function buildPanel() {
       </div>
 
       <div class="st-sd__pane" data-pane="memory">
+        <div class="st-sd__story-time"></div>
         <div class="st-sd__toolbar">
           <span class="st-sd__label">自动记忆</span>
           <label class="st-sd__switch"><input type="checkbox" class="st-sd__mem-toggle"><span class="st-sd__switch-slider"></span></label>
@@ -1566,7 +1600,6 @@ function buildPanel() {
           <button type="button" class="st-sd__inject-world">注入世界书</button>
         </div>
         <div class="st-sd__world-alert" style="display:none"></div>
-        <div class="st-sd__story-time"></div>
         <div class="st-sd__memory-list"></div>
         <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期；长期满 ${TIER_LIMIT} 条会提醒你「注入世界书」归档并清空。记忆会注入正文，防止模型失忆。</div>
         <div class="st-sd__reset-row">
