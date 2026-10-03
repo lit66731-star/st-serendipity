@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.24.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.25.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -342,6 +342,7 @@ function freshCharSettings() {
         checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
         foreshadows: [],        // 伏笔/未完成事项 [{ id, title, status, note, day }]
         injectForeshadows: false, // 是否把未完成伏笔注入正文提醒模型（默认关，以本地管理为主）
+        injectChecks: true,      // 是否把已发现的一致性冲突注入正文提醒模型避免重犯（默认开，验证层闭环）
         worldReminderShown: false, // 长期记忆满 10 的归档提醒是否已弹过（归档后重置）
         worldBook: '',          // 用户选择要注入的世界书名（不一定用角色绑定的那本）
         archivedWorldBook: '',  // 上次归档到哪本世界书（用于「未激活」常驻黄条提醒）
@@ -460,6 +461,7 @@ function normalizeCharSettings(cs) {
         l.b = mapRef(l.b);
     }
     if (cs.injectForeshadows === undefined) cs.injectForeshadows = false;
+    if (cs.injectChecks === undefined) cs.injectChecks = true;
     if (cs.autoRegisterEntities === undefined) cs.autoRegisterEntities = true;
     // 待确认同名角色归属：规范化 + 清理失效项（候选实体已删光、或姓名空的丢弃）
     if (!Array.isArray(cs.pendingEntityAssignments)) cs.pendingEntityAssignments = [];
@@ -1110,6 +1112,7 @@ async function runConsistencyCheck() {
         settings.checks = merged.slice(0, 20).map(t => ({ id: uid(), type: t.type, text: t.text, day: settings.storyDay }));
         saveSettings();
         renderChecks();
+        updatePromptInjection();
         toastr.success(settings.checks.length ? ('发现 ' + settings.checks.length + ' 处剧情冲突，见「检查」页') : '未发现剧情冲突');
     } catch (e) {
         console.error('[Serendipity] 一致性检查失败：', e);
@@ -1216,11 +1219,11 @@ async function summarizeLastRound() {
             settings.lastSummaryIndex = chat.length - 1; // 记录已总结到的消息下标，下次只总结新增部分
             const promoted = promoteMemories();
             saveSettings();
+            refreshLocalChecks(); // 先重算本地时间冲突，再注入正文，保证本轮就提醒模型
             updatePromptInjection();
             renderMemories();
             renderTimeAxis();
             renderPeople();
-            refreshLocalChecks();
 
             // 弹窗提示：总结成功 + 是否触发晋级
             let msg = '本轮记忆总结成功';
@@ -1371,6 +1374,15 @@ function updatePromptInjection() {
     setExtensionPrompt(
         'serendipity_foreshadow',
         openFores.length ? '[Serendipity 未完成伏笔]\n以下伏笔/未完成事项尚未回收，请在剧情中记住它们、不要遗忘，也不要提前揭晓；时机成熟时自然回收：\n' + openFores.map((f, i) => (i + 1) + '. [' + f.status + '] ' + f.title).join('\n') : '',
+        extension_prompt_types.IN_PROMPT,
+        0,
+    );
+
+    // 一致性检查结果注入（默认开）：把已发现的冲突/矛盾压成紧凑提醒，让模型在后续生成中避免重复犯错——验证层闭环
+    const openChecks = settings.injectChecks ? settings.checks.filter(c => c && c.text && c.text.trim()) : [];
+    setExtensionPrompt(
+        'serendipity_checks',
+        openChecks.length ? '[Serendipity 一致性提醒]\n以下是此前剧情中已发现、尚未解决的矛盾/冲突。请在后续生成中保持剧情一致、避免再犯同样的错——不要改写已经发生的历史，只需今后不再自相矛盾：\n' + openChecks.slice(-5).map((c, i) => (i + 1) + '. [' + (CHECK_TYPE_LABELS[c.type] || '其他') + '] ' + c.text).join('\n') : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
@@ -2147,6 +2159,8 @@ function renderChecks() {
     const list = $('#st-serendipity .st-sd__check-list');
     if (!list.length) return;
     updateCheckBadge();
+    const toggle = $('#st-serendipity .st-sd__check-toggle');
+    if (toggle.length) toggle.prop('checked', !!settings.injectChecks);
     if (!settings.checks.length) {
         list.html('<div class="st-sd__empty">暂无冲突。点上方「立即检查」让模型对照时间线/世界状态/记忆排查矛盾（每次只调用一次模型）。</div>');
         return;
@@ -2394,7 +2408,13 @@ function buildPanel() {
           <button type="button" class="st-sd__check-run">立即检查</button>
           <button type="button" class="st-sd__check-clear">清空</button>
         </div>
-        <div class="st-sd__hint">让模型对照「当前时间轴 + 已有时间线/世界状态/记忆」排查矛盾（如：记忆里第12天发生的事、当前才第10天；某人已离开却仍出场）。只在点按钮时调用一次模型，不往每轮正文里塞。</div>
+        <div class="st-sd__toolbar">
+          <label class="st-sd__switch st-sd__check-switch" title="开启后把已发现的冲突注入正文提醒模型避免重犯">
+            <input type="checkbox" class="st-sd__check-toggle"><span class="st-sd__switch-slider"></span>
+          </label>
+          <span class="st-sd__label">把冲突注入正文提醒模型</span>
+        </div>
+        <div class="st-sd__hint">让模型对照「当前时间轴 + 已有时间线/世界状态/记忆」排查矛盾（如：记忆里第12天发生的事、当前才第10天；某人已离开却仍出场）。只在点按钮时调用一次模型；开启上方开关后，已发现的冲突会注入每轮正文提醒模型避免重犯。</div>
         <div class="st-sd__check-list"></div>
       </div>
     </div>`;
@@ -2889,18 +2909,25 @@ function bindPanelEvents() {
         renderForeshadows();
     });
 
-    // 一致性检查：立即检查 / 清空 / 忽略单条
+    // 一致性检查：注入开关 / 立即检查 / 清空 / 忽略单条
+    panel.find('.st-sd__check-toggle').prop('checked', !!settings.injectChecks).on('change', function () {
+        settings.injectChecks = this.checked;
+        saveSettings();
+        updatePromptInjection();
+    });
     panel.find('.st-sd__check-run').on('click', runConsistencyCheck);
     panel.find('.st-sd__check-clear').on('click', function () {
         settings.checks = [];
         saveSettings();
         renderChecks();
+        updatePromptInjection();
     });
     panel.on('click', '.st-sd__check-del', function () {
         const id = String($(this).data('id'));
         settings.checks = settings.checks.filter(x => x.id !== id);
         saveSettings();
         renderChecks();
+        updatePromptInjection();
     });
 }
 
