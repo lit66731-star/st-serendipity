@@ -7,14 +7,18 @@ import {
     event_types,
     eventSource,
     generateRaw,
+    getRequestHeaders,
     saveSettingsDebounced,
     setExtensionPrompt,
     extension_prompt_types,
 } from '../../../../script.js';
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
+import { getStringHash } from '../../../utils.js';
+import { textgen_types, textgenerationwebui_settings } from '../../../textgen-settings.js';
+import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.31.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.32.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1764,6 +1768,211 @@ function renderMemories() {
     list.html(html);
 }
 
+// ---------------- 向量召回（语义搜索）UI ----------------
+// 单独一个类目：输入一句话，直接调酒馆「向量存储」查一次，列出按相似度排序、会被语义召回的记忆原文。
+// 复刻 ST 向量存储扩展的请求体构造（读 extension_settings.vectors 的源/模型），保证与每轮真实召回同配置。
+
+const VECTOR_SOURCE_LABELS = {
+    transformers: '本地 (transformers)',
+    openai: 'OpenAI',
+    ollama: 'Ollama',
+    siliconflow: '硅基流动',
+    vllm: 'vLLM（可当通用 OpenAI 兼容接口）',
+    llamacpp: 'llama.cpp',
+    koboldcpp: 'KoboldCpp',
+    palm: 'Google (Palm)',
+    vertexai: 'Google Vertex AI',
+    cohere: 'Cohere',
+    openrouter: 'OpenRouter',
+    togetherai: 'Together AI',
+    mistral: 'Mistral',
+    nomicai: 'Nomic AI',
+    chutes: 'Chutes',
+    nanogpt: 'NanoGPT',
+    electronhub: 'ElectronHub',
+    workers_ai: 'Cloudflare Workers AI',
+    webllm: 'WebLLM（浏览器本地）',
+    extras: 'Extras',
+};
+
+function vectorSourceLabel(src) {
+    return VECTOR_SOURCE_LABELS[src] || src || '（未设置）';
+}
+
+function vectorSourceModel(vs) {
+    if (!vs) return '';
+    const m = {
+        openai: vs.openai_model,
+        electronhub: vs.electronhub_model,
+        openrouter: vs.openrouter_model,
+        cohere: vs.cohere_model,
+        togetherai: vs.togetherai_model,
+        ollama: vs.ollama_model,
+        vllm: vs.vllm_model,
+        webllm: vs.webllm_model,
+        palm: vs.google_model,
+        vertexai: vs.google_model,
+        chutes: vs.chutes_model,
+        nanogpt: vs.nanogpt_model,
+        siliconflow: vs.siliconflow_model,
+        workers_ai: vs.workers_ai_model,
+    }[vs.source];
+    return m ? String(m) : '';
+}
+
+// 与酒馆 vectors 扩展 getVectorsRequestBody 保持一致：读源对应的模型/接口地址拼进请求体
+function vectorsRequestBody(args = {}) {
+    const vs = extension_settings.vectors;
+    const body = Object.assign({}, args);
+    if (!vs) return body;
+    switch (vs.source) {
+        case 'extras':
+            body.extrasUrl = extension_settings.apiUrl;
+            body.extrasKey = extension_settings.apiKey;
+            break;
+        case 'electronhub':
+            body.model = vs.electronhub_model;
+            break;
+        case 'openrouter':
+            body.model = vs.openrouter_model;
+            break;
+        case 'togetherai':
+            body.model = vs.togetherai_model;
+            break;
+        case 'openai':
+            body.model = vs.openai_model;
+            break;
+        case 'cohere':
+            body.model = vs.cohere_model;
+            break;
+        case 'ollama':
+            body.model = vs.ollama_model;
+            body.apiUrl = vs.use_alt_endpoint ? vs.alt_endpoint_url : textgenerationwebui_settings.server_urls[textgen_types.OLLAMA];
+            body.keep = !!vs.ollama_keep;
+            break;
+        case 'llamacpp':
+            body.apiUrl = vs.use_alt_endpoint ? vs.alt_endpoint_url : textgenerationwebui_settings.server_urls[textgen_types.LLAMACPP];
+            break;
+        case 'vllm':
+            body.apiUrl = vs.use_alt_endpoint ? vs.alt_endpoint_url : textgenerationwebui_settings.server_urls[textgen_types.VLLM];
+            body.model = vs.vllm_model;
+            break;
+        case 'webllm':
+            body.model = vs.webllm_model;
+            break;
+        case 'palm':
+            body.model = vs.google_model;
+            body.api = 'makersuite';
+            break;
+        case 'vertexai':
+            body.model = vs.google_model;
+            body.api = 'vertexai';
+            body.vertexai_auth_mode = oai_settings.vertexai_auth_mode;
+            body.vertexai_region = oai_settings.vertexai_region;
+            body.vertexai_express_project_id = oai_settings.vertexai_express_project_id;
+            break;
+        case 'chutes':
+            body.model = vs.chutes_model;
+            break;
+        case 'nanogpt':
+            body.model = vs.nanogpt_model;
+            break;
+        case 'siliconflow':
+            body.model = vs.siliconflow_model;
+            body.siliconflow_endpoint = oai_settings.siliconflow_endpoint;
+            break;
+        case 'workers_ai':
+            body.model = vs.workers_ai_model || '@cf/baai/bge-m3';
+            body.workers_ai_account_id = oai_settings.workers_ai_account_id;
+            break;
+        default:
+            break;
+    }
+    return body;
+}
+
+function renderRecall() {
+    const panel = $('#st-serendipity');
+    const statusEl = panel.find('.st-sd__recall-status');
+    const worldSelect = panel.find('.st-sd__recall-world');
+    if (!statusEl.length) return;
+
+    const vs = extension_settings.vectors;
+    if (!vs) {
+        statusEl.html('<div class="st-sd__recall-warn">未检测到酒馆「向量存储」扩展（没装或没启用），语义搜索需要它。</div>');
+    } else {
+        const chips = ['<span class="st-sd__recall-chip">源：' + escapeHtml(vectorSourceLabel(vs.source)) + '</span>'];
+        const model = vectorSourceModel(vs);
+        if (model) chips.push('<span class="st-sd__recall-chip">模型：' + escapeHtml(model) + '</span>');
+        chips.push(vs.enabled_world_info
+            ? '<span class="st-sd__recall-chip st-sd__recall-chip--ok">世界书向量化：已启用</span>'
+            : '<span class="st-sd__recall-chip st-sd__recall-chip--warn">世界书向量化：未启用</span>');
+        statusEl.html(chips.join(''));
+    }
+
+    const names = Array.isArray(world_names) ? [...world_names] : [];
+    const current = settings.archivedWorldBook || settings.worldBook || '';
+    if (current && !names.includes(current)) names.unshift(current);
+    if (!names.length) {
+        worldSelect.html('<option value="">（暂无世界书）</option>');
+    } else {
+        worldSelect.html(names.map(n => `<option value="${escapeHtml(n)}"${n === current ? ' selected' : ''}>${escapeHtml(n)}</option>`).join(''));
+    }
+}
+
+async function runSemanticSearch() {
+    const panel = $('#st-serendipity');
+    const world = String(panel.find('.st-sd__recall-world').val() || '').trim();
+    const query = String(panel.find('.st-sd__recall-input').val() || '').trim();
+    const list = panel.find('.st-sd__recall-list');
+    if (!world) { toastr.warning('请先选择要查询的世界书'); return; }
+    if (!query) { toastr.warning('请输入要搜索的一句话'); return; }
+    const vs = extension_settings.vectors;
+    if (!vs) { toastr.error('没有检测到酒馆「向量存储」扩展的设置'); return; }
+    if (vs.source === 'webllm') {
+        list.html('<div class="st-sd__empty">WebLLM（浏览器本地）源暂不支持面板内语义搜索，请改用其他 embedding 源。</div>');
+        return;
+    }
+    if (!vs.enabled_world_info) {
+        toastr.warning('酒馆向量存储的「世界书向量化」还没启用，向量库里可能没有数据', undefined, { timeOut: 4000 });
+    }
+    list.html('<div class="st-sd__empty">正在语义搜索…</div>');
+    try {
+        const body = vectorsRequestBody({});
+        body.collectionId = 'world_' + getStringHash(world);
+        body.searchText = query;
+        body.topK = Number(vs.max_entries) || 5;
+        body.threshold = Number(vs.score_threshold) || 0;
+        body.source = vs.source;
+        const resp = await fetch('/api/vector/query', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const t = await resp.text();
+            throw new Error('HTTP ' + resp.status + (t ? '：' + String(t).slice(0, 200) : ''));
+        }
+        const data = await resp.json();
+        const meta = Array.isArray(data.metadata) ? data.metadata : [];
+        if (!meta.length) {
+            list.html('<div class="st-sd__empty">没有召回任何记忆。可能原因：这本世界书还没被向量化（需开着世界书向量化、跑过至少一轮生成，向量库才会索引这些条目）、相似度都低于阈值（' + escapeHtml(String(body.threshold)) + '）、或这本世界书里没有标记为向量化的条目。</div>');
+            return;
+        }
+        list.html(meta.map((it, i) => {
+            const text = String(it.text || '').trim();
+            return '<div class="st-sd__recall-item">'
+                + '<div class="st-sd__recall-rank">#' + (i + 1) + '</div>'
+                + '<div class="st-sd__recall-body">' + escapeHtml(text) + '</div>'
+                + '</div>';
+        }).join(''));
+        toastr.success('语义召回命中 ' + meta.length + ' 条（按相似度从高到低）');
+    } catch (e) {
+        console.error('[Serendipity] 语义搜索失败：', e);
+        list.html('<div class="st-sd__empty">语义搜索失败：' + escapeHtml(e && e.message ? e.message : String(e)) + '</div>');
+    }
+}
+
 // ---------------- 时间轴 UI ----------------
 // 当前锚点 + 时间线列表（已过X天 / 第X天·年月日几时几分·地点 / 重要事情，不断叠加，可编辑/删除）
 let timelineEditingId = null;
@@ -2379,6 +2588,7 @@ function buildPanel() {
       </div>
       <div class="st-sd__tabs">
         <button type="button" class="st-sd__tab is-active" data-tab="memory">记忆</button>
+        <button type="button" class="st-sd__tab" data-tab="recall">向量召回</button>
         <button type="button" class="st-sd__tab" data-tab="censor">屏蔽词</button>
         <button type="button" class="st-sd__tab" data-tab="instruct">指令</button>
         <button type="button" class="st-sd__tab" data-tab="time">时间轴</button>
@@ -2438,6 +2648,20 @@ function buildPanel() {
         <div class="st-sd__reset-row">
           <button type="button" class="st-sd__reset">清空本角色数据</button>
         </div>
+      </div>
+
+      <div class="st-sd__pane" data-pane="recall" style="display:none">
+        <div class="st-sd__recall-status"></div>
+        <div class="st-sd__recall-world-row">
+          <span class="st-sd__label">世界书</span>
+          <select class="st-sd__recall-world" title="要查询哪本世界书的向量（对应归档时选择的世界书）"></select>
+        </div>
+        <div class="st-sd__recall-search">
+          <input type="text" class="st-sd__recall-input" placeholder="输入一句话，看语义召回会带回哪几条记忆，如「沈砚身上的旧伤」" autocomplete="off">
+          <button type="button" class="st-sd__recall-run">语义搜索</button>
+        </div>
+        <div class="st-sd__hint">这里直接调一次酒馆「向量存储」，列出按语义相似度从高到低排序、会被召回的记忆原文（结果与模型每轮实际召回到的一致）。前提：在酒馆「扩展 → 向量存储」里①启用「世界书向量化」②配好 embedding 源；且这本世界书已激活、开过至少一轮生成让向量库索引到这些条目。</div>
+        <div class="st-sd__recall-list"></div>
       </div>
 
       <div class="st-sd__pane" data-pane="censor" style="display:none">
@@ -2584,6 +2808,7 @@ function bindPanelEvents() {
         $(this).addClass('is-active');
         panel.find('.st-sd__pane').hide();
         panel.find(`.st-sd__pane[data-pane="${name}"]`).show();
+        if (name === 'recall') renderRecall();
     });
 
     // 立即总结
@@ -2675,6 +2900,9 @@ function bindPanelEvents() {
         renderMemories();
         input.trigger('focus');
     });
+    // 向量召回（语义搜索）：独立类目，输入一句话调酒馆向量存储查一次
+    panel.find('.st-sd__recall-run').on('click', runSemanticSearch);
+    panel.find('.st-sd__recall-input').on('keydown', (e) => { if (e.key === 'Enter') runSemanticSearch(); });
     // 一键清空当前角色数据
     panel.find('.st-sd__reset').on('click', resetCurrentChar);
 
@@ -3156,6 +3384,7 @@ function togglePanel(force) {
         renderForeshadows();
         renderChecks();
         renderCharBinding();
+        renderRecall();
     } else {
         panel.hide();
     }

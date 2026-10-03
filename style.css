@@ -450,6 +450,71 @@
     line-height: 1;
 }
 .st-sd__search-clear:hover { color: var(--sd-accent); border-color: var(--sd-accent); }
+
+/* ============ 向量召回（语义搜索）页 ============ */
+.st-sd__recall-status { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.st-sd__recall-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    color: var(--sd-text-2);
+    background: var(--sd-surface);
+    border: 1px solid var(--sd-border);
+}
+.st-sd__recall-chip--ok { color: var(--sd-ok); border-color: var(--sd-ok); background: var(--sd-ok-bg); }
+.st-sd__recall-chip--warn { color: var(--sd-warn); border-color: var(--sd-warn); background: var(--sd-warn-bg); }
+.st-sd__recall-warn {
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--sd-warn);
+    background: var(--sd-warn-bg);
+    border: 1px solid var(--sd-border-2);
+}
+.st-sd__recall-world-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.st-sd__recall-world { flex: 1; min-width: 0; }
+.st-sd__recall-search { display: flex; gap: 8px; margin-bottom: 12px; }
+.st-sd__recall-input { flex: 1; min-width: 0; }
+.st-sd__recall-run { flex: 0 0 auto; }
+.st-sd__recall-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.st-sd__recall-item {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 12px;
+    border: 1px solid var(--sd-border);
+    border-left: 2px solid var(--sd-accent);
+    border-radius: 8px;
+    background: var(--sd-surface);
+}
+.st-sd__recall-rank {
+    flex: 0 0 auto;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--sd-accent-deep);
+    line-height: 1.5;
+    min-width: 28px;
+    text-align: center;
+}
+.st-sd__recall-body {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--sd-text);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
 .st-sd__world-alert {
     display: none;
     background: var(--sd-warn-bg);
