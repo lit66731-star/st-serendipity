@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.30.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.31.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1699,6 +1699,23 @@ function renderStoryTime() {
         <div class="st-sd__story-hero">${hero}</div>${metaHtml}`);
 }
 
+// 面板内搜索记忆：按正文 / 剧情时间 / 地点 / 关联角色 / 第几天 做本地关键词过滤（零 API、即时）
+let memorySearch = '';
+
+// 记忆是否命中当前搜索词（空搜索词 = 全部命中）
+function memoryMatches(m, q) {
+    if (!q) return true;
+    const text = String(m.text || '').toLowerCase();
+    if (text.includes(q)) return true;
+    if (String(m.storyTime || '').toLowerCase().includes(q)) return true;
+    if (String(m.storyLocation || '').toLowerCase().includes(q)) return true;
+    if (String(m.storyPeriod || '').toLowerCase().includes(q)) return true;
+    if (m.storyDay != null && String('第' + m.storyDay + '天').includes(q)) return true;
+    const e = (settings.entities || []).find(x => x && x.id === m.entityRef);
+    if (e && e.name && String(e.name).toLowerCase().includes(q)) return true;
+    return false;
+}
+
 function renderMemories() {
     const list = $('#st-serendipity .st-sd__memory-list');
     if (!list.length) return;
@@ -1710,22 +1727,38 @@ function renderMemories() {
     const everyInput = $('#st-serendipity .st-sd__every-input');
     if (everyInput.length) everyInput.val(settings.summarizeEvery || 1);
 
+    // 同步搜索框状态：有词时显示清空按钮
+    const q = memorySearch.trim().toLowerCase();
+    const clearBtn = $('#st-serendipity .st-sd__search-clear');
+    if (clearBtn.length) clearBtn.toggle(!!q);
+
     const hasAny = settings.memories.length || settings.longMemories.length;
     if (!hasAny) {
         list.html('<div class="st-sd__empty">暂无记忆，每轮对话结束后会自动总结叠加</div>');
         return;
     }
 
+    const short = settings.memories.filter(m => memoryMatches(m, q));
+    const long = settings.longMemories.filter(m => memoryMatches(m, q));
+
+    // 有搜索词但一条都没命中
+    if (q && !short.length && !long.length) {
+        list.html('<div class="st-sd__empty">没有匹配「' + escapeHtml(memorySearch.trim()) + '」的记忆</div>');
+        return;
+    }
+
     let html = '';
     // 短期记忆置顶、默认展开（最常用）
-    if (settings.memories.length) {
-        html += `<div class="st-sd__tier-title st-sd__tier-title--static">短期记忆（${settings.memories.length}/${TIER_LIMIT}）</div>`;
-        html += [...settings.memories].reverse().map(m => memoryItemHtml(m, true, 'short')).join('');
+    if (short.length) {
+        const label = q ? `短期记忆（匹配 ${short.length} / 共 ${settings.memories.length}）` : `短期记忆（${settings.memories.length}/${TIER_LIMIT}）`;
+        html += `<div class="st-sd__tier-title st-sd__tier-title--static">${label}</div>`;
+        html += [...short].reverse().map(m => memoryItemHtml(m, true, 'short')).join('');
     }
     // 长期记忆：可折叠，默认收起；满 10 条会提醒归档到世界书
-    if (settings.longMemories.length) {
-        html += `<details class="st-sd__tier"><summary class="st-sd__tier-title">长期记忆（${settings.longMemories.length}/${TIER_LIMIT}）</summary>`;
-        html += [...settings.longMemories].reverse().map(m => memoryItemHtml(m, true, 'long')).join('');
+    if (long.length) {
+        const label = q ? `长期记忆（匹配 ${long.length} / 共 ${settings.longMemories.length}）` : `长期记忆（${settings.longMemories.length}/${TIER_LIMIT}）`;
+        html += `<details class="st-sd__tier"><summary class="st-sd__tier-title">${label}</summary>`;
+        html += [...long].reverse().map(m => memoryItemHtml(m, true, 'long')).join('');
         html += '</details>';
     }
     list.html(html);
@@ -2396,6 +2429,10 @@ function buildPanel() {
           <span class="st-sd__vec-label">归档用向量召回</span>
         </div>
         <div class="st-sd__world-alert" style="display:none"></div>
+        <div class="st-sd__search-row">
+          <input type="text" class="st-sd__search-input" placeholder="搜索记忆（按正文 / 地点 / 角色 / 时间）" autocomplete="off">
+          <button type="button" class="st-sd__search-clear" title="清空搜索" style="display:none">✕</button>
+        </div>
         <div class="st-sd__memory-list"></div>
         <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期；长期满 ${TIER_LIMIT} 条会提醒你「注入世界书」归档并清空。记忆会注入正文，防止模型失忆。</div>
         <div class="st-sd__reset-row">
@@ -2626,6 +2663,18 @@ function bindPanelEvents() {
     // 手动补记一条记忆
     panel.find('.st-sd__add-note').on('click', addManualNote);
     panel.find('.st-sd__note-input').on('keydown', (e) => { if (e.key === 'Enter') addManualNote(); });
+    // 面板内搜索记忆（本地关键词过滤，即时刷新列表）
+    panel.find('.st-sd__search-input').on('input', function () {
+        memorySearch = this.value;
+        renderMemories();
+    });
+    panel.find('.st-sd__search-clear').on('click', function () {
+        const input = panel.find('.st-sd__search-input');
+        input.val('');
+        memorySearch = '';
+        renderMemories();
+        input.trigger('focus');
+    });
     // 一键清空当前角色数据
     panel.find('.st-sd__reset').on('click', resetCurrentChar);
 

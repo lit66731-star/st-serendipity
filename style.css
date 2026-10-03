@@ -436,6 +436,20 @@
 .st-sd__world-select { width: 100%; }
 .st-sd__vec-switch { margin-left: 10px; vertical-align: middle; }
 .st-sd__vec-label { margin-left: 8px; font-size: 12px; color: var(--sd-text-2); vertical-align: middle; }
+.st-sd__search-row { display: flex; align-items: center; gap: 6px; margin: 4px 0 10px; }
+.st-sd__search-input { flex: 1; min-width: 0; }
+.st-sd__search-clear {
+    flex: 0 0 auto;
+    width: 28px; height: 28px;
+    border: 1px solid var(--sd-border);
+    background: var(--sd-surface);
+    color: var(--sd-text-2);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+}
+.st-sd__search-clear:hover { color: var(--sd-accent); border-color: var(--sd-accent); }
 .st-sd__world-alert {
     display: none;
     background: var(--sd-warn-bg);
