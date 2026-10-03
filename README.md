@@ -61,6 +61,95 @@ SillyTavern 第三方扩展：自动剧情记忆总结、结构化剧情时间�
 - 整插件（记忆、屏蔽词、指令）**按角色卡绑定**（以角色卡唯一标识 avatar 为准，同名卡也各自独立）：换到新角色卡时插件是干净的一套，切回旧角色卡则恢复该角色卡自己的记忆/屏蔽词/指令，互不串扰。
 - **同一角色卡的不同聊天也各自独立**：数据按「角色 + 聊天」双维度隔离存储，开启新对话就是全新的一套记忆/时间轴/世界状态，**不再把上一个聊天页面的内容带进新对话**；切回旧聊天则恢复那个聊天自己的记录。想手动彻底重开当前聊天，可用面板底部的「清空本角色数据」。
 
+## 架构
+
+### 数据存储
+
+整插件数据存于酒馆设置 `extension_settings.serendipity`，结构是一层分桶：
+
+```
+serendipity
+└─ chars: { "<charKey>::<chatId>": 角色数据, ... }
+```
+
+- `<charKey>` = `avatar::<角色卡唯一头像>`（无头像退回 `name::<角色名>`），区分同名不同图的两张卡。
+- `<chatId>` = `chat::<当前聊天文件名>`（取不到退回聊天文件头的 `integrity` UUID），区分同一角色卡的不同聊天。
+- 键拼成「**角色 + 聊天**」双维度：换角色 / 换聊天各用各的一套，互不串扰；旧版按角色存的数据首次打开有历史的聊天时自动迁到对应聊天名下。
+
+每个角色数据对象（`freshCharSettings`）的字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `memories` | 短期记忆，每条 `{ id, time, storyTime, storyDay, storyLocation, text }` |
+| `longMemories` | 长期记忆（短期满 10 条合并而来），结构同上 |
+| `memoryEnabled` / `summarizeEvery` / `roundsSinceSummary` / `lastSummaryIndex` | 记忆开关、每 N 轮总结、轮数计数、总结水位线 |
+| `storyTime` / `storyDay` / `storyPeriod` / `storyLocation` | 当前剧情时间锚点（年月日几时几分 / 第X天 / 时段 / 地点） |
+| `timeline` | 时间线叠加列表 `{ id, day, time, location, event }` |
+| `worldState` | 世界状态列表 `{ id, cat, text }`（年龄/好感/关系/物品/日程） |
+| `blockedWords` / `censorEnabled` | 屏蔽词列表 / 开关 |
+| `instructions` | 指令列表 `{ id, text, enabled }` |
+| `foreshadows` / `injectForeshadows` | 伏笔列表 `{ id, title, status, note, day }` / 是否注入正文 |
+| `checks` | 一致性检查结果 `{ id, type, text, day }` |
+| `worldBook` / `archivedWorldBook` / `worldReminderShown` | 归档目标世界书 / 上次归档 / 归档提醒 |
+
+### 记忆总结流水线（核心）
+
+每一轮 AI 回复结束后（`GENERATION_ENDED`），按 `summarizeEvery`（每 N 轮）触发一次 `summarizeLastRound()`：
+
+1. **取增量窗口**：用 `lastSummaryIndex` 水位线，只取「上次总结以来」的新消息（中间跳过的几轮一并带上，不漏剧情）；水位线越界（消息被删/回滚）时退化为最近一轮。
+2. **构造总结 Prompt**（`buildSummaryPrompt`）：把上一次剧情时间、时间轴锚点、当前世界状态回传给模型，让它「接力推进」而不是每轮从零猜。
+3. **调用模型**（`generateRaw`），返回总结按 `【…】` 标签逐行解析：
+   - 【时间】 → 更新 `storyTime`（剧情时间锚点）
+   - 【时间轴】「第X天|地点|重要事情」 → 更新 `storyDay`/`storyPeriod`/`storyLocation`，并 `pushTimelineEntry` 叠加进时间线
+   - 【世界状态】「类别：内容；…」 → `applyWorldState` 快照式更新（「无」保留、「空」清空、有新内容替换整类）
+   - 其余正文（天气/在场人物/地点/关键事件/衣着/物品/约定承诺/详细总结…） → 存入短期记忆 `memories`（只追加、不覆盖）
+4. **晋级**：`memories` 满 10 条 → `promoteMemories` 合并成 1 条写入 `longMemories`，清空短期；`longMemories` 满 10 条提醒「注入世界书」归档。
+5. **一致性**：总结后跑一次免费的本地时间冲突启发式（`refreshLocalChecks`）。
+
+### 记忆分级与归档
+
+- **短期记忆**：每轮的详细总结，置顶、默认展开，满 10 条晋级。
+- **长期记忆**：短期合并而来，可折叠，满 10 条提醒归档到世界书（`injectToWorldBook` 把长期记忆合并追加进同一条 `[Serendipity] 剧情记忆归档` 常驻条目并清空长期，正文注入始终有界）。
+- 记忆**只叠加、不覆盖**：除手动删除、或归档后清空长期外，插件不删记忆。
+
+### 正文注入（`updatePromptInjection`）
+
+模型每轮生成前，插件用 `setExtensionPrompt` 注入以下块：
+
+| 注入块 | 类型 | 内容 | 条件 |
+| --- | --- | --- | --- |
+| `serendipity_memory_rules` | IN_PROMPT | 记忆底层规则（剧情时间连续性等，只给模型看） | 记忆开关开 |
+| `serendipity_memory` | IN_PROMPT | 长期 + 短期记忆 | 记忆开关开且有记忆 |
+| `serendipity_time` | IN_PROMPT | 当前剧情时间锚点（第X天·时间·地点） | 有锚点 |
+| `serendipity_world` | IN_PROMPT | 世界状态列表 | 有世界状态 |
+| `serendipity_foreshadow` | IN_PROMPT | 未完成伏笔提醒 | 伏笔注入开关开 |
+| `serendipity_censor` | BEFORE_PROMPT | 禁止词（绝不得出现） | 屏蔽开启且有词 |
+| `serendipity_instructions` | BEFORE_PROMPT | 用户指令（最高优先级） | 有开启的指令 |
+
+### 剧情一致性检查
+
+- **本地启发式（免费、不调模型）**：对照时间线/记忆里的「第X天」与当前天数，出现倒退/超前即标 ⚠（每次总结后自动跑）。
+- **模型深查（手动）**：「检查」页点「立即检查」，调一次模型对照时间轴/时间线/世界状态/记忆排查时间冲突与状态冲突。
+
+### 伏笔 / 未完成事项
+
+纯本地列表 + 状态机（未揭示/未解决/进行中/已回收），可选注入正文提醒模型别遗忘、别提前说破。
+
+### 数据流（一图流）
+
+```
+聊天消息 ──GENERATION_ENDED(每N轮)──▶ 总结 Prompt ──▶ 模型 ──▶ 按【…】解析
+                                        │                    │
+                         故事时间/第X天/地点 ─▶ [当前时间]    ├─▶ 时间线/世界状态 ─▶ [时间线][世界状态]
+                                                          └─▶ 记忆正文 ─▶ 短期 ─满10─▶ 长期 ─满10─▶ 注入世界书
+                         记忆规则/记忆/时间/世界/伏笔 ──▶ 全部 setExtensionPrompt 注入正文
+```
+
+### 屏蔽词 / 指令
+
+- **屏蔽词**：界面层直接删除文本（MutationObserver 实时监控）+ 注入正文禁止模型再输出。
+- **指令**：无数量限制，逐条开关，注入正文最高优先级。
+
 ## 说明
 
 - 记忆总结每次会额外调用一次模型，消耗少量额度（这是「自动总结」的正常开销）。
