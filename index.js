@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.21.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.22.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -334,9 +334,9 @@ function freshCharSettings() {
         storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
         storyLocation: '',      // 当前地点
         worldState: [],         // 世界状态列表（非人物信息）[{ id, cat: '物品'|'日程', text }]
-        entities: [],           // 角色实体 [{ id, name, age, note, world, timeline, identity }]（姓名/年龄/简介 + 身份域：世界/时间线/身份）
+        entities: [],           // 角色实体 [{ id, name, age, note, world, timeline, identity, body, mind, goal, secret, promise }]（姓名/年龄/简介 + 身份域 + 人物状态）
         autoRegisterEntities: true, // 总结时是否自动把「在场人物」登记进角色实体（默认开）
-        pendingEntityAssignments: [], // 待人工确认的同名角色归属 [{ id, name, age, note, world, timeline, identity, candidates:[entityId] }]
+        pendingEntityAssignments: [], // 待人工确认的同名角色归属 [{ id, name, age, note, world, timeline, identity, body, mind, goal, secret, promise, candidates:[entityId] }]
         relationshipLines: [],  // 情感线/关系轨迹 [{ id, a, b, current:{affection,relationship,attitude}, history:[{id,day,from,to,change,reason,event}] }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
@@ -415,6 +415,11 @@ function normalizeCharSettings(cs) {
         world: typeof e.world === 'string' ? e.world : '',
         timeline: typeof e.timeline === 'string' ? e.timeline : '',
         identity: typeof e.identity === 'string' ? e.identity : '',
+        body: typeof e.body === 'string' ? e.body : '',
+        mind: typeof e.mind === 'string' ? e.mind : '',
+        goal: typeof e.goal === 'string' ? e.goal : '',
+        secret: typeof e.secret === 'string' ? e.secret : '',
+        promise: typeof e.promise === 'string' ? e.promise : '',
     }));
     // 一次性迁移：把旧世界状态里的「年龄」转成角色实体；「好感/关系」已被关系线取代（丢弃旧扁平条目，需在「人物→关系」里重建）
     if (!cs._relUnified) {
@@ -459,6 +464,11 @@ function normalizeCharSettings(cs) {
         world: typeof p.world === 'string' ? p.world : '',
         timeline: typeof p.timeline === 'string' ? p.timeline : '',
         identity: typeof p.identity === 'string' ? p.identity : '',
+        body: typeof p.body === 'string' ? p.body : '',
+        mind: typeof p.mind === 'string' ? p.mind : '',
+        goal: typeof p.goal === 'string' ? p.goal : '',
+        secret: typeof p.secret === 'string' ? p.secret : '',
+        promise: typeof p.promise === 'string' ? p.promise : '',
         candidates: Array.isArray(p.candidates) ? p.candidates.filter(c => typeof c === 'string') : [],
     })).filter(p => p.candidates.some(cid => cs.entities.some(e => e.id === cid)));
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
@@ -631,7 +641,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
             '【时间】剧情中的具体时间（年/月/日 周几 几时几分，必须给出具体时间，不要写「无」）',
             '【天气】天气情况',
             '【在场人物】有哪些人在场',
-            '【人物档案】在场各角色的身份信息，每个角色写成「姓名|年龄|简介|世界|时间线|身份」一段，多个角色用「；」分隔（世界/时间线/身份用于区分同名角色；某字段未知写「无」）',
+            '【人物档案】在场各角色的身份与状态信息，每个角色写成「姓名|年龄|简介|世界|时间线|身份|身体|心理|目标|秘密|承诺」一段，多个角色用「；」分隔（世界/时间线/身份用于区分同名角色；身体/心理/目标/秘密/承诺是当前状态，无则写「无」，要清除某项写「空」；年龄/简介/身份域没提到写「无」）',
             '【地点】发生地点/场景',
             '【关键事件】本段发生的关键事件',
             '【角色衣着】' + charName + '的衣着',
@@ -714,6 +724,10 @@ function relationshipCurrentText() {
     ).join('\n');
 }
 
+// 角色实体字段分两类：稳定字段（年龄/简介/身份域，只补空、不覆盖）；状态字段（身体/心理/目标/秘密/承诺，快照式：非空替换、「空」清空、「无」保留）
+const ENTITY_STABLE_FIELDS = ['age', 'note', 'world', 'timeline', 'identity'];
+const ENTITY_STATE_FIELDS = ['body', 'mind', 'goal', 'secret', 'promise'];
+
 // 角色实体渲染成紧凑文本（供正文注入复用；身份域非空时拼成「世界·时间线·身份」标签）
 function entityDomain(n) {
     return [n.world, n.timeline, n.identity].filter(Boolean).join('·');
@@ -750,7 +764,10 @@ function npcText() {
     return settings.entities.map(n => n.name
         + (entityDomain(n) ? '（' + entityDomain(n) + '）' : '')
         + (n.age ? '，' + n.age + '岁' : '')
-        + (n.note ? '，' + n.note : '')).join('\n');
+        + (n.note ? '，' + n.note : '')
+        + (n.goal ? '；目标：' + n.goal : '')
+        + (n.secret ? '；秘密：' + n.secret : '')
+        + (n.promise ? '；承诺：' + n.promise : '')).join('\n');
 }
 // 从总结结果里解析【世界状态】行 → { entries: [{ cat, text }], clearCats: [cat] }
 // 约定：某类别写「无」= 保留原样；写「空」= 清空该类
@@ -869,23 +886,23 @@ function registerEntities(names) {
     for (const name of names) {
         if (!name) continue;
         if (settings.entities.some(e => e.name === name)) continue;
-        settings.entities.push({ id: uid(), name, age: '', note: '', world: '', timeline: '', identity: '' });
+        settings.entities.push({ id: uid(), name, age: '', note: '', world: '', timeline: '', identity: '', body: '', mind: '', goal: '', secret: '', promise: '' });
     }
 }
-// 从总结结果里解析【人物档案】行 → [{ name, age, note, world, timeline, identity }]（过滤代词/空名/「无」）
+// 从总结结果里解析【人物档案】行 → [{ name, age, note, world, timeline, identity, body, mind, goal, secret, promise }]（过滤代词/空名/「无」；「空」保留为清除标记）
 function extractEntityInfos(text) {
     const m = String(text).match(/【人物档案】\s*([^\n]+)/);
     if (!m || !m[1]) return [];
     const raw = m[1].trim();
     if (!raw || raw === '无') return [];
-    const FIELDS = ['name', 'age', 'note', 'world', 'timeline', 'identity'];
+    const FIELDS = ['name', 'age', 'note', 'world', 'timeline', 'identity', 'body', 'mind', 'goal', 'secret', 'promise'];
     const infos = [];
     for (const seg of raw.split(/[；;]+/)) {
         const parts = seg.split(/[|｜]/).map(s => s.replace(/^[「『"']+|[」』"']+$/g, '').trim());
         const info = {};
         for (let i = 0; i < FIELDS.length; i++) {
             const v = (parts[i] || '').trim();
-            info[FIELDS[i]] = (v && v !== '无' && v !== '未知') ? v : '';
+            info[FIELDS[i]] = (v === '空') ? '空' : ((v && v !== '无' && v !== '未知') ? v : '');
         }
         const name = String(info.name || '').trim();
         if (!name || ENTITY_PRONOUNS.has(name)) continue;
@@ -906,16 +923,30 @@ function entityDomainScore(a, b) {
     }
     return { score, overlap };
 }
-// 只补空字段，不覆盖已有内容
-function fillEntityEmptyFields(e, info) {
-    for (const k of ['age', 'note', 'world', 'timeline', 'identity']) {
-        if (!e[k] && info[k]) e[k] = info[k];
+// 从一条人物信息构建全新实体（「空」/空值都归一为 ''）
+function entityFromInfo(name, info) {
+    const clean = v => (v && v !== '空') ? v : '';
+    return {
+        id: uid(), name,
+        age: clean(info.age), note: clean(info.note),
+        world: clean(info.world), timeline: clean(info.timeline), identity: clean(info.identity),
+        body: clean(info.body), mind: clean(info.mind), goal: clean(info.goal), secret: clean(info.secret), promise: clean(info.promise),
+    };
+}
+// 合并一条人物信息到实体：稳定字段只补空、不覆盖手填；状态字段快照式（非空替换、「空」清空、「无」保留）
+function applyEntityInfo(e, info) {
+    for (const k of ENTITY_STABLE_FIELDS) {
+        if (!e[k] && info[k] && info[k] !== '空') e[k] = info[k];
+    }
+    for (const k of ENTITY_STATE_FIELDS) {
+        if (info[k] === '空') e[k] = '';
+        else if (info[k]) e[k] = info[k];
     }
 }
 // 把人物档案信息合并进角色实体：
 //   新名字 → 新建实体；
-//   唯一同名 → 只补空字段（不覆盖手填内容）；
-//   同名多个 → 按身份域（世界/时间线/身份）匹配：唯一最佳命中 → 补空字段；无任何命中但模型给了身份域 → 默认新建独立实体；并列最高分或没给身份域 → 排队待人工确认
+//   唯一同名 → 合并（稳定字段补空、状态字段快照替换）；
+//   同名多个 → 按身份域（世界/时间线/身份）匹配：唯一最佳命中 → 合并；无任何命中但模型给了身份域 → 默认新建独立实体；并列最高分或没给身份域 → 排队待人工确认
 function mergeEntityInfos(infos) {
     if (!Array.isArray(infos)) return;
     for (const info of infos) {
@@ -923,13 +954,9 @@ function mergeEntityInfos(infos) {
         if (!name) continue;
         const matches = settings.entities.filter(e => e.name === name);
         if (matches.length === 0) {
-            settings.entities.push({
-                id: uid(), name,
-                age: info.age || '', note: info.note || '',
-                world: info.world || '', timeline: info.timeline || '', identity: info.identity || '',
-            });
+            settings.entities.push(entityFromInfo(name, info));
         } else if (matches.length === 1) {
-            fillEntityEmptyFields(matches[0], info);
+            applyEntityInfo(matches[0], info);
         } else {
             // 同名多个：按身份域找唯一最佳归属
             let best = null, bestScore = 0, unique = true;
@@ -939,14 +966,10 @@ function mergeEntityInfos(infos) {
                 else if (s === bestScore && s > 0) unique = false;
             }
             if (best && bestScore >= 1 && unique) {
-                fillEntityEmptyFields(best, info);
+                applyEntityInfo(best, info);
             } else if (bestScore === 0 && (info.world || info.timeline || info.identity)) {
                 // 无任何命中、但模型给了身份域：默认新建独立实体（域不同即不同人）
-                settings.entities.push({
-                    id: uid(), name,
-                    age: info.age || '', note: info.note || '',
-                    world: info.world || '', timeline: info.timeline || '', identity: info.identity || '',
-                });
+                settings.entities.push(entityFromInfo(name, info));
             } else {
                 // 并列最高分、或模型没给身份域：无法确定归属，排队待人工确认
                 queueEntityAssignment(info, matches);
@@ -962,6 +985,7 @@ function queueEntityAssignment(info, matches) {
         name: info.name,
         age: info.age || '', note: info.note || '',
         world: info.world || '', timeline: info.timeline || '', identity: info.identity || '',
+        body: info.body || '', mind: info.mind || '', goal: info.goal || '', secret: info.secret || '', promise: info.promise || '',
         candidates: matches.map(e => e.id),
     });
 }
@@ -1299,7 +1323,7 @@ function updatePromptInjection() {
     const npcLines = settings.entities.length ? npcText() : '';
     setExtensionPrompt(
         'serendipity_npcs',
-        npcLines ? '[Serendipity 人物档案]\n以下是登场角色的实体档案（姓名/身份域/年龄/简介）。同名角色按「世界·时间线·身份」区分，不要因姓名相同而合并。\n' + npcLines : '',
+        npcLines ? '[Serendipity 人物档案]\n以下是登场角色的实体档案（姓名/身份域/年龄/简介，以及需要牢记的目标/秘密/承诺）。同名角色按「世界·时间线·身份」区分，不要因姓名相同而合并。\n' + npcLines : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
@@ -1691,15 +1715,25 @@ function renderNpcs() {
                 + '<input type="text" class="st-sd__npc-e-identity" value="' + escapeHtml(n.identity) + '" placeholder="身份/职业">'
                 + '<input type="text" class="st-sd__npc-e-age" value="' + escapeHtml(n.age) + '" placeholder="年龄">'
                 + '<input type="text" class="st-sd__npc-e-note" value="' + escapeHtml(n.note) + '" placeholder="简介">'
+                + '<input type="text" class="st-sd__npc-e-body" value="' + escapeHtml(n.body) + '" placeholder="身体（受伤/中毒/健康…）">'
+                + '<input type="text" class="st-sd__npc-e-mind" value="' + escapeHtml(n.mind) + '" placeholder="心理（焦虑/放松…）">'
+                + '<input type="text" class="st-sd__npc-e-goal" value="' + escapeHtml(n.goal) + '" placeholder="目标">'
+                + '<input type="text" class="st-sd__npc-e-secret" value="' + escapeHtml(n.secret) + '" placeholder="秘密">'
+                + '<input type="text" class="st-sd__npc-e-promise" value="' + escapeHtml(n.promise) + '" placeholder="承诺">'
                 + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__npc-save" data-id="' + n.id + '">保存</button><button type="button" class="st-sd__npc-cancel">取消</button></span>'
                 + '</div>';
         }
         const domain = entityDomain(n);
+        const stateChips = [['身体', n.body], ['心理', n.mind], ['目标', n.goal], ['秘密', n.secret], ['承诺', n.promise]]
+            .filter(x => x[1])
+            .map(x => '<span class="st-sd__npc-state">' + x[0] + '：' + escapeHtml(x[1]) + '</span>')
+            .join('');
         return '<div class="st-sd__npc-item" data-id="' + n.id + '">'
             + '<span class="st-sd__npc-name">' + escapeHtml(n.name) + '</span>'
             + (domain ? '<span class="st-sd__npc-domain">' + escapeHtml(domain) + '</span>' : '')
             + (n.age ? '<span class="st-sd__npc-age">' + escapeHtml(n.age) + '岁</span>' : '')
             + (n.note ? '<span class="st-sd__npc-note">' + escapeHtml(n.note) + '</span>' : '')
+            + stateChips
             + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__npc-edit" data-id="' + n.id + '">编辑</button><button type="button" class="st-sd__npc-del" data-id="' + n.id + '">删除</button></span>'
             + '</div>';
     }).join(''));
@@ -1832,7 +1866,9 @@ function exportMemories() {
     if (settings.entities.length) {
         for (const n of settings.entities) {
             const domain = entityDomain(n);
-            lines.push(n.name + (domain ? '（' + domain + '）' : '') + (n.age ? '（' + n.age + '岁）' : '') + (n.note ? ' · ' + n.note : ''));
+            lines.push(n.name + (domain ? '（' + domain + '）' : '') + (n.age ? '（' + n.age + '岁）' : '') + (n.note ? ' · ' + n.note : '')
+                + (n.body ? ' · 身体：' + n.body : '') + (n.mind ? ' · 心理：' + n.mind : '')
+                + (n.goal ? ' · 目标：' + n.goal : '') + (n.secret ? ' · 秘密：' + n.secret : '') + (n.promise ? ' · 承诺：' + n.promise : ''));
         }
     } else {
         lines.push('（暂无）');
@@ -2245,7 +2281,7 @@ function buildPanel() {
       <div class="st-sd__pane" data-pane="people" style="display:none">
         <div class="st-sd__section-title">人物档案</div>
         <div class="st-sd__toolbar">
-          <label class="st-sd__switch" title="开启后，每次总结会自动把在场人物登记进人物档案，并带出模型给出的年龄/简介/世界/时间线/身份（只补空字段，不覆盖你手填的内容；同名多个按身份域自动归属，拿不准的会弹在下方待你确认）">
+          <label class="st-sd__switch" title="开启后，每次总结会自动把在场人物登记进人物档案，并带出模型给出的年龄/简介/身份域与身体/心理/目标/秘密/承诺（身份域只补空字段、状态快照更新；同名多个按身份域自动归属，拿不准的会弹在下方待你确认）">
             <input type="checkbox" class="st-sd__npc-auto"><span class="st-sd__switch-slider"></span>
           </label>
           <span class="st-sd__label">总结时自动登记在场人物</span>
@@ -2261,7 +2297,7 @@ function buildPanel() {
           <input type="text" class="st-sd__npc-note" placeholder="简介（可空，如「北境斥候队长」）">
           <button type="button" class="st-sd__npc-add">添加</button>
         </div>
-        <div class="st-sd__hint">身份域（世界·时间线·身份）用来区分同名角色：前世「沈昭·将军」与今生「沈昭·医生」是两个独立实体。好感与关系在下方「关系」里按 A→B 配对维护，两者不重复。</div>
+        <div class="st-sd__hint">身份域（世界·时间线·身份）用来区分同名角色：前世「沈昭·将军」与今生「沈昭·医生」是两个独立实体。身体/心理/目标/秘密/承诺是人物当前状态（总结时快照更新，其中目标/秘密/承诺会注入正文让 AI 牢记，身体/心理只在面板显示）。好感与关系在下方「关系」里按 A→B 配对维护，两者不重复。</div>
         <div class="st-sd__pending"></div>
         <div class="st-sd__npc-list"></div>
 
@@ -2508,7 +2544,7 @@ function bindPanelEvents() {
         const identity = panel.find('.st-sd__npc-identity').val().trim();
         const age = panel.find('.st-sd__npc-age').val().trim();
         const note = panel.find('.st-sd__npc-note').val().trim();
-        settings.entities.push({ id: uid(), name, age, note, world, timeline, identity });
+        settings.entities.push({ id: uid(), name, age, note, world, timeline, identity, body: '', mind: '', goal: '', secret: '', promise: '' });
         saveSettings();
         updatePromptInjection();
         renderNpcs();
@@ -2545,6 +2581,11 @@ function bindPanelEvents() {
         n.identity = panel.find('.st-sd__npc-e-identity').val().trim();
         n.age = panel.find('.st-sd__npc-e-age').val().trim();
         n.note = panel.find('.st-sd__npc-e-note').val().trim();
+        n.body = panel.find('.st-sd__npc-e-body').val().trim();
+        n.mind = panel.find('.st-sd__npc-e-mind').val().trim();
+        n.goal = panel.find('.st-sd__npc-e-goal').val().trim();
+        n.secret = panel.find('.st-sd__npc-e-secret').val().trim();
+        n.promise = panel.find('.st-sd__npc-e-promise').val().trim();
         npcEditingId = null;
         saveSettings();
         updatePromptInjection();
@@ -2568,17 +2609,13 @@ function bindPanelEvents() {
         if (action === 'skip') {
             settings.pendingEntityAssignments.splice(idx, 1);
         } else if (action === 'new') {
-            settings.entities.push({
-                id: uid(), name: p.name,
-                age: p.age || '', note: p.note || '',
-                world: p.world || '', timeline: p.timeline || '', identity: p.identity || '',
-            });
+            settings.entities.push(entityFromInfo(p.name, p));
             settings.pendingEntityAssignments.splice(idx, 1);
             toastr.success('已新建独立实体「' + p.name + '」');
         } else if (action.startsWith('@')) {
             const e = settings.entities.find(x => x.id === action.slice(1));
             if (e) {
-                fillEntityEmptyFields(e, p);
+                applyEntityInfo(e, p);
                 settings.pendingEntityAssignments.splice(idx, 1);
                 toastr.success('已归到「' + (e.name + (entityDomain(e) ? '（' + entityDomain(e) + '）' : '')) + '」');
             } else {
