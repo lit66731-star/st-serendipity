@@ -378,7 +378,7 @@
 .st-sd__world-select, .st-sd__world-cat,
 .st-sd__npc-name, .st-sd__npc-age, .st-sd__npc-note,
 .st-sd__npc-world, .st-sd__npc-timeline, .st-sd__npc-identity,
-.st-sd__search-input, .st-sd__recall-input, .st-sd__recall-world,
+.st-sd__recall-input, .st-sd__recall-world,
 .st-sd__recall-threshold, .st-sd__recall-topk {
     border: 1px solid var(--sd-border-2);
     border-radius: 6px;
@@ -399,7 +399,7 @@
 .st-sd__tl-e-event:focus, .st-sd__world-select:focus, .st-sd__world-cat:focus,
 .st-sd__npc-name:focus, .st-sd__npc-age:focus, .st-sd__npc-note:focus,
 .st-sd__npc-world:focus, .st-sd__npc-timeline:focus, .st-sd__npc-identity:focus,
-.st-sd__search-input:focus, .st-sd__recall-input:focus, .st-sd__recall-world:focus,
+.st-sd__recall-input:focus, .st-sd__recall-world:focus,
 .st-sd__recall-threshold:focus, .st-sd__recall-topk:focus {
     border-color: var(--sd-accent);
     box-shadow: 0 0 0 3px rgba(205, 179, 176, 0.20);
@@ -440,20 +440,6 @@
 .st-sd__world-select { width: 100%; }
 .st-sd__vec-switch { margin-left: 10px; vertical-align: middle; }
 .st-sd__vec-label { margin-left: 8px; font-size: 12px; color: var(--sd-text-2); vertical-align: middle; }
-.st-sd__search-row { display: flex; align-items: center; gap: 6px; margin: 4px 0 10px; }
-.st-sd__search-input { flex: 1; min-width: 0; }
-.st-sd__search-clear {
-    flex: 0 0 auto;
-    width: 28px; height: 28px;
-    border: 1px solid var(--sd-border);
-    background: var(--sd-surface);
-    color: var(--sd-text-2);
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 13px;
-    line-height: 1;
-}
-.st-sd__search-clear:hover { color: var(--sd-accent); border-color: var(--sd-accent); }
 
 /* ============ 向量召回（语义搜索）页 ============ */
 .st-sd__recall-status { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
@@ -522,6 +508,19 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
+.st-sd__recall-copy {
+    flex: 0 0 auto;
+    align-self: flex-start;
+    padding: 3px 10px;
+    font-size: 12px;
+    color: var(--sd-text-2);
+    background: var(--sd-surface-2);
+    border: 1px solid var(--sd-border);
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.st-sd__recall-copy:hover { color: var(--sd-accent); border-color: var(--sd-accent); }
 .st-sd__world-alert {
     display: none;
     background: var(--sd-warn-bg);
