@@ -14,6 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
+const VERSION = '1.14.1'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1561,7 +1562,10 @@ function buildPanel() {
     <div id="st-serendipity" class="st-sd" style="display:none">
       <div class="st-sd__head">
         <div class="st-sd__head-left">
-          <span class="st-sd__title">Serendipity</span>
+          <div class="st-sd__brand">
+            <span class="st-sd__title">Serendipity</span>
+            <span class="st-sd__version">v${VERSION}</span>
+          </div>
           <span class="st-sd__char"></span>
         </div>
         <button type="button" class="st-sd__close" title="关闭">${ICONS.close}</button>
