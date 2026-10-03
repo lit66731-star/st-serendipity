@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.27.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.28.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1473,7 +1473,44 @@ function isWorldBookActive(name) {
     return false;
 }
 
-// 把长期记忆归档到用户选择的世界书：合并进同一条常驻条目（避免世界书越攒越多条），归档后清空长期记忆
+// 每条长期记忆的关键词：正文里出现过的实体名 + 关联实体 + 地点；都没有时兜底用当前角色名，保证能被召回
+function memoryKeywords(m) {
+    const keys = new Set();
+    const text = String(m.text || '');
+    if (m.entityRef) {
+        const e = (settings.entities || []).find(x => x && x.id === m.entityRef);
+        if (e && e.name && e.name.trim().length >= 2) keys.add(e.name.trim());
+    }
+    for (const e of (settings.entities || [])) {
+        if (e && e.name && e.name.trim().length >= 2 && text.includes(e.name)) keys.add(e.name.trim());
+    }
+    const loc = (m.storyLocation || '').trim();
+    if (loc.length >= 2 && !/^(这里|那里|某处|室内|室外|原地|当地)$/.test(loc)) keys.add(loc);
+    const arr = [...keys];
+    if (!arr.length) {
+        const cn = currentCharName();
+        if (cn && cn.trim()) arr.push(cn.trim());
+    }
+    return arr.slice(0, 8);
+}
+
+// 条目内容 = 原文 + 时间前缀，召回后模型能知道这是哪天的事
+function memoryEntryContent(m) {
+    const day = m.storyDay != null ? ('第' + m.storyDay + '天') : '';
+    const time = m.storyTime || '';
+    const when = (day || time) ? (day + (time ? ' · ' + time : '')) : '';
+    return (when ? when + '：' : '') + m.text;
+}
+
+// 条目标题：重要度 + 短摘要，便于在世界书里一眼辨认
+function memoryEntryComment(m) {
+    const snippet = String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, 30);
+    const imp = (m.importance === 'S' || m.importance === 'A') ? ('[' + m.importance + '] ') : '';
+    return '[Serendipity] ' + imp + snippet;
+}
+
+// 把长期记忆归档到用户选择的世界书：每条长期记忆单独写成一条带关键词的条目，
+// 让酒馆按关键词按需召回原文（而不是合并成一条常驻条目每轮全量注入），归档后清空长期记忆
 async function injectToWorldBook() {
     if (isInjecting) return; // 上一次注入还没结束，忽略重复点击
     isInjecting = true;
@@ -1485,8 +1522,7 @@ async function injectToWorldBook() {
             toastr.warning('请先在上方选择一个世界书');
             return;
         }
-        const memBlock = settings.longMemories.length ? mergeEntries(settings.longMemories).trim() : '';
-        if (!memBlock) {
+        if (!settings.longMemories.length) {
             toastr.warning('当前还没有长期记忆，先积累一些记忆再归档');
             return;
         }
@@ -1495,43 +1531,38 @@ async function injectToWorldBook() {
             toastr.error('读取世界书「' + worldName + '」失败，可能已被删除，请重新选择');
             return;
         }
-        // 找到既有的归档条目并追加，找不到才新建一条
-        const MARK = '[Serendipity] 剧情记忆归档';
-        let entry = data.entries.find(e => e && e.comment === MARK);
-        if (!entry) {
-            entry = createWorldInfoEntry(worldName, data);
-            if (!entry) {
-                toastr.error('在世界书中创建新条目失败');
-                return;
-            }
-            entry.comment = MARK;
-            entry.content = memBlock;
-        } else {
-            entry.content = entry.content ? entry.content + '\n\n' + memBlock : memBlock;
+        const charName = currentCharName();
+        let written = 0;
+        for (const m of settings.longMemories) {
+            if (!m || !m.text) continue;
+            const entry = createWorldInfoEntry(worldName, data);
+            if (!entry) continue;
+            entry.comment = memoryEntryComment(m);
+            entry.content = memoryEntryContent(m);
+            entry.key = memoryKeywords(m);        // 关键词：按人物/地点等召回
+            entry.constant = false;               // 不常驻，靠关键词触发按需召回
+            entry.selective = true;               // 选择性触发（关键词匹配）
+            entry.characterFilterNames = charName ? [charName] : []; // 绑定当前角色
+            entry.characterFilterExclude = false;
+            entry.position = 0;                   // 注入位置：角色设定之前（召回时作为权威背景）
+            entry.role = 0;                       // 系统角色
+            written++;
         }
-        entry.constant = true;    // 常驻：每轮都注入，不靠关键词触发
-        entry.selective = false;
-        entry.key = [];           // 不加关键词
-        entry.keysecondary = [];
-        entry.scanDepth = 1;                    // 注入时直接把扫描深度改为 1
-        entry.matchCreatorNotes = true;          // 额外匹配来源：创作者注释
-        entry.characterFilterNames = [currentCharName()]; // 绑定到当前角色（按名字）
-        entry.characterFilterExclude = false;
-        entry.position = 4;            // 插入位置：插入深度 @D（4 = atDepth）
-        entry.role = 0;                // 系统角色 [系统]（0 = SYSTEM）
-        entry.depth = 4;               // 插入深度值 @4
+        if (!written) {
+            toastr.error('在世界书中创建条目失败');
+            return;
+        }
         await saveWorldInfo(worldName, data, true);
         settings.archivedWorldBook = worldName; // 记录归档目标，用于「未激活」常驻黄条提醒
-        // 归档后清空长期记忆（正文注入保持有界），并重置提醒
-        settings.longMemories = [];
+        settings.longMemories = [];              // 归档后清空长期记忆（正文注入保持有界）
         settings.worldReminderShown = false;
         saveSettings();
         updatePromptInjection();
         renderMemories();
         if (isWorldBookActive(worldName)) {
-            toastr.success('已归档长期记忆到世界书「' + worldName + '」并清空长期记忆');
+            toastr.success('已归档 ' + written + ' 条长期记忆到世界书「' + worldName + '」并清空长期记忆（按关键词召回原文）');
         } else {
-            toastr.warning('已归档到世界书「' + worldName + '」，但这本世界书还没激活，模型暂时读不到。请到酒馆世界书界面把它设为全局世界书，或绑定到此角色。');
+            toastr.warning('已归档 ' + written + ' 条长期记忆到世界书「' + worldName + '」，但这本世界书还没激活，模型暂时读不到。请到酒馆世界书界面把它设为全局世界书，或绑定到此角色。');
         }
     } catch (e) {
         console.error('[Serendipity] 注入世界书失败：', e);
