@@ -1,0 +1,13 @@
+{
+    "name": "error",
+    "display_name": "error · 音乐播放器",
+    "description": "网易云风格音乐播放器：本地文件 + 直链 URL 播放、歌单、列表循环/单曲循环/随机、进度/音量控制，自适应手机全屏。",
+    "author": "cc_test",
+    "version": "1.0.0",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "auto_update": false
+}
