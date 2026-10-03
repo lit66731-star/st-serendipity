@@ -30,6 +30,12 @@ const RELATIVE_DAYS = {
 // 世界状态类别（列表格式，按类别分组展示/注入）
 const WORLD_CATS = ['年龄', '好感', '关系', '物品', '日程'];
 
+// 伏笔/未完成事项的状态（点击状态标签循环切换）
+const FORESHADOW_STATUSES = ['未揭示', '未解决', '进行中', '已回收'];
+
+// 一致性检查结果的类型（展示用中文标签）
+const CHECK_TYPE_LABELS = { time: '时间冲突', state: '状态冲突', other: '其他' };
+
 const defaultSettings = {
     chars: {},       // { [角色名]: 该角色的记忆/屏蔽词/指令等数据 }
 };
@@ -62,6 +68,9 @@ function freshCharSettings() {
         storyLocation: '',      // 当前地点
         worldState: [],         // 世界状态列表 [{ id, cat: '年龄'|'好感'|'关系'|'物品'|'日程', text }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
+        checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
+        foreshadows: [],        // 伏笔/未完成事项 [{ id, title, status, note, day }]
+        injectForeshadows: false, // 是否把未完成伏笔注入正文提醒模型（默认关，以本地管理为主）
         worldReminderShown: false, // 长期记忆满 10 的归档提醒是否已弹过（归档后重置）
         worldBook: '',          // 用户选择要注入的世界书名（不一定用角色绑定的那本）
         archivedWorldBook: '',  // 上次归档到哪本世界书（用于「未激活」常驻黄条提醒）
@@ -71,7 +80,7 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'timeline']) {
+    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'timeline', 'checks', 'foreshadows']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
     // 迁移：旧版「永久记忆」档已取消，原永久记忆并入长期记忆（随后一起归档到世界书）
@@ -87,6 +96,20 @@ function normalizeCharSettings(cs) {
         location: typeof e.location === 'string' ? e.location : '',
         event: typeof e.event === 'string' ? e.event : '',
     }));
+    cs.checks = cs.checks.filter(e => e && e.id && typeof e.text === 'string' && e.text.trim()).map(e => ({
+        id: e.id,
+        type: ['time', 'state', 'other'].includes(e.type) ? e.type : 'other',
+        text: e.text,
+        day: (e.day == null || isNaN(e.day)) ? null : Number(e.day),
+    }));
+    cs.foreshadows = cs.foreshadows.filter(e => e && e.id && typeof e.title === 'string' && e.title.trim()).map(e => ({
+        id: e.id,
+        title: e.title,
+        status: FORESHADOW_STATUSES.includes(e.status) ? e.status : '未揭示',
+        note: typeof e.note === 'string' ? e.note : '',
+        day: (e.day == null || isNaN(e.day)) ? null : Number(e.day),
+    }));
+    if (cs.injectForeshadows === undefined) cs.injectForeshadows = false;
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
     if (!(cs.summarizeEvery >= 1)) cs.summarizeEvery = 1;
@@ -362,6 +385,114 @@ function applyWorldState(parsed) {
     }
 }
 
+// ---------------- 剧情一致性检查 ----------------
+// 本地（免费、不调模型）时间冲突启发式：时间线/记忆里出现「第N天」晚于当前天 → 时间倒退/超前冲突
+function localConsistencyCheck() {
+    const items = [];
+    const cur = settings.storyDay;
+    if (cur == null) return items;
+    const seen = new Set();
+    for (const e of settings.timeline) {
+        if (e.day != null && e.day > cur) {
+            const text = '时间线记录到「第' + e.day + '天」' + (e.event ? '（' + e.event + '）' : '') + '，但当前剧情才进行到第' + cur + '天';
+            if (!seen.has(text)) { seen.add(text); items.push({ type: 'time', text }); }
+        }
+    }
+    for (const arr of [settings.memories, settings.longMemories]) {
+        for (const m of arr) {
+            if (m.storyDay != null && m.storyDay > cur) {
+                const text = '记忆里有「第' + m.storyDay + '天」的内容，但当前剧情才进行到第' + cur + '天';
+                if (!seen.has(text)) { seen.add(text); items.push({ type: 'time', text }); }
+            }
+        }
+    }
+    return items;
+}
+
+// 解析模型一致性检查输出 → [{ type, text }]
+function parseChecks(text) {
+    const items = [];
+    const s = String(text || '').trim();
+    if (!s || s === '无' || s === '无冲突') return items;
+    for (const rawLine of s.split(/\n/)) {
+        const line = rawLine.replace(/^[-*•·\d.、)\s]+/, '').trim();
+        if (!line || line === '无') continue;
+        const m = line.match(/^(时间冲突|状态冲突|其他)\s*[：:]\s*(.+)$/);
+        let type = 'other', desc = line;
+        if (m) {
+            type = m[1] === '时间冲突' ? 'time' : (m[1] === '状态冲突' ? 'state' : 'other');
+            desc = m[2].trim();
+        }
+        if (!desc) continue;
+        items.push({ type, text: desc });
+    }
+    return items;
+}
+
+// 每次总结后刷新本地（免费）时间冲突检查，合并进现有结果：本地项重算，AI 的状态冲突项保留
+function refreshLocalChecks() {
+    const aiItems = settings.checks.filter(c => c.type !== 'time');
+    const merged = [];
+    const seen = new Set();
+    for (const it of [...aiItems, ...localConsistencyCheck()]) {
+        if (seen.has(it.text)) continue;
+        seen.add(it.text);
+        merged.push(it);
+    }
+    settings.checks = merged.slice(0, 20).map(t => ({ id: t.id || uid(), type: t.type, text: t.text, day: settings.storyDay }));
+    saveSettings();
+    renderChecks();
+}
+
+// 手动「立即检查」：调一次模型，对照时间轴/时间线/世界状态/记忆排查矛盾（不往每轮正文里塞）
+async function runConsistencyCheck() {
+    if (isSummarizing) return; // 复用并发锁，防止连点/与总结抢跑
+    activateCharacter();
+    isSummarizing = true;
+    toastr.info('正在检查剧情一致性…', undefined, { timeOut: 1500 });
+    try {
+        const anchor = '当前剧情时间轴：第' + (settings.storyDay != null ? settings.storyDay : '?') + '天'
+            + (settings.storyTime ? ' · ' + settings.storyTime : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '');
+        const tlLines = settings.timeline.length
+            ? settings.timeline.map(e => '第' + (e.day != null ? e.day : '?') + '天' + (e.time ? ' ' + e.time : '') + (e.location ? ' ' + e.location : '') + (e.event ? '：' + e.event : '')).join('\n')
+            : '（暂无时间线）';
+        const worldLines = settings.worldState.length ? worldStateLines(worldStateByCat()) : '（暂无世界状态）';
+        const memLines = [...settings.longMemories, ...settings.memories]
+            .map(m => (m.storyTime ? m.storyTime + '：' : '') + m.text)
+            .slice(-30).join('\n\n') || '（暂无记忆）';
+        const systemPrompt = [
+            '你是剧情一致性检查员。请对比「当前时间轴」与「已有时间线/世界状态/记忆」，找出剧情中的矛盾冲突。只输出冲突清单，确实没有就只输出「无」。',
+            '',
+            anchor,
+            '',
+            '已有时间线：\n' + tlLines,
+            '',
+            '当前世界状态：\n' + worldLines,
+            '',
+            '近期记忆：\n' + memLines,
+            '',
+            '逐行输出发现的冲突，格式「类型：描述」，类型取「时间冲突」「状态冲突」「其他」。示例：「时间冲突：记忆里第12天发生的事，但当前才第10天」「状态冲突：林昭第8天已离开京城，第10天却仍在京城」。最多列 10 条，确实没有就只写「无」。',
+        ].join('\n');
+        const result = await generateRaw({ prompt: '请给出剧情一致性检查结果。', systemPrompt });
+        const merged = [];
+        const seen = new Set();
+        for (const it of [...parseChecks(result), ...localConsistencyCheck()]) {
+            if (seen.has(it.text)) continue;
+            seen.add(it.text);
+            merged.push(it);
+        }
+        settings.checks = merged.slice(0, 20).map(t => ({ id: uid(), type: t.type, text: t.text, day: settings.storyDay }));
+        saveSettings();
+        renderChecks();
+        toastr.success(settings.checks.length ? ('发现 ' + settings.checks.length + ' 处剧情冲突，见「检查」页') : '未发现剧情冲突');
+    } catch (e) {
+        console.error('[Serendipity] 一致性检查失败：', e);
+        toastr.error('一致性检查失败');
+    } finally {
+        isSummarizing = false;
+    }
+}
+
 // 把一组记忆合并成一段文本（带序号），用于晋级时“清空并总结”
 function mergeEntries(arr) {
     return arr.map((m, i) => `(${i + 1}) ${m.text}`).join('\n\n');
@@ -451,6 +582,7 @@ async function summarizeLastRound() {
             renderMemories();
             renderTimeAxis();
             renderWorldState();
+            refreshLocalChecks();
 
             // 弹窗提示：总结成功 + 是否触发晋级
             let msg = '本轮记忆总结成功';
@@ -518,6 +650,15 @@ function updatePromptInjection() {
     setExtensionPrompt(
         'serendipity_world',
         worldLines ? '[Serendipity 世界状态]\n' + worldLines + '\n请记住并在后续生成中遵守这些世界状态（年龄/好感/关系/物品/日程），剧情产生新变化时自然更新。' : '',
+        extension_prompt_types.IN_PROMPT,
+        0,
+    );
+
+    // 伏笔注入（可选，默认关闭）：把未完成的伏笔/未完成事项紧凑提醒模型，避免遗忘或提前说破
+    const openFores = settings.injectForeshadows ? settings.foreshadows.filter(f => f && f.status !== '已回收' && f.title && f.title.trim()) : [];
+    setExtensionPrompt(
+        'serendipity_foreshadow',
+        openFores.length ? '[Serendipity 未完成伏笔]\n以下伏笔/未完成事项尚未回收，请在剧情中记住它们、不要遗忘，也不要提前揭晓；时机成熟时自然回收：\n' + openFores.map((f, i) => (i + 1) + '. [' + f.status + '] ' + f.title).join('\n') : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
@@ -885,6 +1026,28 @@ function exportMemories() {
         lines.push('（暂无）');
     }
 
+    // 伏笔/未完成事项
+    lines.push('');
+    lines.push('========== 伏笔 / 未完成事项 ==========');
+    if (settings.foreshadows.length) {
+        for (const f of settings.foreshadows) {
+            lines.push('[' + f.status + '] ' + f.title + (f.note ? '（' + f.note + '）' : ''));
+        }
+    } else {
+        lines.push('（暂无）');
+    }
+
+    // 剧情一致性检查
+    lines.push('');
+    lines.push('========== 剧情一致性检查 ==========');
+    if (settings.checks.length) {
+        for (const c of settings.checks) {
+            lines.push('⚠ [' + (CHECK_TYPE_LABELS[c.type] || '其他') + '] ' + c.text);
+        }
+    } else {
+        lines.push('（无冲突）');
+    }
+
     const content = '﻿' + lines.join('\n'); // BOM，避免记事本中文乱码
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -935,6 +1098,8 @@ function resetCurrentChar() {
     renderWorldState();
     renderBlockedWords();
     renderInstructions();
+    renderForeshadows();
+    renderChecks();
     toastr.success('已清空「' + name + '」的 Serendipity 数据');
 }
 
@@ -1037,6 +1202,82 @@ function renderInstructions() {
     list.html(items);
 }
 
+// ---------------- 一致性检查 UI ----------------
+function updateCheckBadge() {
+    const tab = $('#st-serendipity .st-sd__tab[data-tab="check"]');
+    if (!tab.length) return;
+    const n = settings.checks.length;
+    tab.text(n ? ('检查 ' + n) : '检查');
+    tab.toggleClass('st-sd__tab--warn', n > 0);
+}
+
+function renderChecks() {
+    const list = $('#st-serendipity .st-sd__check-list');
+    if (!list.length) return;
+    updateCheckBadge();
+    if (!settings.checks.length) {
+        list.html('<div class="st-sd__empty">暂无冲突。点上方「立即检查」让模型对照时间线/世界状态/记忆排查矛盾（每次只调用一次模型）。</div>');
+        return;
+    }
+    list.html(settings.checks.map(c => {
+        const label = CHECK_TYPE_LABELS[c.type] || '其他';
+        const cls = c.type === 'time' ? 'st-sd__check--time' : (c.type === 'state' ? 'st-sd__check--state' : 'st-sd__check--other');
+        return '<div class="st-sd__check ' + cls + '" data-id="' + c.id + '">'
+            + '<span class="st-sd__check-badge">⚠ ' + escapeHtml(label) + '</span>'
+            + '<span class="st-sd__check-text">' + escapeHtml(c.text) + '</span>'
+            + '<button type="button" class="st-sd__check-del" data-id="' + c.id + '" title="忽略此条">×</button>'
+            + '</div>';
+    }).join(''));
+}
+
+// ---------------- 伏笔/未完成事项 UI ----------------
+let foreshadowEditingId = null; // 当前编辑中的伏笔条目 id
+
+function updateForeshadowBadge() {
+    const tab = $('#st-serendipity .st-sd__tab[data-tab="fore"]');
+    if (!tab.length) return;
+    const n = settings.foreshadows.filter(f => f.status !== '已回收').length;
+    tab.text(n ? ('伏笔 ' + n) : '伏笔');
+    tab.toggleClass('st-sd__tab--warn', n > 0);
+}
+
+function renderForeshadows() {
+    const list = $('#st-serendipity .st-sd__fore-list');
+    if (!list.length) return;
+    const toggle = $('#st-serendipity .st-sd__fore-toggle');
+    if (toggle.length) toggle.prop('checked', !!settings.injectForeshadows);
+    updateForeshadowBadge();
+    if (!settings.foreshadows.length) {
+        list.html('<div class="st-sd__empty">暂无伏笔。把还没揭晓的悬念 / 未完成的承诺记下来，之后回来切换状态回收。</div>');
+        return;
+    }
+    const order = { '未揭示': 0, '进行中': 1, '未解决': 2, '已回收': 3 };
+    const items = settings.foreshadows.slice().sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+    list.html(items.map(f => {
+        if (f.id === foreshadowEditingId) {
+            return '<div class="st-sd__fore st-sd__fore--edit" data-id="' + f.id + '">'
+                + '<input type="text" class="st-sd__fore-e-title" value="' + escapeHtml(f.title) + '" placeholder="伏笔/未完成事项">'
+                + '<input type="text" class="st-sd__fore-e-note" value="' + escapeHtml(f.note) + '" placeholder="备注（可选）">'
+                + '<div class="st-sd__fore-actions"><button type="button" class="st-sd__fore-save" data-id="' + f.id + '">保存</button><button type="button" class="st-sd__fore-cancel">取消</button></div>'
+                + '</div>';
+        }
+        const cls = f.status === '已回收' ? 'st-sd__fore-status--done' : 'st-sd__fore-status--open';
+        return '<div class="st-sd__fore" data-id="' + f.id + '">'
+            + '<div class="st-sd__fore-head">'
+            + '<button type="button" class="st-sd__fore-status ' + cls + '" data-id="' + f.id + '" title="点击切换状态（' + FORESHADOW_STATUSES.join(' / ') + '）">' + escapeHtml(f.status) + '</button>'
+            + '<span class="st-sd__fore-title">' + escapeHtml(f.title) + '</span>'
+            + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__fore-edit" data-id="' + f.id + '">编辑</button><button type="button" class="st-sd__fore-del" data-id="' + f.id + '">删除</button></span>'
+            + '</div>'
+            + (f.note ? '<div class="st-sd__fore-note">' + escapeHtml(f.note) + '</div>' : '')
+            + '</div>';
+    }).join(''));
+}
+
+function cycleForeshadowStatus(f) {
+    const i = FORESHADOW_STATUSES.indexOf(f.status);
+    f.status = FORESHADOW_STATUSES[(i + 1) % FORESHADOW_STATUSES.length];
+}
+
 function renderCharBinding() {
     const el = $('#st-serendipity .st-sd__char');
     if (el.length) el.text(activeChar ? ('绑定角色：' + activeChar) : '未绑定角色');
@@ -1079,6 +1320,8 @@ function buildPanel() {
         <button type="button" class="st-sd__tab" data-tab="instruct">指令</button>
         <button type="button" class="st-sd__tab" data-tab="time">时间轴</button>
         <button type="button" class="st-sd__tab" data-tab="world">世界</button>
+        <button type="button" class="st-sd__tab" data-tab="fore">伏笔</button>
+        <button type="button" class="st-sd__tab" data-tab="check">检查</button>
       </div>
 
       <div class="st-sd__pane" data-pane="memory">
@@ -1160,6 +1403,31 @@ function buildPanel() {
         </div>
         <div class="st-sd__hint">世界状态按类别分组列出，总结时自动快照更新（某类别有新内容就替换整类，无变化保留）。可手动添加/编辑/删除。</div>
         <div class="st-sd__world-list"></div>
+      </div>
+
+      <div class="st-sd__pane" data-pane="fore" style="display:none">
+        <div class="st-sd__add-row">
+          <input type="text" class="st-sd__fore-input" placeholder="伏笔/未完成事项，如「沈砚身上的旧伤」">
+          <button type="button" class="st-sd__fore-add">添加</button>
+        </div>
+        <div class="st-sd__toolbar">
+          <label class="st-sd__switch st-sd__fore-switch" title="开启后把未完成的伏笔注入正文提醒模型">
+            <input type="checkbox" class="st-sd__fore-toggle"><span class="st-sd__switch-slider"></span>
+          </label>
+          <span class="st-sd__label">把未完成伏笔注入正文提醒模型</span>
+        </div>
+        <div class="st-sd__hint">点状态标签切换「未揭示 / 未解决 / 进行中 / 已回收」。未完成的伏笔会显示在页签角标；默认不注入正文，开启上方开关后提醒模型别遗忘、别提前说破。</div>
+        <div class="st-sd__fore-list"></div>
+      </div>
+
+      <div class="st-sd__pane" data-pane="check" style="display:none">
+        <div class="st-sd__toolbar">
+          <span class="st-sd__label">剧情一致性</span>
+          <button type="button" class="st-sd__check-run">立即检查</button>
+          <button type="button" class="st-sd__check-clear">清空</button>
+        </div>
+        <div class="st-sd__hint">让模型对照「当前时间轴 + 已有时间线/世界状态/记忆」排查矛盾（如：记忆里第12天发生的事、当前才第10天；某人已离开却仍出场）。只在点按钮时调用一次模型，不往每轮正文里塞。</div>
+        <div class="st-sd__check-list"></div>
       </div>
     </div>`;
     $('body').append(html);
@@ -1421,6 +1689,86 @@ function bindPanelEvents() {
         saveSettings();
         renderTimeAxis();
     });
+
+    // 伏笔/未完成事项：添加
+    const addFore = () => {
+        const input = panel.find('.st-sd__fore-input');
+        const v = input.val().trim();
+        if (!v) return;
+        if (!settings.foreshadows.some(f => f.title === v)) {
+            settings.foreshadows.push({ id: uid(), title: v, status: '未揭示', note: '', day: settings.storyDay });
+            saveSettings();
+            renderForeshadows();
+        }
+        input.val('');
+    };
+    panel.find('.st-sd__fore-add').on('click', addFore);
+    panel.find('.st-sd__fore-input').on('keydown', (e) => { if (e.key === 'Enter') addFore(); });
+
+    // 伏笔：注入开关
+    panel.find('.st-sd__fore-toggle').prop('checked', !!settings.injectForeshadows).on('change', function () {
+        settings.injectForeshadows = this.checked;
+        saveSettings();
+        updatePromptInjection();
+    });
+
+    // 伏笔：切换状态（循环）
+    panel.on('click', '.st-sd__fore-status', function () {
+        const id = String($(this).data('id'));
+        const f = settings.foreshadows.find(x => x.id === id);
+        if (!f) return;
+        cycleForeshadowStatus(f);
+        saveSettings();
+        updatePromptInjection();
+        renderForeshadows();
+    });
+
+    // 伏笔：编辑/保存/取消/删除
+    panel.on('click', '.st-sd__fore-edit', function () {
+        foreshadowEditingId = String($(this).data('id'));
+        renderForeshadows();
+        const inp = panel.find('.st-sd__fore-e-title');
+        if (inp.length) inp.focus();
+    });
+    panel.on('click', '.st-sd__fore-cancel', function () {
+        foreshadowEditingId = null;
+        renderForeshadows();
+    });
+    panel.on('click', '.st-sd__fore-save', function () {
+        const id = String($(this).data('id'));
+        const f = settings.foreshadows.find(x => x.id === id);
+        if (!f) { foreshadowEditingId = null; renderForeshadows(); return; }
+        const title = panel.find('.st-sd__fore-e-title').val().trim();
+        if (!title) { toastr.warning('标题不能为空'); return; }
+        f.title = title;
+        f.note = panel.find('.st-sd__fore-e-note').val().trim();
+        foreshadowEditingId = null;
+        saveSettings();
+        updatePromptInjection();
+        renderForeshadows();
+        toastr.success('已保存');
+    });
+    panel.on('click', '.st-sd__fore-del', function () {
+        const id = String($(this).data('id'));
+        settings.foreshadows = settings.foreshadows.filter(x => x.id !== id);
+        saveSettings();
+        updatePromptInjection();
+        renderForeshadows();
+    });
+
+    // 一致性检查：立即检查 / 清空 / 忽略单条
+    panel.find('.st-sd__check-run').on('click', runConsistencyCheck);
+    panel.find('.st-sd__check-clear').on('click', function () {
+        settings.checks = [];
+        saveSettings();
+        renderChecks();
+    });
+    panel.on('click', '.st-sd__check-del', function () {
+        const id = String($(this).data('id'));
+        settings.checks = settings.checks.filter(x => x.id !== id);
+        saveSettings();
+        renderChecks();
+    });
 }
 
 // 用真实视口尺寸定位面板，保证手机端一定不出屏（酒馆移动端 body 是 fixed+overflow:hidden，vh/bottom 会失真）
@@ -1458,6 +1806,8 @@ function togglePanel(force) {
         renderWorldState();
         renderBlockedWords();
         renderInstructions();
+        renderForeshadows();
+        renderChecks();
         renderCharBinding();
     } else {
         panel.hide();
@@ -1502,6 +1852,8 @@ jQuery(async () => {
             renderWorldState();
             renderBlockedWords();
             renderInstructions();
+            renderForeshadows();
+            renderChecks();
             renderCharBinding();
         }, 150);
     });
@@ -1515,6 +1867,8 @@ jQuery(async () => {
     renderWorldState();
     renderBlockedWords();
     renderInstructions();
+    renderForeshadows();
+    renderChecks();
     renderCharBinding();
 });
 
