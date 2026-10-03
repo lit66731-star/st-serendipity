@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.19.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.20.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -880,26 +880,63 @@ function extractEntityInfos(text) {
     }
     return infos;
 }
-// 把人物档案信息合并进角色实体：新名字→新建实体；唯一同名→只补空字段，不覆盖手填内容；同名多个→跳过（不猜测归属）
+// 身份域匹配得分：逐字段（世界/时间线/身份）比较，score=双方都非空且完全一致的字段数，overlap=双方都非空的字段数
+function entityDomainScore(a, b) {
+    let score = 0, overlap = 0;
+    for (const f of ['world', 'timeline', 'identity']) {
+        const av = String(a[f] || '').trim();
+        const bv = String(b[f] || '').trim();
+        if (av && bv) {
+            overlap++;
+            if (av === bv) score++;
+        }
+    }
+    return { score, overlap };
+}
+// 只补空字段，不覆盖已有内容
+function fillEntityEmptyFields(e, info) {
+    for (const k of ['age', 'note', 'world', 'timeline', 'identity']) {
+        if (!e[k] && info[k]) e[k] = info[k];
+    }
+}
+// 把人物档案信息合并进角色实体：
+//   新名字 → 新建实体；
+//   唯一同名 → 只补空字段（不覆盖手填内容）；
+//   同名多个 → 按身份域（世界/时间线/身份）匹配，唯一最佳命中则补空字段到该实体；无清晰命中但模型给了身份域 → 默认新建独立实体（可区分）；既无匹配又无身份域 → 跳过（避免反复制造空壳同名实体）
 function mergeEntityInfos(infos) {
     if (!Array.isArray(infos)) return;
     for (const info of infos) {
         const name = String(info.name || '').trim();
         if (!name) continue;
         const matches = settings.entities.filter(e => e.name === name);
-        if (matches.length === 1) {
-            const e = matches[0];
-            for (const k of ['age', 'note', 'world', 'timeline', 'identity']) {
-                if (!e[k] && info[k]) e[k] = info[k];
-            }
-        } else if (matches.length === 0) {
+        if (matches.length === 0) {
             settings.entities.push({
                 id: uid(), name,
                 age: info.age || '', note: info.note || '',
                 world: info.world || '', timeline: info.timeline || '', identity: info.identity || '',
             });
+        } else if (matches.length === 1) {
+            fillEntityEmptyFields(matches[0], info);
+        } else {
+            // 同名多个：按身份域找唯一最佳归属
+            let best = null, bestScore = 0, unique = true;
+            for (const e of matches) {
+                const s = entityDomainScore(info, e).score;
+                if (s > bestScore) { bestScore = s; best = e; unique = true; }
+                else if (s === bestScore && s > 0) unique = false;
+            }
+            if (best && bestScore >= 1 && unique) {
+                fillEntityEmptyFields(best, info);
+            } else if (info.world || info.timeline || info.identity) {
+                // 无清晰归属，但模型给了身份域：默认新建独立实体（身份域可区分同名角色）
+                settings.entities.push({
+                    id: uid(), name,
+                    age: info.age || '', note: info.note || '',
+                    world: info.world || '', timeline: info.timeline || '', identity: info.identity || '',
+                });
+            }
+            // 既无清晰匹配、模型又没给身份域：跳过
         }
-        // matches.length > 1：同名多个，无法确定归属，跳过（不覆盖、不新建）
     }
 }
 
