@@ -18,7 +18,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.34.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.35.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -351,6 +351,13 @@ function freshCharSettings() {
         worldBook: '',          // 用户选择要注入的世界书名（不一定用角色绑定的那本）
         archivedWorldBook: '',  // 上次归档到哪本世界书（用于「未激活」常驻黄条提醒）
         archiveVectorized: false, // 归档条目是否标记 vectorized（交给酒馆向量存储做语义召回，需 ST 向量存储已启用并配好 embedding 源）
+        semanticRecall: {         // 对 Serendipity 自己数据做语义召回注入正文（复用酒馆 embedding 源，独立集合）
+            enabled: false,       // 是否注入（默认关，避免默认开启影响现有用户）
+            topK: 4,              // 每轮注入条数
+            threshold: 0.25,      // 相似度阈值
+            queryTopK: 20,        // 查询候选数（用于本地重要性/时间/角色重排）
+            index: { model: '', items: {} }, // 已索引快照 { id: hash }，model=embedding 源签名（变了就全量重建）
+        },
     };
 }
 
@@ -500,6 +507,16 @@ function normalizeCharSettings(cs) {
     if (typeof cs.worldBook !== 'string') cs.worldBook = '';
     if (typeof cs.archivedWorldBook !== 'string') cs.archivedWorldBook = '';
     if (cs.archiveVectorized === undefined) cs.archiveVectorized = false;
+    if (!cs.semanticRecall || typeof cs.semanticRecall !== 'object' || Array.isArray(cs.semanticRecall)) cs.semanticRecall = {};
+    cs.semanticRecall = {
+        enabled: !!cs.semanticRecall.enabled,
+        topK: (Number(cs.semanticRecall.topK) || 4),
+        threshold: (cs.semanticRecall.threshold != null ? Number(cs.semanticRecall.threshold) : 0.25),
+        queryTopK: (Number(cs.semanticRecall.queryTopK) || 20),
+        index: (cs.semanticRecall.index && typeof cs.semanticRecall.index === 'object' && !Array.isArray(cs.semanticRecall.index))
+            ? { model: typeof cs.semanticRecall.index.model === 'string' ? cs.semanticRecall.index.model : '', items: (cs.semanticRecall.index.items && typeof cs.semanticRecall.index.items === 'object') ? cs.semanticRecall.index.items : {} }
+            : { model: '', items: {} },
+    };
     cs.instructions = cs.instructions.map(it => {
         if (typeof it === 'string') return { id: uid(), text: it, enabled: true };
         if (it && typeof it === 'object' && typeof it.text === 'string') {
@@ -1459,6 +1476,13 @@ function updatePromptInjection() {
         extension_prompt_types.BEFORE_PROMPT,
         0,
     );
+
+    // 语义召回注入：开启时按需（防抖）同步索引，召回块本身由 GENERATION_ENDED 更新，不在这里清空；关闭时清空
+    if (settings.semanticRecall && settings.semanticRecall.enabled) {
+        scheduleSemanticSync();
+    } else {
+        setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
+    }
 }
 
 // ---------------- 世界书自动注入 ----------------
@@ -1893,6 +1917,18 @@ function renderRecall() {
     } else {
         worldSelect.html(names.map(n => `<option value="${escapeHtml(n)}"${n === current ? ' selected' : ''}>${escapeHtml(n)}</option>`).join(''));
     }
+
+    // 注入正文控件回填（只在首次/切角色时覆盖，避免用户正在输入时被刷新打断）
+    const sr = settings.semanticRecall || {};
+    const injectToggle = panel.find('.st-sd__recall-inject-toggle');
+    const injectTopk = panel.find('.st-sd__recall-inject-topk');
+    const injectThreshold = panel.find('.st-sd__recall-inject-threshold');
+    const injectQueryTopk = panel.find('.st-sd__recall-inject-querytopk');
+    if (injectToggle.length) injectToggle.prop('checked', !!sr.enabled);
+    if (injectTopk.length) injectTopk.val(Number(sr.topK) || 4);
+    if (injectThreshold.length) injectThreshold.val(sr.threshold != null ? Number(sr.threshold) : 0.25);
+    if (injectQueryTopk.length) injectQueryTopk.val(Number(sr.queryTopK) || 20);
+    renderRecallIndexState();
 }
 
 async function runSemanticSearch() {
@@ -1949,6 +1985,244 @@ async function runSemanticSearch() {
         console.error('[Serendipity] 语义搜索失败：', e);
         list.html('<div class="st-sd__empty">语义搜索失败：' + escapeHtml(e && e.message ? e.message : String(e)) + '</div>');
     }
+}
+
+// ---------------- 语义召回注入（对 Serendipity 自己的数据做语义召回，注入正文） ----------------
+// 复用酒馆向量存储的 embedding 源，把记忆/时间线/人物/关系/伏笔/世界状态存进独立集合，
+// 每轮生成后同步索引 + 按当前对话语义召回 + 重要性/时间/角色加权重排 + 去重，注入下一轮正文。
+
+function semanticCollectionId() {
+    return 'serendipity_' + getStringHash(currentDataKey() || currentCharKey() || 'default');
+}
+
+// embedding 源签名：源 + 模型变了就视为不兼容（向量需全量重建）
+function semanticModelSignature(vs) {
+    if (!vs) return '';
+    return String(vs.source) + '|' + vectorSourceModel(vs);
+}
+
+// 单个人物实体 → 一行文本（与 npcText 同格式，供嵌入/注入）
+function entityRecallText(e) {
+    return e.name
+        + (entityDomain(e) ? '（' + entityDomain(e) + '）' : '')
+        + (e.age ? '，' + e.age + '岁' : '')
+        + (e.note ? '，' + e.note : '')
+        + (e.goal ? '；目标：' + e.goal : '')
+        + (e.secret ? '；秘密：' + e.secret : '')
+        + (e.promise ? '；承诺：' + e.promise : '');
+}
+
+function recallItem(type, id, text, importance, day, entityRef) {
+    return { type, id, text, importance: importance || '', day: (day == null || isNaN(day)) ? null : Number(day), entityRef: entityRef || '' };
+}
+
+// 把当前角色所有可召回数据拍平成条目列表（每条 = 一个可被语义检索的文本块）
+function buildRecallItems() {
+    const items = [];
+    const memText = (m, tier) => {
+        const day = m.storyDay != null ? '第' + m.storyDay + '天' : '';
+        const time = m.storyTime || '';
+        const when = (day || time) ? (day + (time ? ' · ' + time : '') + '：') : '';
+        return '[' + tier + '] ' + when + m.text;
+    };
+    for (const m of settings.memories) if (m && m.text) items.push(recallItem('memory', m.id, memText(m, '短期记忆'), m.importance, m.storyDay, m.entityRef));
+    for (const m of settings.longMemories) if (m && m.text) items.push(recallItem('long', m.id, memText(m, '长期记忆'), m.importance, m.storyDay, m.entityRef));
+    for (const t of settings.timeline) if (t && t.id) {
+        const line = '第' + (t.day != null ? t.day : '?') + '天' + (t.time ? ' ' + t.time : '') + (t.location ? ' ' + t.location : '') + (t.event ? '：' + t.event : '');
+        items.push(recallItem('timeline', t.id, '[时间线] ' + line, '', t.day, ''));
+    }
+    for (const e of settings.entities) if (e && e.id) items.push(recallItem('entity', e.id, '[人物] ' + entityRecallText(e), '', null, e.id));
+    for (const l of settings.relationshipLines) if (l && l.id) {
+        const a = resolveEntityRef(l.a).display;
+        const b = resolveEntityRef(l.b).display;
+        const cur = (l.current.relationship || '未知') + (l.current.affection ? '，好感' + l.current.affection : '') + (l.current.attitude ? '，态度' + l.current.attitude : '');
+        items.push(recallItem('relation', l.id, '[关系] ' + a + ' → ' + b + '：' + cur, '', null, ''));
+    }
+    for (const f of settings.foreshadows) if (f && f.id && f.status !== '已回收') {
+        items.push(recallItem('foreshadow', f.id, '[伏笔] [' + f.status + '] ' + f.title + (f.note ? '（' + f.note + '）' : ''), '', f.day, ''));
+    }
+    for (const w of settings.worldState) if (w && w.id) items.push(recallItem('world', w.id, '[世界状态] ' + w.cat + '：' + w.text, '', null, ''));
+    return items;
+}
+
+async function semanticVectorFetch(path, body) {
+    const resp = await fetch(path, { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
+    if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error('HTTP ' + resp.status + (t ? '：' + String(t).slice(0, 200) : ''));
+    }
+    return resp;
+}
+
+async function semanticInsert(collectionId, vs, items) {
+    const body = vectorsRequestBody({});
+    body.collectionId = collectionId;
+    body.items = items.map(x => ({ hash: x.hash, text: x.text, index: x.index }));
+    body.source = vs.source;
+    await semanticVectorFetch('/api/vector/insert', body);
+}
+
+async function semanticDelete(collectionId, vs, hashes) {
+    const body = vectorsRequestBody({});
+    body.collectionId = collectionId;
+    body.hashes = hashes.map(Number);
+    body.source = vs.source;
+    await semanticVectorFetch('/api/vector/delete', body);
+}
+
+async function semanticPurge(collectionId) {
+    await semanticVectorFetch('/api/vector/purge', { collectionId });
+}
+
+// 同步索引：diff 当前数据与快照，插入新增/变更、删除已移除；embedding 源/模型变了则全量重建
+async function syncSemanticIndex() {
+    const vs = extension_settings.vectors;
+    if (!vs || vs.source === 'webllm') return;
+    const sr = settings.semanticRecall;
+    const idx = sr.index;
+    const sig = semanticModelSignature(vs);
+    const collectionId = semanticCollectionId();
+    const items = buildRecallItems();
+    const cur = {};
+    for (const it of items) cur[it.id] = getStringHash(it.text);
+
+    // 源/模型变了 → 全量重建（向量不兼容）
+    if (idx.model && idx.model !== sig) {
+        await semanticPurge(collectionId).catch(() => {});
+        idx.items = {};
+    }
+    idx.model = sig;
+
+    const toInsert = [];
+    const toDelete = [];
+    for (const it of items) {
+        if (idx.items[it.id] !== cur[it.id]) toInsert.push({ hash: cur[it.id], text: it.text, index: it.id });
+    }
+    for (const id of Object.keys(idx.items)) {
+        if (!(id in cur)) toDelete.push(idx.items[id]);
+    }
+
+    // 分批插入（一次别太多，避免超大请求）
+    for (let i = 0; i < toInsert.length; i += 50) {
+        await semanticInsert(collectionId, vs, toInsert.slice(i, i + 50));
+    }
+    if (toDelete.length) await semanticDelete(collectionId, vs, toDelete);
+
+    idx.items = cur;
+    settings.semanticRecall.index = idx;
+    saveSettings();
+    renderRecallIndexState();
+    return items.length;
+}
+
+// 当前对话近期文本 → 语义查询词（最近 4 条非系统消息）
+function semanticQueryText() {
+    if (!Array.isArray(chat)) return '';
+    const msgs = chat.filter(m => m && typeof m.mes === 'string' && m.mes.trim() && !m.is_system).slice(-4);
+    if (!msgs.length) return '';
+    return msgs.map(m => m.mes).join('\n').slice(0, 2000);
+}
+
+// 近期对话里被点名的人物实体 id（用于角色加权）
+function recentEntityIds() {
+    const ids = new Set();
+    if (!Array.isArray(chat)) return [...ids];
+    const recent = chat.filter(m => m && typeof m.mes === 'string' && !m.is_system).slice(-8).map(m => m.mes).join('\n');
+    for (const e of settings.entities) {
+        if (e.name && recent.includes(e.name)) ids.add(e.id);
+    }
+    return [...ids];
+}
+
+let semanticSyncTimer = null;
+let semanticSyncRunning = false;
+function scheduleSemanticSync() {
+    if (!(settings.semanticRecall && settings.semanticRecall.enabled)) return;
+    if (semanticSyncTimer) clearTimeout(semanticSyncTimer);
+    semanticSyncTimer = setTimeout(() => {
+        if (semanticSyncRunning) return;
+        semanticSyncRunning = true;
+        syncSemanticIndex().catch(e => console.error('[Serendipity] 语义索引同步失败：', e)).finally(() => { semanticSyncRunning = false; });
+    }, 800);
+}
+
+// 语义召回 + 加权重排 + 去重 + 注入正文（基于刚结束这轮的对话，为下一轮准备）
+async function runSemanticRecallInjection() {
+    const sr = settings.semanticRecall;
+    if (!sr || !sr.enabled) return;
+    const vs = extension_settings.vectors;
+    if (!vs || vs.source === 'webllm') return;
+    const queryText = semanticQueryText();
+    if (!queryText) return;
+    try {
+        const body = vectorsRequestBody({});
+        body.collectionId = semanticCollectionId();
+        body.searchText = queryText;
+        body.topK = Math.max(1, Number(sr.queryTopK) || 20);
+        body.threshold = Number(sr.threshold) || 0;
+        body.source = vs.source;
+        const resp = await fetch('/api/vector/query', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const meta = Array.isArray(data.metadata) ? data.metadata : [];
+        if (!meta.length) {
+            setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
+            return;
+        }
+        const itemMap = {};
+        for (const it of buildRecallItems()) itemMap[it.id] = it;
+        const recentEnts = recentEntityIds();
+        const curDay = settings.storyDay;
+        const total = meta.length;
+        const scored = meta.map((m, i) => {
+            const it = itemMap[m.index] || {};
+            let score = (total - i); // 相似度排序：越靠前越高
+            if (it.importance === 'S') score += 4;
+            else if (it.importance === 'A') score += 2;
+            if (it.day != null && curDay != null) {
+                const diff = curDay - it.day;
+                if (diff >= 0 && diff <= 2) score += 2;
+                else if (diff > 2 && diff <= 6) score += 1;
+            }
+            if (it.entityRef && recentEnts.includes(it.entityRef)) score += 2;
+            return { text: String(m.text || '').trim(), score };
+        }).filter(x => x.text);
+
+        // 去重（正文归一化后一致就跳过）+ 取前 topK
+        const picked = [];
+        const seen = new Set();
+        for (const x of scored.sort((a, b) => b.score - a.score)) {
+            const norm = x.text.replace(/\s+/g, '');
+            if (seen.has(norm)) continue;
+            seen.add(norm);
+            picked.push(x);
+            if (picked.length >= (Number(sr.topK) || 4)) break;
+        }
+
+        if (!picked.length) {
+            setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
+            return;
+        }
+        const block = '[Serendipity 语义召回]\n以下是与当前对话语义最相关的过往剧情/人物/关系/伏笔，请自然参考并保持剧情连续，不必逐条复述：\n'
+            + picked.map((x, i) => (i + 1) + '. ' + x.text).join('\n');
+        setExtensionPrompt('serendipity_semantic_recall', block, extension_prompt_types.IN_PROMPT, 0);
+    } catch (e) {
+        console.error('[Serendipity] 语义召回注入失败：', e);
+    }
+}
+
+// 面板里显示已索引条数
+function renderRecallIndexState() {
+    const el = $('#st-serendipity .st-sd__recall-index-state');
+    if (!el.length) return;
+    const sr = settings.semanticRecall;
+    const n = (sr && sr.index && sr.index.items) ? Object.keys(sr.index.items).length : 0;
+    const vs = extension_settings.vectors;
+    if (!vs || vs.source === 'webllm') {
+        el.text('未配置可用的 embedding 源（或为 WebLLM 本地源），无法建立索引。');
+        return;
+    }
+    el.text(sr.enabled ? ('已索引 ' + n + ' 条（源：' + vectorSourceLabel(vs.source) + '）') : '注入关闭中，开启后自动建索引。');
 }
 
 // ---------------- 时间轴 UI ----------------
@@ -2626,6 +2900,25 @@ function buildPanel() {
 
       <div class="st-sd__pane" data-pane="recall" style="display:none">
         <div class="st-sd__recall-status"></div>
+
+        <div class="st-sd__section-title">注入正文（自动语义召回）</div>
+        <div class="st-sd__recall-inject">
+          <label class="st-sd__switch"><input type="checkbox" class="st-sd__recall-inject-toggle"><span class="st-sd__switch-slider"></span></label>
+          <span class="st-sd__label">每轮生成后，按当前对话语义自动召回 Serendipity 里最相关的记忆/时间线/人物/关系/伏笔/世界状态，注入下一轮正文</span>
+        </div>
+        <div class="st-sd__recall-tune">
+          <span class="st-sd__label">注入调参</span>
+          <label class="st-sd__recall-tune-item">召回条数 <input type="number" class="st-sd__recall-inject-topk" min="1" max="20" step="1" title="注入正文的条目条数上限（去重后）"></label>
+          <label class="st-sd__recall-tune-item">候选阈值 <input type="number" class="st-sd__recall-inject-threshold" min="0" max="1" step="0.05" title="向量查询的相似度阈值，越低召回越多（候选池越大越可能命中相关条目）"></label>
+          <label class="st-sd__recall-tune-item">候选条数 <input type="number" class="st-sd__recall-inject-querytopk" min="1" max="100" step="1" title="先取回这么多候选，再按重要性/时间/角色加权后挑最相关的几条"></label>
+        </div>
+        <div class="st-sd__recall-rebuild-row">
+          <button type="button" class="st-sd__recall-rebuild">重建索引</button>
+          <span class="st-sd__recall-index-state"></span>
+        </div>
+        <div class="st-sd__hint">把本角色当前的数据（记忆/长期记忆/时间线/人物/关系/未回收伏笔/世界状态）写进酒馆向量库的独立集合，每轮生成后自动增量同步并语义召回。需要：酒馆「扩展 → 向量存储」已启用并配好 embedding 源（WebLLM 本地源不支持）；换源/换模型会自动全量重建。</div>
+
+        <div class="st-sd__section-title">手动预览</div>
         <div class="st-sd__recall-world-row">
           <span class="st-sd__label">世界书</span>
           <select class="st-sd__recall-world" title="要查询哪本世界书的向量（对应归档时选择的世界书）"></select>
@@ -2639,7 +2932,7 @@ function buildPanel() {
           <label class="st-sd__recall-tune-item">阈值 <input type="number" class="st-sd__recall-threshold" min="0" max="1" step="0.05" title="相似度阈值：只显示分数≥此值的条目。没召回时把它调低（如 0）看向量库里到底有什么；只影响这里预览，不改实际召回"></label>
           <label class="st-sd__recall-tune-item">条数 <input type="number" class="st-sd__recall-topk" min="1" max="20" step="1" title="最多显示几条（只影响这里预览，不改实际召回）"></label>
         </div>
-        <div class="st-sd__hint">这里直接调一次酒馆「向量存储」，列出按语义相似度从高到低排序、会被召回的记忆原文（结果与模型每轮实际召回到的一致）。前提：在酒馆「扩展 → 向量存储」里①启用「世界书向量化」②配好 embedding 源；且这本世界书已激活、开过至少一轮生成让向量库索引到这些条目。没召回时把「阈值」调低到 0 试试。</div>
+        <div class="st-sd__hint">这里直接调一次酒馆「向量存储」，列出按语义相似度从高到低排序、会被召回的记忆原文。前提：在酒馆「扩展 → 向量存储」里①启用「世界书向量化」②配好 embedding 源；且这本世界书已激活、开过至少一轮生成让向量库索引到这些条目。没召回时把「阈值」调低到 0 试试。</div>
         <div class="st-sd__recall-list"></div>
       </div>
 
@@ -2875,6 +3168,38 @@ function bindPanelEvents() {
         const text = $(this).closest('.st-sd__recall-item').find('.st-sd__recall-body').text();
         if (!text) return;
         copyText(text).then(() => toastr.success('已复制')).catch(() => toastr.error('复制失败'));
+    });
+    // 注入正文开关
+    panel.find('.st-sd__recall-inject-toggle').on('change', function () {
+        settings.semanticRecall.enabled = this.checked;
+        saveSettings();
+        updatePromptInjection();
+        renderRecallIndexState();
+    });
+    // 注入调参（召回条数 / 候选阈值 / 候选条数）
+    panel.on('change', '.st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk', function () {
+        const sr = settings.semanticRecall;
+        const t = parseInt(panel.find('.st-sd__recall-inject-topk').val(), 10);
+        const th = parseFloat(panel.find('.st-sd__recall-inject-threshold').val());
+        const qk = parseInt(panel.find('.st-sd__recall-inject-querytopk').val(), 10);
+        if (!isNaN(t) && t >= 1) sr.topK = t;
+        if (!isNaN(th) && th >= 0) sr.threshold = th;
+        if (!isNaN(qk) && qk >= 1) sr.queryTopK = qk;
+        saveSettings();
+    });
+    // 重建索引（手动强制全量同步）
+    panel.find('.st-sd__recall-rebuild').on('click', async function () {
+        const btn = $(this);
+        btn.prop('disabled', true);
+        try {
+            await syncSemanticIndex();
+            toastr.success('语义索引已重建');
+        } catch (e) {
+            console.error('[Serendipity] 重建索引失败：', e);
+            toastr.error('重建索引失败：' + (e && e.message ? e.message : String(e)));
+        } finally {
+            btn.prop('disabled', false);
+        }
     });
     // 一键清空当前角色数据
     panel.find('.st-sd__reset').on('click', resetCurrentChar);
@@ -3410,7 +3735,10 @@ jQuery(async () => {
     // 生成结束后按设定频率自动总结（每 N 轮一次）
     eventSource.on(event_types.GENERATION_ENDED, () => {
         setTimeout(() => {
-            if (!settings || !settings.memoryEnabled) return;
+            if (!settings) return;
+            // 语义召回：每轮生成结束后基于本轮对话做语义召回，为下一轮准备（与酒馆向量化索引同节奏）
+            runSemanticRecallInjection();
+            if (!settings.memoryEnabled) return;
             settings.roundsSinceSummary = (settings.roundsSinceSummary || 0) + 1;
             const every = settings.summarizeEvery || 1;
             if (settings.roundsSinceSummary >= every) {
