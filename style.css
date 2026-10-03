@@ -31,9 +31,14 @@
 
     position: fixed;
     top: 0;
-    right: 0;
-    bottom: 0;
     left: 0;
+    /* 用动态视口单位显式给满宽高（对齐酒馆自身 #sheld/#top-bar 的做法）：
+       手机端 body 是 position:fixed + overflow:hidden，靠 top/bottom 推算高度会失效，
+       导致 flex 容器高度不确定 → 内容区(flex:1)塌缩成 0 → 只剩顶栏。 */
+    width: 100vw !important;
+    width: 100dvw !important;
+    height: 100vh !important;
+    height: 100dvh !important;
     z-index: 2147483000 !important;
     max-width: none;
     max-height: none;
