@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.25.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.26.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -615,6 +615,53 @@ function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// ---------------- 模型调用（自定义 API 优先，未设置/失败则用酒馆默认） ----------------
+function getApiCfg() {
+    const r = extension_settings[extensionName] || {};
+    return r.api || {};
+}
+function apiConfigured() {
+    const c = getApiCfg();
+    return !!(c.url && c.model);
+}
+function apiEndpoint(url) {
+    url = String(url || '').trim().replace(/\/+$/, '');
+    if (/\/chat\/completions$/i.test(url)) return url;
+    return url + '/chat/completions';
+}
+async function callCustomApi({ prompt, systemPrompt }) {
+    const c = getApiCfg();
+    const headers = { 'Content-Type': 'application/json' };
+    if (c.key) headers.Authorization = 'Bearer ' + c.key.trim();
+    const messages = [];
+    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+    messages.push({ role: 'user', content: prompt });
+    const res = await fetch(apiEndpoint(c.url), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: c.model.trim(), messages, stream: false }),
+    });
+    if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        throw new Error('HTTP ' + res.status + (t ? ' ' + t.slice(0, 120) : ''));
+    }
+    const d = await res.json();
+    const out = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
+    if (!out) throw new Error('返回内容为空');
+    return out;
+}
+async function callLLM({ prompt, systemPrompt }) {
+    if (apiConfigured()) {
+        try {
+            return await callCustomApi({ prompt, systemPrompt });
+        } catch (e) {
+            console.warn('[Serendipity] 自定义 API 调用失败，改用酒馆默认 API：', e);
+            toastr.warning('自定义总结 API 调用失败（' + (e.message || e) + '），已改用酒馆默认 API');
+        }
+    }
+    return generateRaw({ prompt, systemPrompt });
+}
+
 // ---------------- 记忆功能 ----------------
 function buildSummaryPrompt(transcript, userName, charName, storyTime) {
     // 时间锚点：把上一次剧情时间传进去，让模型接力推进，避免每轮孤立猜测导致时间线乱掉
@@ -1101,7 +1148,7 @@ async function runConsistencyCheck() {
             '',
             '逐行输出发现的冲突，格式「类型：描述」，类型取「时间冲突」「状态冲突」「其他」。示例：「时间冲突：记忆里第12天发生的事，但当前才第10天」「状态冲突：林昭第8天已离开京城，第10天却仍在京城」。最多列 10 条，确实没有就只写「无」。',
         ].join('\n');
-        const result = await generateRaw({ prompt: '请给出剧情一致性检查结果。', systemPrompt });
+        const result = await callLLM({ prompt: '请给出剧情一致性检查结果。', systemPrompt });
         const merged = [];
         const seen = new Set();
         for (const it of [...parseChecks(result), ...localConsistencyCheck()]) {
@@ -1188,7 +1235,7 @@ async function summarizeLastRound() {
     isSummarizing = true;
     try {
         const { systemPrompt, prompt } = buildSummaryPrompt(transcript, lastUserMsg.name || '用户', lastCharMsg.name || '角色', settings.storyTime);
-        const result = await generateRaw({ prompt, systemPrompt });
+        const result = await callLLM({ prompt, systemPrompt });
         if (result && result.trim()) {
             // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
             const newStoryTime = extractStoryTime(result) || settings.storyTime;
@@ -2281,6 +2328,20 @@ function buildPanel() {
           <button type="button" class="st-sd__summarize">立即总结</button>
           <button type="button" class="st-sd__export">导出</button>
         </div>
+        <div class="st-sd__api-box">
+          <button type="button" class="st-sd__api-toggle">总结 API 设置</button><span class="st-sd__api-state"></span>
+          <div class="st-sd__api-form">
+            <input type="text" class="st-sd__api-input st-sd__api-url" placeholder="API 地址，如 https://api.openai.com/v1" autocomplete="off">
+            <input type="password" class="st-sd__api-input st-sd__api-key" placeholder="API Key" autocomplete="off">
+            <input type="text" class="st-sd__api-input st-sd__api-model" placeholder="模型名，如 gpt-4o-mini" autocomplete="off">
+            <div class="st-sd__api-btns">
+              <button type="button" class="st-sd__api-save">保存</button>
+              <button type="button" class="st-sd__api-test">测试</button>
+              <button type="button" class="st-sd__api-clear">清除（改用酒馆默认）</button>
+            </div>
+            <div class="st-sd__hint">填 OpenAI 兼容接口（地址到 /v1 即可）。设置后，总结和一致性检查都走这个 API；留空或调用失败则自动用酒馆当前的默认 API。Key 保存在酒馆设置里，所有角色共用。</div>
+          </div>
+        </div>
         <div class="st-sd__every-row">
           <span class="st-sd__label">每</span>
           <input type="number" class="st-sd__every-input" min="1" max="50" title="每 N 轮自动总结一次，1=每轮都总结">
@@ -2454,6 +2515,54 @@ function bindPanelEvents() {
     panel.find('.st-sd__summarize').on('click', () => summarizeLastRound());
     // 导出记忆
     panel.find('.st-sd__export').on('click', exportMemories);
+    // 总结 API 设置
+    const refreshApiState = () => {
+        const c = getApiCfg();
+        panel.find('.st-sd__api-state').text(apiConfigured() ? '已启用：' + c.model : '未设置（用酒馆默认）');
+    };
+    {
+        const c = getApiCfg();
+        panel.find('.st-sd__api-url').val(c.url || '');
+        panel.find('.st-sd__api-key').val(c.key || '');
+        panel.find('.st-sd__api-model').val(c.model || '');
+        refreshApiState();
+    }
+    panel.find('.st-sd__api-toggle').on('click', () => panel.find('.st-sd__api-form').toggleClass('open'));
+    panel.find('.st-sd__api-save').on('click', () => {
+        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
+        root.api = {
+            url: String(panel.find('.st-sd__api-url').val() || '').trim(),
+            key: String(panel.find('.st-sd__api-key').val() || '').trim(),
+            model: String(panel.find('.st-sd__api-model').val() || '').trim(),
+        };
+        saveSettings();
+        refreshApiState();
+        toastr.success(apiConfigured() ? '总结 API 已保存' : '地址或模型为空，将继续使用酒馆默认 API');
+    });
+    panel.find('.st-sd__api-clear').on('click', () => {
+        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
+        delete root.api;
+        panel.find('.st-sd__api-url, .st-sd__api-key, .st-sd__api-model').val('');
+        saveSettings();
+        refreshApiState();
+        toastr.info('已清除，改用酒馆默认 API');
+    });
+    panel.find('.st-sd__api-test').on('click', async () => {
+        const url = String(panel.find('.st-sd__api-url').val() || '').trim();
+        const model = String(panel.find('.st-sd__api-model').val() || '').trim();
+        if (!url || !model) { toastr.warning('请先填写 API 地址和模型名'); return; }
+        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
+        const backup = root.api;
+        root.api = { url, key: String(panel.find('.st-sd__api-key').val() || '').trim(), model };
+        try {
+            const out = await callCustomApi({ prompt: '请回复"OK"两个字母。' });
+            toastr.success('连接成功：' + String(out).trim().slice(0, 30));
+        } catch (e) {
+            toastr.error('连接失败：' + (e.message || e) + '（若是跨域/CORS 报错，换一个允许浏览器直连的中转地址）');
+        } finally {
+            if (backup) root.api = backup; else delete root.api;
+        }
+    });
     // 每 N 轮总结一次
     panel.find('.st-sd__every-input').on('change', function () {
         let v = parseInt(this.value, 10);

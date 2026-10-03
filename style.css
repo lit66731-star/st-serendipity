@@ -201,7 +201,7 @@
 
 /* ============ 按钮层级：Primary（深色）/ Secondary（透明+细线）/ Destructive（克制） ============ */
 .st-sd__summarize, .st-sd__inject-world, .st-sd__check-run,
-.st-sd__add-note, .st-sd__add-word, .st-sd__add-instr,
+.st-sd__add-note, .st-sd__add-word, .st-sd__add-instr, .st-sd__api-save,
 .st-sd__world-add, .st-sd__fore-add, .st-sd__axis-save {
     border: 1px solid var(--sd-text);
     background: var(--sd-text);
@@ -218,13 +218,13 @@
 .st-sd__summarize { margin-left: auto; }
 .st-sd__check-run { margin-left: auto; }
 .st-sd__summarize:hover, .st-sd__inject-world:hover, .st-sd__check-run:hover,
-.st-sd__add-note:hover, .st-sd__add-word:hover, .st-sd__add-instr:hover,
+.st-sd__add-note:hover, .st-sd__add-word:hover, .st-sd__add-instr:hover, .st-sd__api-save:hover,
 .st-sd__world-add:hover, .st-sd__fore-add:hover, .st-sd__axis-save:hover {
     background: #3D3935;
     border-color: #3D3935;
 }
 .st-sd__summarize:active, .st-sd__inject-world:active, .st-sd__check-run:active,
-.st-sd__add-note:active, .st-sd__add-word:active, .st-sd__add-instr:active,
+.st-sd__add-note:active, .st-sd__add-word:active, .st-sd__add-instr:active, .st-sd__api-save:active,
 .st-sd__world-add:active, .st-sd__fore-add:active, .st-sd__axis-save:active {
     transform: translateY(1px);
 }
@@ -370,7 +370,7 @@
 .st-sd__switch input:checked + .st-sd__switch-slider::before { transform: translateX(16px); }
 
 /* ============ 输入框（统一） ============ */
-.st-sd__every-input, .st-sd__word-input, .st-sd__note-input, .st-sd__instr-input,
+.st-sd__every-input, .st-sd__word-input, .st-sd__note-input, .st-sd__instr-input, .st-sd__api-input,
 .st-sd__axis-day, .st-sd__axis-time, .st-sd__axis-loc,
 .st-sd__world-input, .st-sd__world-edit-text,
 .st-sd__fore-input, .st-sd__fore-e-title, .st-sd__fore-e-note,
@@ -389,7 +389,7 @@
     box-sizing: border-box;
     transition: border-color 0.15s, box-shadow 0.15s;
 }
-.st-sd__every-input:focus, .st-sd__word-input:focus, .st-sd__note-input:focus,
+.st-sd__every-input:focus, .st-sd__word-input:focus, .st-sd__note-input:focus, .st-sd__api-input:focus,
 .st-sd__instr-input:focus, .st-sd__axis-day:focus, .st-sd__axis-time:focus,
 .st-sd__axis-loc:focus, .st-sd__world-input:focus, .st-sd__world-edit-text:focus,
 .st-sd__fore-input:focus, .st-sd__fore-e-title:focus, .st-sd__fore-e-note:focus,
@@ -1206,4 +1206,22 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     .st-sd__tl-item .st-sd__memory-actions,
     .st-sd__world-item .st-sd__memory-actions,
     .st-sd__fore .st-sd__memory-actions { opacity: 1; }
+}
+
+/* ============ 总结 API 设置 ============ */
+.st-sd__api-box { margin-bottom: 14px; }
+.st-sd__api-toggle {
+    background: none; border: none; padding: 0; cursor: pointer;
+    color: var(--sd-text); font-size: 13px; text-decoration: underline;
+    text-underline-offset: 3px; opacity: 0.75;
+}
+.st-sd__api-toggle:hover { opacity: 1; }
+.st-sd__api-state { margin-left: 8px; font-size: 12px; opacity: 0.6; }
+.st-sd__api-form { display: none; margin-top: 10px; }
+.st-sd__api-form.open { display: block; }
+.st-sd__api-input { display: block; width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+.st-sd__api-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.st-sd__api-test, .st-sd__api-clear {
+    background: transparent; border: 1px solid var(--sd-border, rgba(0,0,0,0.15));
+    color: var(--sd-text); border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px;
 }
