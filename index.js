@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.16.2'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.17.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -334,7 +334,7 @@ function freshCharSettings() {
         storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
         storyLocation: '',      // 当前地点
         worldState: [],         // 世界状态列表（非人物信息）[{ id, cat: '物品'|'日程', text }]
-        npcs: [],               // 人物档案 [{ id, name, age, note }]（姓名/年龄/简介）
+        entities: [],           // 角色实体 [{ id, name, age, note, world, timeline, identity }]（姓名/年龄/简介 + 身份域：世界/时间线/身份）
         relationshipLines: [],  // 情感线/关系轨迹 [{ id, a, b, current:{affection,relationship,attitude}, history:[{id,day,from,to,change,reason,event}] }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
@@ -349,9 +349,14 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'npcs', 'relationshipLines', 'timeline', 'checks', 'foreshadows']) {
+    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
+    // 旧字段 npcs → entities 一次性迁移（同名角色隔离的数据地基）
+    if (Array.isArray(cs.npcs) && cs.npcs.length) {
+        cs.entities = cs.npcs.concat(cs.entities);
+    }
+    delete cs.npcs;
     // 迁移：旧版「永久记忆」档已取消，原永久记忆并入长期记忆（随后一起归档到世界书）
     if (Array.isArray(cs.permanentMemories) && cs.permanentMemories.length) {
         cs.longMemories = [...cs.permanentMemories, ...cs.longMemories];
@@ -400,13 +405,16 @@ function normalizeCharSettings(cs) {
             })),
         };
     });
-    cs.npcs = cs.npcs.filter(e => e && e.id && typeof e.name === 'string' && e.name.trim()).map(e => ({
+    cs.entities = cs.entities.filter(e => e && e.id && typeof e.name === 'string' && e.name.trim()).map(e => ({
         id: e.id,
         name: String(e.name),
         age: typeof e.age === 'string' ? e.age : (e.age == null ? '' : String(e.age)),
         note: typeof e.note === 'string' ? e.note : '',
+        world: typeof e.world === 'string' ? e.world : '',
+        timeline: typeof e.timeline === 'string' ? e.timeline : '',
+        identity: typeof e.identity === 'string' ? e.identity : '',
     }));
-    // 一次性迁移：把旧世界状态里的「年龄」转成 NPC；「好感/关系」已被关系线取代（丢弃旧扁平条目，需在「人物→关系」里重建）
+    // 一次性迁移：把旧世界状态里的「年龄」转成角色实体；「好感/关系」已被关系线取代（丢弃旧扁平条目，需在「人物→关系」里重建）
     if (!cs._relUnified) {
         const remaining = [];
         for (const e of cs.worldState) {
@@ -414,7 +422,7 @@ function normalizeCharSettings(cs) {
                 const m = String(e.text).match(/^(.+?)\s*(\d+)\s*岁/);
                 const name = (m ? m[1] : String(e.text)).trim();
                 const age = m ? m[2] : '';
-                if (name) cs.npcs.push({ id: uid(), name, age, note: '' });
+                if (name) cs.entities.push({ id: uid(), name, age, note: '', world: '', timeline: '', identity: '' });
             } else if (e.cat === '好感' || e.cat === '关系') {
                 continue;
             } else {
@@ -677,9 +685,15 @@ function relationshipCurrentText() {
     ).join('\n');
 }
 
-// 人物档案（NPC）渲染成紧凑文本（供正文注入复用）
+// 角色实体渲染成紧凑文本（供正文注入复用；身份域非空时拼成「世界·时间线·身份」标签）
+function entityDomain(n) {
+    return [n.world, n.timeline, n.identity].filter(Boolean).join('·');
+}
 function npcText() {
-    return settings.npcs.map(n => n.name + (n.age ? '，' + n.age + '岁' : '') + (n.note ? '，' + n.note : '')).join('\n');
+    return settings.entities.map(n => n.name
+        + (entityDomain(n) ? '（' + entityDomain(n) + '）' : '')
+        + (n.age ? '，' + n.age + '岁' : '')
+        + (n.note ? '，' + n.note : '')).join('\n');
 }
 // 从总结结果里解析【世界状态】行 → { entries: [{ cat, text }], clearCats: [cat] }
 // 约定：某类别写「无」= 保留原样；写「空」= 清空该类
@@ -1102,11 +1116,11 @@ function updatePromptInjection() {
         0,
     );
 
-    // 人物档案注入：姓名/年龄/简介（有数据才注入）
-    const npcLines = settings.npcs.length ? npcText() : '';
+    // 人物档案注入：姓名/身份域/年龄/简介（有数据才注入）
+    const npcLines = settings.entities.length ? npcText() : '';
     setExtensionPrompt(
         'serendipity_npcs',
-        npcLines ? '[Serendipity 人物档案]\n以下是登场人物的档案（姓名/年龄/简介），请在后续生成中保持人物一致。\n' + npcLines : '',
+        npcLines ? '[Serendipity 人物档案]\n以下是登场角色的实体档案（姓名/身份域/年龄/简介）。同名角色按「世界·时间线·身份」区分，不要因姓名相同而合并。\n' + npcLines : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
@@ -1481,25 +1495,30 @@ function renderWorldState() {
     list.html(html);
 }
 
-// 人物档案（NPC，列表：姓名 / 年龄 / 简介）
+// 角色实体（列表：姓名 / 身份域 / 年龄 / 简介）
 function renderNpcs() {
     const list = $('#st-serendipity .st-sd__npc-list');
     if (!list.length) return;
-    if (!settings.npcs.length) {
+    if (!settings.entities.length) {
         list.html('<div class="st-sd__empty">暂无人物档案。总结时若出现新人物可手动登记，或在上方添加。</div>');
         return;
     }
-    list.html(settings.npcs.map(n => {
+    list.html(settings.entities.map(n => {
         if (n.id === npcEditingId) {
             return '<div class="st-sd__npc-item is-editing" data-id="' + n.id + '">'
                 + '<input type="text" class="st-sd__npc-e-name" value="' + escapeHtml(n.name) + '" placeholder="姓名">'
+                + '<input type="text" class="st-sd__npc-e-world" value="' + escapeHtml(n.world) + '" placeholder="世界/平行世界">'
+                + '<input type="text" class="st-sd__npc-e-timeline" value="' + escapeHtml(n.timeline) + '" placeholder="时间线/前世今生">'
+                + '<input type="text" class="st-sd__npc-e-identity" value="' + escapeHtml(n.identity) + '" placeholder="身份/职业">'
                 + '<input type="text" class="st-sd__npc-e-age" value="' + escapeHtml(n.age) + '" placeholder="年龄">'
                 + '<input type="text" class="st-sd__npc-e-note" value="' + escapeHtml(n.note) + '" placeholder="简介">'
                 + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__npc-save" data-id="' + n.id + '">保存</button><button type="button" class="st-sd__npc-cancel">取消</button></span>'
                 + '</div>';
         }
+        const domain = entityDomain(n);
         return '<div class="st-sd__npc-item" data-id="' + n.id + '">'
             + '<span class="st-sd__npc-name">' + escapeHtml(n.name) + '</span>'
+            + (domain ? '<span class="st-sd__npc-domain">' + escapeHtml(domain) + '</span>' : '')
             + (n.age ? '<span class="st-sd__npc-age">' + escapeHtml(n.age) + '岁</span>' : '')
             + (n.note ? '<span class="st-sd__npc-note">' + escapeHtml(n.note) + '</span>' : '')
             + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__npc-edit" data-id="' + n.id + '">编辑</button><button type="button" class="st-sd__npc-del" data-id="' + n.id + '">删除</button></span>'
@@ -1588,11 +1607,12 @@ function exportMemories() {
         lines.push('');
     }
 
-    // 人物档案（NPC）
+    // 人物档案（角色实体）
     lines.push('========== 人物档案 ==========');
-    if (settings.npcs.length) {
-        for (const n of settings.npcs) {
-            lines.push(n.name + (n.age ? '（' + n.age + '岁）' : '') + (n.note ? ' · ' + n.note : ''));
+    if (settings.entities.length) {
+        for (const n of settings.entities) {
+            const domain = entityDomain(n);
+            lines.push(n.name + (domain ? '（' + domain + '）' : '') + (n.age ? '（' + n.age + '岁）' : '') + (n.note ? ' · ' + n.note : ''));
         }
     } else {
         lines.push('（暂无）');
@@ -2005,12 +2025,17 @@ function buildPanel() {
       <div class="st-sd__pane" data-pane="people" style="display:none">
         <div class="st-sd__section-title">人物档案</div>
         <div class="st-sd__add-row">
+          <input type="text" class="st-sd__npc-world" placeholder="世界/平行世界（可空）">
+          <input type="text" class="st-sd__npc-timeline" placeholder="时间线/前世今生（可空）">
+          <input type="text" class="st-sd__npc-identity" placeholder="身份/职业（可空）">
+        </div>
+        <div class="st-sd__add-row">
           <input type="text" class="st-sd__npc-name" placeholder="姓名（如「沈砚」）">
           <input type="text" class="st-sd__npc-age" placeholder="年龄（可空，如「24」）">
           <input type="text" class="st-sd__npc-note" placeholder="简介（可空，如「北境斥候队长」）">
           <button type="button" class="st-sd__npc-add">添加</button>
         </div>
-        <div class="st-sd__hint">人物档案只登记姓名/年龄/简介；好感与关系在下方「关系」里按 A→B 配对维护，两者不重复。</div>
+        <div class="st-sd__hint">身份域（世界·时间线·身份）用来区分同名角色：前世「沈昭·将军」与今生「沈昭·医生」是两个独立实体。好感与关系在下方「关系」里按 A→B 配对维护，两者不重复。</div>
         <div class="st-sd__npc-list"></div>
 
         <div class="st-sd__section-title">关系 / 好感</div>
@@ -2243,20 +2268,26 @@ function bindPanelEvents() {
     panel.find('.st-sd__axis-time').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
     panel.find('.st-sd__axis-loc').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
 
-    // 人物档案（NPC）：添加/编辑/删除
+    // 人物档案（角色实体）：添加/编辑/删除
     const addNpc = () => {
         const name = panel.find('.st-sd__npc-name').val().trim();
         if (!name) { toastr.warning('姓名必填'); return; }
+        const world = panel.find('.st-sd__npc-world').val().trim();
+        const timeline = panel.find('.st-sd__npc-timeline').val().trim();
+        const identity = panel.find('.st-sd__npc-identity').val().trim();
         const age = panel.find('.st-sd__npc-age').val().trim();
         const note = panel.find('.st-sd__npc-note').val().trim();
-        settings.npcs.push({ id: uid(), name, age, note });
+        settings.entities.push({ id: uid(), name, age, note, world, timeline, identity });
         saveSettings();
         updatePromptInjection();
         renderNpcs();
         panel.find('.st-sd__npc-name').val('');
+        panel.find('.st-sd__npc-world').val('');
+        panel.find('.st-sd__npc-timeline').val('');
+        panel.find('.st-sd__npc-identity').val('');
         panel.find('.st-sd__npc-age').val('');
         panel.find('.st-sd__npc-note').val('');
-        toastr.success('已添加人物「' + name + '」');
+        toastr.success('已添加角色实体「' + name + '」');
     };
     panel.find('.st-sd__npc-add').on('click', addNpc);
     panel.find('.st-sd__npc-note').on('keydown', (e) => { if (e.key === 'Enter') addNpc(); });
@@ -2273,11 +2304,14 @@ function bindPanelEvents() {
     });
     panel.on('click', '.st-sd__npc-save', function () {
         const id = String($(this).data('id'));
-        const n = settings.npcs.find(x => x.id === id);
+        const n = settings.entities.find(x => x.id === id);
         if (!n) { npcEditingId = null; renderNpcs(); return; }
         const name = panel.find('.st-sd__npc-e-name').val().trim();
         if (!name) { toastr.warning('姓名不能为空'); return; }
         n.name = name;
+        n.world = panel.find('.st-sd__npc-e-world').val().trim();
+        n.timeline = panel.find('.st-sd__npc-e-timeline').val().trim();
+        n.identity = panel.find('.st-sd__npc-e-identity').val().trim();
         n.age = panel.find('.st-sd__npc-e-age').val().trim();
         n.note = panel.find('.st-sd__npc-e-note').val().trim();
         npcEditingId = null;
@@ -2288,7 +2322,7 @@ function bindPanelEvents() {
     });
     panel.on('click', '.st-sd__npc-del', function () {
         const id = String($(this).data('id'));
-        settings.npcs = settings.npcs.filter(x => x.id !== id);
+        settings.entities = settings.entities.filter(x => x.id !== id);
         saveSettings();
         updatePromptInjection();
         renderNpcs();

@@ -376,7 +376,8 @@
 .st-sd__fore-input, .st-sd__fore-e-title, .st-sd__fore-e-note,
 .st-sd__tl-e-day, .st-sd__tl-e-time, .st-sd__tl-e-loc, .st-sd__tl-e-event,
 .st-sd__world-select, .st-sd__world-cat,
-.st-sd__npc-name, .st-sd__npc-age, .st-sd__npc-note {
+.st-sd__npc-name, .st-sd__npc-age, .st-sd__npc-note,
+.st-sd__npc-world, .st-sd__npc-timeline, .st-sd__npc-identity {
     border: 1px solid var(--sd-border-2);
     border-radius: 6px;
     height: 34px;
@@ -394,7 +395,8 @@
 .st-sd__fore-input:focus, .st-sd__fore-e-title:focus, .st-sd__fore-e-note:focus,
 .st-sd__tl-e-day:focus, .st-sd__tl-e-time:focus, .st-sd__tl-e-loc:focus,
 .st-sd__tl-e-event:focus, .st-sd__world-select:focus, .st-sd__world-cat:focus,
-.st-sd__npc-name:focus, .st-sd__npc-age:focus, .st-sd__npc-note:focus {
+.st-sd__npc-name:focus, .st-sd__npc-age:focus, .st-sd__npc-note:focus,
+.st-sd__npc-world:focus, .st-sd__npc-timeline:focus, .st-sd__npc-identity:focus {
     border-color: var(--sd-accent);
     box-shadow: 0 0 0 3px rgba(205, 179, 176, 0.20);
 }
@@ -1047,10 +1049,17 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     color: var(--sd-text);
     font-family: var(--sd-serif);
 }
-.st-sd__npc-age {
+.st-sd__npc-domain {
     font-size: 12px;
     color: var(--sd-accent-deep);
     background: var(--sd-accent-bg);
+    border-radius: 999px;
+    padding: 1px 9px;
+}
+.st-sd__npc-age {
+    font-size: 12px;
+    color: var(--sd-text-2);
+    background: var(--sd-surface-2);
     border-radius: 999px;
     padding: 1px 9px;
 }
@@ -1058,10 +1067,11 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     font-size: 12px;
     color: var(--sd-text-2);
 }
-.st-sd__npc-name, .st-sd__npc-age, .st-sd__npc-note {
+.st-sd__npc-name, .st-sd__npc-domain, .st-sd__npc-age, .st-sd__npc-note {
     min-width: 0;
 }
-.st-sd__npc-e-name, .st-sd__npc-e-age, .st-sd__npc-e-note {
+.st-sd__npc-e-name, .st-sd__npc-e-age, .st-sd__npc-e-note,
+.st-sd__npc-e-world, .st-sd__npc-e-timeline, .st-sd__npc-e-identity {
     border: 1px solid var(--sd-border-2);
     border-radius: 6px;
     height: 34px;
@@ -1075,9 +1085,11 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     min-width: 0;
 }
 .st-sd__npc-e-name { flex: 1 1 90px; }
+.st-sd__npc-e-world, .st-sd__npc-e-timeline, .st-sd__npc-e-identity { flex: 1 1 100px; }
 .st-sd__npc-e-age { flex: 0 1 70px; }
 .st-sd__npc-e-note { flex: 1 1 130px; }
-.st-sd__npc-e-name:focus, .st-sd__npc-e-age:focus, .st-sd__npc-e-note:focus { border-color: var(--sd-accent); box-shadow: 0 0 0 3px rgba(205, 179, 176, 0.20); }
+.st-sd__npc-e-name:focus, .st-sd__npc-e-age:focus, .st-sd__npc-e-note:focus,
+.st-sd__npc-e-world:focus, .st-sd__npc-e-timeline:focus, .st-sd__npc-e-identity:focus { border-color: var(--sd-accent); box-shadow: 0 0 0 3px rgba(205, 179, 176, 0.20); }
 
 /* 移动端动量滚动 */
 .st-sd__memory-list, .st-sd__word-list, .st-sd__instr-list,
