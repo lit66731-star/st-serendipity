@@ -1015,6 +1015,20 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     border-bottom: 1px solid var(--sd-border);
 }
 .st-sd__section-title:first-child { margin-top: 0; }
+
+/* 「人物」页三块纵向堆叠：整页上下滚动翻阅，列表不抢占等分高度、不挤在一起 */
+.st-sd__pane[data-pane="people"] {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.st-sd__pane[data-pane="people"] .st-sd__npc-list,
+.st-sd__pane[data-pane="people"] .st-sd__rel-list,
+.st-sd__pane[data-pane="people"] .st-sd__world-list {
+    flex: none;
+    min-height: 0;
+    overflow-y: visible;
+}
+
 .st-sd__npc-list { margin-bottom: 4px; }
 .st-sd__npc-item {
     display: flex;
