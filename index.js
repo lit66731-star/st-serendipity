@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.15.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.16.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -29,7 +29,7 @@ const RELATIVE_DAYS = {
 };
 
 // 世界状态类别（列表格式，按类别分组展示/注入）
-const WORLD_CATS = ['年龄', '好感', '关系', '物品', '日程'];
+const WORLD_CATS = ['物品', '日程'];  // 世界状态现在只放非人物信息；年龄/好感/关系已并入「人物」体系（NPC + 关系线）
 
 // 伏笔/未完成事项的状态（点击状态标签循环切换）
 const FORESHADOW_STATUSES = ['未揭示', '未解决', '进行中', '已回收'];
@@ -299,7 +299,8 @@ function freshCharSettings() {
         storyDay: null,         // 结构化时间轴：第X天（null=尚未建立）
         storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
         storyLocation: '',      // 当前地点
-        worldState: [],         // 世界状态列表 [{ id, cat: '年龄'|'好感'|'关系'|'物品'|'日程', text }]
+        worldState: [],         // 世界状态列表（非人物信息）[{ id, cat: '物品'|'日程', text }]
+        npcs: [],               // 人物档案 [{ id, name, age, note }]（姓名/年龄/简介）
         relationshipLines: [],  // 情感线/关系轨迹 [{ id, a, b, current:{affection,relationship,attitude}, history:[{id,day,from,to,change,reason,event}] }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
@@ -314,7 +315,7 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'relationshipLines', 'timeline', 'checks', 'foreshadows']) {
+    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'npcs', 'relationshipLines', 'timeline', 'checks', 'foreshadows']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
     // 迁移：旧版「永久记忆」档已取消，原永久记忆并入长期记忆（随后一起归档到世界书）
@@ -365,6 +366,30 @@ function normalizeCharSettings(cs) {
             })),
         };
     });
+    cs.npcs = cs.npcs.filter(e => e && e.id && typeof e.name === 'string' && e.name.trim()).map(e => ({
+        id: e.id,
+        name: String(e.name),
+        age: typeof e.age === 'string' ? e.age : (e.age == null ? '' : String(e.age)),
+        note: typeof e.note === 'string' ? e.note : '',
+    }));
+    // 一次性迁移：把旧世界状态里的「年龄」转成 NPC；「好感/关系」已被关系线取代（丢弃旧扁平条目，需在「人物→关系」里重建）
+    if (!cs._relUnified) {
+        const remaining = [];
+        for (const e of cs.worldState) {
+            if (e.cat === '年龄') {
+                const m = String(e.text).match(/^(.+?)\s*(\d+)\s*岁/);
+                const name = (m ? m[1] : String(e.text)).trim();
+                const age = m ? m[2] : '';
+                if (name) cs.npcs.push({ id: uid(), name, age, note: '' });
+            } else if (e.cat === '好感' || e.cat === '关系') {
+                continue;
+            } else {
+                remaining.push(e);
+            }
+        }
+        cs.worldState = remaining;
+        cs._relUnified = true;
+    }
     if (cs.injectForeshadows === undefined) cs.injectForeshadows = false;
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
@@ -514,7 +539,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
     // 世界状态锚点：把当前已知状态回传，让模型增量更新（某类别无变化写「无」），而不是每轮从零重造
     const worldStateAnchor = settings.worldState.length
         ? '当前已知的世界状态（请在此基础上增量更新，某个类别没有新变化就写「无」）：\n' + worldStateLines(worldStateByCat())
-        : '请根据本段内容提取当前世界状态（年龄/好感/关系/物品/日程），没有的类别写「无」。';
+        : '请根据本段内容提取当前世界状态（物品/日程），没有的类别写「无」。';
     // 关系线锚点：把当前已知关系线回传，让模型增量追加历史（没有新变化写「无」），不覆盖已有轨迹
     const relationshipAnchor = settings.relationshipLines.length
         ? '当前已知的人物关系线（请在此基础上增量追加；本轮没有明确的关系变化就写「无」；发生冲突时追加新变化，不要改写已有历史）：\n' + relationshipCurrentText()
@@ -545,7 +570,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
             '【已完成约定】已完成的约定或承诺',
             '【详细总结】本段对话的详细总结',
             '【时间轴】本段结束时的剧情进度，严格写成「第X天|地点|本段重要事情」三段（X 是从故事开始算的天数，如「第27天|北境营地|与斥候队长会面」；地点或事情未知写「无」）',
-            '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：年龄/好感/关系/物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」，需要清空某类写「空」）',
+            '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」，需要清空某类写「空」）',
             '【关系变化】本轮人物关系是否发生明确变化；没有写「无」，有则严格写成「A→B|变化|变化前|变化后|好感变化|当前态度|原因|事件|第X天」单行（A→B=谁对谁；变化如「好感上升/关系升温/产生信任」；好感变化如「+10」「-5」，写不出写「无」；当前态度写不出写「无」；原因与事件写具体剧情；第X天为该变化发生的剧情天数）',
         ].join('\n'),
         prompt: transcript,
@@ -616,6 +641,11 @@ function relationshipCurrentText() {
         + (l.current.affection ? '，好感 ' + l.current.affection : '')
         + (l.current.attitude ? '，态度 ' + l.current.attitude : '')
     ).join('\n');
+}
+
+// 人物档案（NPC）渲染成紧凑文本（供正文注入复用）
+function npcText() {
+    return settings.npcs.map(n => n.name + (n.age ? '，' + n.age + '岁' : '') + (n.note ? '，' + n.note : '')).join('\n');
 }
 // 从总结结果里解析【世界状态】行 → { entries: [{ cat, text }], clearCats: [cat] }
 // 约定：某类别写「无」= 保留原样；写「空」= 清空该类
@@ -913,8 +943,7 @@ async function summarizeLastRound() {
             updatePromptInjection();
             renderMemories();
             renderTimeAxis();
-            renderWorldState();
-            renderRelationship();
+            renderPeople();
             refreshLocalChecks();
 
             // 弹窗提示：总结成功 + 是否触发晋级
@@ -1034,7 +1063,16 @@ function updatePromptInjection() {
     const worldLines = settings.worldState.length ? worldStateLines(worldStateByCat()) : '';
     setExtensionPrompt(
         'serendipity_world',
-        worldLines ? '[Serendipity 世界状态]\n' + worldLines + '\n请记住并在后续生成中遵守这些世界状态（年龄/好感/关系/物品/日程），剧情产生新变化时自然更新。' : '',
+        worldLines ? '[Serendipity 世界状态]\n' + worldLines + '\n请记住并在后续生成中遵守这些世界状态（物品/日程），剧情产生新变化时自然更新。' : '',
+        extension_prompt_types.IN_PROMPT,
+        0,
+    );
+
+    // 人物档案注入：姓名/年龄/简介（有数据才注入）
+    const npcLines = settings.npcs.length ? npcText() : '';
+    setExtensionPrompt(
+        'serendipity_npcs',
+        npcLines ? '[Serendipity 人物档案]\n以下是登场人物的档案（姓名/年龄/简介），请在后续生成中保持人物一致。\n' + npcLines : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
@@ -1379,6 +1417,7 @@ function renderRelativeHints() {
 
 // 世界状态（列表格式，按类别分组展示）
 let worldEditingId = null; // 当前编辑中的世界状态条目 id
+let npcEditingId = null; // 当前编辑中的人物档案 id
 
 function renderWorldState() {
     const list = $('#st-serendipity .st-sd__world-list');
@@ -1406,6 +1445,39 @@ function renderWorldState() {
         }).join('');
     }
     list.html(html);
+}
+
+// 人物档案（NPC，列表：姓名 / 年龄 / 简介）
+function renderNpcs() {
+    const list = $('#st-serendipity .st-sd__npc-list');
+    if (!list.length) return;
+    if (!settings.npcs.length) {
+        list.html('<div class="st-sd__empty">暂无人物档案。总结时若出现新人物可手动登记，或在上方添加。</div>');
+        return;
+    }
+    list.html(settings.npcs.map(n => {
+        if (n.id === npcEditingId) {
+            return '<div class="st-sd__npc-item is-editing" data-id="' + n.id + '">'
+                + '<input type="text" class="st-sd__npc-e-name" value="' + escapeHtml(n.name) + '" placeholder="姓名">'
+                + '<input type="text" class="st-sd__npc-e-age" value="' + escapeHtml(n.age) + '" placeholder="年龄">'
+                + '<input type="text" class="st-sd__npc-e-note" value="' + escapeHtml(n.note) + '" placeholder="简介">'
+                + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__npc-save" data-id="' + n.id + '">保存</button><button type="button" class="st-sd__npc-cancel">取消</button></span>'
+                + '</div>';
+        }
+        return '<div class="st-sd__npc-item" data-id="' + n.id + '">'
+            + '<span class="st-sd__npc-name">' + escapeHtml(n.name) + '</span>'
+            + (n.age ? '<span class="st-sd__npc-age">' + escapeHtml(n.age) + '岁</span>' : '')
+            + (n.note ? '<span class="st-sd__npc-note">' + escapeHtml(n.note) + '</span>' : '')
+            + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__npc-edit" data-id="' + n.id + '">编辑</button><button type="button" class="st-sd__npc-del" data-id="' + n.id + '">删除</button></span>'
+            + '</div>';
+    }).join(''));
+}
+
+// 「人物」页统一渲染：人物档案 + 关系线 + 物品/日程
+function renderPeople() {
+    renderNpcs();
+    renderRelationship();
+    renderWorldState();
 }
 
 // 情感线 / 关系轨迹（列表：每条线一张卡片，含当前关系 + 历史轨迹）
@@ -1451,7 +1523,7 @@ function renderRelationship() {
 
 // 导出全部记忆为 txt 文件
 function exportMemories() {
-    const lines = ['Serendipity 剧情记忆·时间线·世界状态导出', '导出时间：' + fmtTime(Date.now()), ''];
+    const lines = ['Serendipity 剧情记忆·时间线·人物·世界状态导出', '导出时间：' + fmtTime(Date.now()), ''];
 
     const tier = (title, arr) => {
         if (!arr.length) return;
@@ -1482,7 +1554,18 @@ function exportMemories() {
         lines.push('');
     }
 
+    // 人物档案（NPC）
+    lines.push('========== 人物档案 ==========');
+    if (settings.npcs.length) {
+        for (const n of settings.npcs) {
+            lines.push(n.name + (n.age ? '（' + n.age + '岁）' : '') + (n.note ? ' · ' + n.note : ''));
+        }
+    } else {
+        lines.push('（暂无）');
+    }
+
     // 世界状态
+    lines.push('');
     lines.push('========== 世界状态 ==========');
     if (settings.worldState.length) {
         for (const cat of WORLD_CATS) {
@@ -1576,7 +1659,7 @@ function addManualNote() {
 function resetCurrentChar() {
     activateCharacter();
     const name = activeChar || '当前角色';
-    if (!confirm('确定清空「' + name + '」的全部 Serendipity 数据吗？记忆、时间轴、世界状态、情感线、屏蔽词、指令都会被清空，且不可撤销。')) return;
+    if (!confirm('确定清空「' + name + '」的全部 Serendipity 数据吗？记忆、时间轴、人物、世界状态、屏蔽词、指令都会被清空，且不可撤销。')) return;
     const keepWorldBook = settings.worldBook;
     Object.assign(settings, freshCharSettings());
     settings.worldBook = keepWorldBook; // 保留用户选择的世界书，方便下次直接注入
@@ -1584,8 +1667,7 @@ function resetCurrentChar() {
     updatePromptInjection();
     renderMemories();
     renderTimeAxis();
-    renderWorldState();
-    renderRelationship();
+    renderPeople();
     renderBlockedWords();
     renderInstructions();
     renderForeshadows();
@@ -1812,8 +1894,7 @@ function buildPanel() {
         <button type="button" class="st-sd__tab" data-tab="censor">屏蔽词</button>
         <button type="button" class="st-sd__tab" data-tab="instruct">指令</button>
         <button type="button" class="st-sd__tab" data-tab="time">时间轴</button>
-        <button type="button" class="st-sd__tab" data-tab="world">世界</button>
-        <button type="button" class="st-sd__tab" data-tab="rel">情感线</button>
+        <button type="button" class="st-sd__tab" data-tab="people">人物</button>
         <button type="button" class="st-sd__tab" data-tab="fore">伏笔</button>
         <button type="button" class="st-sd__tab" data-tab="check">检查</button>
       </div>
@@ -1887,27 +1968,37 @@ function buildPanel() {
         <div class="st-sd__axis-list"></div>
       </div>
 
-      <div class="st-sd__pane" data-pane="world" style="display:none">
+      <div class="st-sd__pane" data-pane="people" style="display:none">
+        <div class="st-sd__section-title">人物档案</div>
         <div class="st-sd__add-row">
-          <select class="st-sd__world-cat">
-            ${WORLD_CATS.map(c => `<option value="${c}">${c}</option>`).join('')}
-          </select>
-          <input type="text" class="st-sd__world-input" placeholder="如：艾莉丝 23岁">
-          <button type="button" class="st-sd__world-add">添加</button>
+          <input type="text" class="st-sd__npc-name" placeholder="姓名（如「沈砚」）">
+          <input type="text" class="st-sd__npc-age" placeholder="年龄（可空，如「24」）">
+          <input type="text" class="st-sd__npc-note" placeholder="简介（可空，如「北境斥候队长」）">
+          <button type="button" class="st-sd__npc-add">添加</button>
         </div>
-        <div class="st-sd__hint">世界状态按类别分组列出，总结时自动快照更新（某类别有新内容就替换整类，无变化保留）。可手动添加/编辑/删除。</div>
-        <div class="st-sd__world-list"></div>
-      </div>
+        <div class="st-sd__hint">人物档案只登记姓名/年龄/简介；好感与关系在下方「关系」里按 A→B 配对维护，两者不重复。</div>
+        <div class="st-sd__npc-list"></div>
 
-      <div class="st-sd__pane" data-pane="rel" style="display:none">
+        <div class="st-sd__section-title">关系 / 好感</div>
         <div class="st-sd__add-row">
           <input type="text" class="st-sd__rel-a" placeholder="人物A（谁对谁，如「你」）">
           <input type="text" class="st-sd__rel-b" placeholder="人物B（如「沈砚」）">
           <input type="text" class="st-sd__rel-relation" placeholder="当前关系（如「暧昧」，可空）">
           <button type="button" class="st-sd__rel-add">建立关系线</button>
         </div>
-        <div class="st-sd__hint">世界状态里的「好感/关系」回答「现在是什么」，情感线回答「怎么变成现在这样」。总结发现关系变化时自动追加到轨迹（历史只追加、不覆盖），可手动补记、删除。</div>
+        <div class="st-sd__hint">关系回答「现在是什么」，情感线回答「怎么变成现在这样」。总结发现关系变化时自动追加到轨迹（历史只追加、不覆盖），可手动补记、删除。</div>
         <div class="st-sd__rel-list"></div>
+
+        <div class="st-sd__section-title">物品 · 日程</div>
+        <div class="st-sd__add-row">
+          <select class="st-sd__world-cat">
+            ${WORLD_CATS.map(c => `<option value="${c}">${c}</option>`).join('')}
+          </select>
+          <input type="text" class="st-sd__world-input" placeholder="如：一把生锈的匕首 / 三天后在城门口见面">
+          <button type="button" class="st-sd__world-add">添加</button>
+        </div>
+        <div class="st-sd__hint">世界状态现在只放非人物信息（物品/日程），按类别分组，总结时自动快照更新。可手动添加/编辑/删除。</div>
+        <div class="st-sd__world-list"></div>
       </div>
 
       <div class="st-sd__pane" data-pane="fore" style="display:none">
@@ -2117,6 +2208,57 @@ function bindPanelEvents() {
     panel.find('.st-sd__axis-save').on('click', saveAxis);
     panel.find('.st-sd__axis-time').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
     panel.find('.st-sd__axis-loc').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
+
+    // 人物档案（NPC）：添加/编辑/删除
+    const addNpc = () => {
+        const name = panel.find('.st-sd__npc-name').val().trim();
+        if (!name) { toastr.warning('姓名必填'); return; }
+        const age = panel.find('.st-sd__npc-age').val().trim();
+        const note = panel.find('.st-sd__npc-note').val().trim();
+        settings.npcs.push({ id: uid(), name, age, note });
+        saveSettings();
+        updatePromptInjection();
+        renderNpcs();
+        panel.find('.st-sd__npc-name').val('');
+        panel.find('.st-sd__npc-age').val('');
+        panel.find('.st-sd__npc-note').val('');
+        toastr.success('已添加人物「' + name + '」');
+    };
+    panel.find('.st-sd__npc-add').on('click', addNpc);
+    panel.find('.st-sd__npc-note').on('keydown', (e) => { if (e.key === 'Enter') addNpc(); });
+
+    panel.on('click', '.st-sd__npc-edit', function () {
+        npcEditingId = String($(this).data('id'));
+        renderNpcs();
+        const inp = panel.find('.st-sd__npc-e-name');
+        if (inp.length) inp.focus();
+    });
+    panel.on('click', '.st-sd__npc-cancel', function () {
+        npcEditingId = null;
+        renderNpcs();
+    });
+    panel.on('click', '.st-sd__npc-save', function () {
+        const id = String($(this).data('id'));
+        const n = settings.npcs.find(x => x.id === id);
+        if (!n) { npcEditingId = null; renderNpcs(); return; }
+        const name = panel.find('.st-sd__npc-e-name').val().trim();
+        if (!name) { toastr.warning('姓名不能为空'); return; }
+        n.name = name;
+        n.age = panel.find('.st-sd__npc-e-age').val().trim();
+        n.note = panel.find('.st-sd__npc-e-note').val().trim();
+        npcEditingId = null;
+        saveSettings();
+        updatePromptInjection();
+        renderNpcs();
+        toastr.success('已保存');
+    });
+    panel.on('click', '.st-sd__npc-del', function () {
+        const id = String($(this).data('id'));
+        settings.npcs = settings.npcs.filter(x => x.id !== id);
+        saveSettings();
+        updatePromptInjection();
+        renderNpcs();
+    });
 
     // 世界状态：添加/编辑/删除
     const addWorld = () => {
@@ -2351,7 +2493,7 @@ function togglePanel(force) {
         panel.show();
         renderMemories();
         renderTimeAxis();
-        renderWorldState();
+        renderPeople();
         renderBlockedWords();
         renderInstructions();
         renderForeshadows();
@@ -2399,7 +2541,7 @@ jQuery(async () => {
             applyCensorAll();
             renderMemories();
             renderTimeAxis();
-            renderWorldState();
+            renderPeople();
             renderBlockedWords();
             renderInstructions();
             renderForeshadows();
@@ -2414,8 +2556,7 @@ jQuery(async () => {
 
     renderMemories();
     renderTimeAxis();
-    renderWorldState();
-    renderRelationship();
+    renderPeople();
     renderBlockedWords();
     renderInstructions();
     renderForeshadows();
