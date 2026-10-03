@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.26.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.27.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -3070,6 +3070,33 @@ function togglePanel(force) {
     // 打开面板时给 body 打标记，用于移动端恢复触摸滚动（ST 移动端给 body 设了 touch-action:none）
     document.body.classList.toggle('st-sd-open', show);
 }
+
+// ---------------- 对外只读接口（供第三方插件如 Amor 导演台读取剧情上下文） ----------------
+window.Serendipity = window.Serendipity || {};
+window.Serendipity.getDirectorContext = function () {
+    if (!settings) return '';
+    const parts = [];
+    const timeLine = settings.storyDay != null
+        ? '第' + settings.storyDay + '天' + (settings.storyTime ? ' · ' + settings.storyTime : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '')
+        : '';
+    if (timeLine) parts.push('剧情时间：' + timeLine);
+    const tl = (settings.timeline || []).slice(-10).map(t =>
+        '第' + (t.day != null ? t.day : '?') + '天' + (t.location ? ' ' + t.location : '') + '：' + (t.event || '')
+    ).join('\n');
+    if (tl) parts.push('时间线（最近）：\n' + tl);
+    if ((settings.entities || []).length) parts.push('人物档案：\n' + npcText());
+    if ((settings.relationshipLines || []).length) parts.push('关系：\n' + relationshipCurrentText());
+    const world = (settings.worldState || []).length ? worldStateLines(worldStateByCat()) : '';
+    if (world) parts.push('世界状态：\n' + world);
+    const openFores = (settings.foreshadows || []).filter(f => f && f.status !== '已回收' && f.title && f.title.trim()).slice(-5);
+    if (openFores.length) parts.push('未完成伏笔：' + openFores.map(f => '[' + f.status + '] ' + f.title).join('；'));
+    const mems = [
+        ...(settings.longMemories || []).slice(-3).map(m => '（长期）' + m.text),
+        ...(settings.memories || []).slice(-3).map(m => m.text),
+    ];
+    if (mems.length) parts.push('近期记忆：\n' + mems.join('\n'));
+    return parts.join('\n\n');
+};
 
 // ---------------- 初始化 ----------------
 jQuery(async () => {
