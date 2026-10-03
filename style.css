@@ -569,8 +569,9 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     outline: none;
 }
 .st-sd__axis-day:focus { border-color: #333333; }
-.st-sd__axis-period {
-    flex: 0 0 auto;
+.st-sd__axis-time {
+    flex: 1;
+    min-width: 0;
     border: 1px solid #dddddd;
     border-radius: 8px;
     padding: 8px 10px;
@@ -579,7 +580,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     background: #ffffff;
     outline: none;
 }
-.st-sd__axis-period:focus { border-color: #333333; }
+.st-sd__axis-time:focus { border-color: #333333; }
 .st-sd__axis-loc {
     flex: 1;
     min-width: 0;

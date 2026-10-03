@@ -200,10 +200,10 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
     const timeAnchor = storyTime
         ? '当前剧情时间基准（上一次剧情进行到）：' + storyTime + '。若本段对话没有明确推进时间，请沿用这个时间；若剧情明确推进了时间，请给出推进后的具体时间。'
         : '请根据本段内容判断剧情发生的大致时间（年/月/日 周几 几时几分）；若内容未明确，请给出合理推断的具体时间。';
-    // 结构化时间轴锚点（第X天 + 时段 + 地点）：让模型接力推进天数，而不是每轮孤立猜测
+    // 结构化时间轴锚点（第X天 + 年月日几时几分 + 地点）：让模型接力推进天数，而不是每轮孤立猜测
     const timeAxisAnchor = (settings.storyDay != null)
-        ? '当前剧情时间轴：第' + settings.storyDay + '天' + (settings.storyPeriod ? ' · ' + settings.storyPeriod : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '') + '。若本段剧情没有明确推进天数，请沿用第' + settings.storyDay + '天；若明确过了若干天，请给出推进后的天数。'
-        : '请根据本段内容，从故事开始估算当前是「第几天」（第X天），以及当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）和发生地点；若未明确，请给出合理推断。';
+        ? '当前剧情时间轴：第' + settings.storyDay + '天' + (settings.storyTime ? ' · ' + settings.storyTime : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '') + '。若本段剧情没有明确推进天数，请沿用第' + settings.storyDay + '天；若明确过了若干天，请给出推进后的天数。'
+        : '请根据本段内容，从故事开始估算当前是「第几天」（第X天），以及当前具体时间（年月日几时几分）和发生地点；若未明确，请给出合理推断。';
     // 世界状态锚点：把当前已知状态回传，让模型增量更新（某类别无变化写「无」），而不是每轮从零重造
     const worldStateAnchor = settings.worldState.length
         ? '当前已知的世界状态（请在此基础上增量更新，某个类别没有新变化就写「无」）：\n' + worldStateLines(worldStateByCat())
@@ -231,7 +231,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
             '【约定/承诺】新产生的约定或承诺',
             '【已完成约定】已完成的约定或承诺',
             '【详细总结】本段对话的详细总结',
-            '【时间轴】本段结束时的剧情时间，严格写成「第X天|时段|地点|本段重要事情」四段（X 是从故事开始算的天数，如「第27天|傍晚|北境营地|与斥候队长会面」；地点或事情未知写「无」）',
+            '【时间轴】本段结束时的剧情进度，严格写成「第X天|地点|本段重要事情」三段（X 是从故事开始算的天数，如「第27天|北境营地|与斥候队长会面」；地点或事情未知写「无」）',
             '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：年龄/好感/关系/物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」，需要清空某类写「空」）',
         ].join('\n'),
         prompt: transcript,
@@ -249,6 +249,7 @@ function extractStoryTime(text) {
 }
 
 // 从总结结果里解析【时间轴】行 → { day, period, location, event }（解析不出返回 null）
+// 时间轴格式已改为「第X天|地点|重要事情」三段；旧版「第X天|时段|地点|重要事情」四段也兼容解析。
 function extractTimeAxis(text) {
     const m = String(text).match(/【时间轴】\s*([^\n]+)/);
     if (!m || !m[1]) return null;
@@ -257,14 +258,23 @@ function extractTimeAxis(text) {
     const parts = raw.split(/[|｜]/).map(s => s.trim()).filter(Boolean);
     const dayM = parts[0] && parts[0].match(/第\s*(\d+)\s*天/);
     const day = dayM ? parseInt(dayM[1], 10) : null;
-    const period = (parts[1] && parts[1] !== '无') ? parts[1] : '';
-    const location = (parts[2] && parts[2] !== '无') ? parts[2] : '';
-    const event = (parts[3] && parts[3] !== '无') ? parts[3] : '';
-    if (day == null && !period && !location && !event) return null;
+    let period = '';
+    let location = '';
+    let event = '';
+    if (parts.length >= 4 && PERIODS.includes(parts[1])) {
+        // 旧四段格式：第二段是已知时段则跳过
+        period = parts[1];
+        location = (parts[2] && parts[2] !== '无') ? parts[2] : '';
+        event = (parts[3] && parts[3] !== '无') ? parts[3] : '';
+    } else {
+        location = (parts[1] && parts[1] !== '无') ? parts[1] : '';
+        event = (parts[2] && parts[2] !== '无') ? parts[2] : '';
+    }
+    if (day == null && !location && !event) return null;
     return { day, period, location, event, raw };
 }
 
-// 时间线列表：叠加新场景（第X天/时段/地点/重要事情）；连续完全重复的场景不重复叠加
+// 时间线列表：叠加新场景（第X天/年月日几时几分/地点/重要事情）；连续完全重复的场景不重复叠加
 function pushTimelineEntry(day, time, location, event) {
     if (day == null && !time && !location && !event) return;
     const last = settings.timeline[settings.timeline.length - 1];
@@ -391,14 +401,14 @@ async function summarizeLastRound() {
             // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
             const newStoryTime = extractStoryTime(result) || settings.storyTime;
             settings.storyTime = newStoryTime;
-            // 解析结构化时间轴（第X天/时段/地点），解析失败则沿用上一次，保证时间轴不倒退
+            // 解析结构化时间轴（第X天/地点/重要事情），解析失败则沿用上一次，保证时间轴不倒退
             const axis = extractTimeAxis(result);
             if (axis) {
                 if (axis.day != null) settings.storyDay = axis.day;
                 if (axis.period) settings.storyPeriod = axis.period;
                 if (axis.location) settings.storyLocation = axis.location;
-                // 时间轴列表：叠加本段场景（第X天/时段/地点/重要事情）
-                pushTimelineEntry(axis.day, axis.period, axis.location, axis.event);
+                // 时间轴列表：叠加本段场景（第X天/年月日几时几分/地点/重要事情）；时间取【时间】里的具体时间
+                pushTimelineEntry(axis.day, newStoryTime, axis.location, axis.event);
             }
             // 世界状态：解析并按类别快照合并（「无」保留、「空」清空、有新内容替换）
             applyWorldState(extractWorldState(result));
@@ -463,10 +473,10 @@ function updatePromptInjection() {
         0,
     );
 
-    // 结构化时间轴注入（一行极简锚点，让模型知道当前第X天/时段/地点，保持时间一致）
-    const hasAxis = settings.storyDay != null || settings.storyPeriod || settings.storyLocation;
+    // 结构化时间轴注入（一行极简锚点，让模型知道当前第X天/年月日几时几分/地点，保持时间一致）
+    const hasAxis = settings.storyDay != null || settings.storyTime || settings.storyLocation;
     const axisLine = hasAxis
-        ? '当前剧情时间：第' + (settings.storyDay != null ? settings.storyDay : '?') + '天' + (settings.storyPeriod ? ' · ' + settings.storyPeriod : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '')
+        ? '当前剧情时间：第' + (settings.storyDay != null ? settings.storyDay : '?') + '天' + (settings.storyTime ? ' · ' + settings.storyTime : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '')
         : '';
     setExtensionPrompt(
         'serendipity_time',
@@ -699,15 +709,15 @@ function renderMemories() {
 }
 
 // ---------------- 时间轴 UI ----------------
-// 当前锚点 + 时间线列表（第X天/时段/地点/重要事情，不断叠加，可编辑/删除）
+// 当前锚点 + 时间线列表（已过X天 / 第X天·年月日几时几分·地点 / 重要事情，不断叠加，可编辑/删除）
 let timelineEditingId = null;
 
 function renderTimeAxis() {
     const cur = $('#st-serendipity .st-sd__axis-current');
     if (cur.length) {
-        const day = settings.storyDay != null ? '第' + settings.storyDay + '天' : '（待首次总结）';
+        const day = settings.storyDay != null ? '已过' + settings.storyDay + '天' : '（待首次总结）';
         const parts = [day];
-        if (settings.storyPeriod) parts.push(settings.storyPeriod);
+        if (settings.storyTime) parts.push(settings.storyTime);
         if (settings.storyLocation) parts.push(settings.storyLocation);
         cur.text(parts.join(' · '));
     }
@@ -717,14 +727,14 @@ function renderTimeAxis() {
             (a.day == null ? 1 : 0) - (b.day == null ? 1 : 0) || (a.day || 0) - (b.day || 0)
         );
         if (!entries.length) {
-            list.html('<div class="st-sd__empty">暂无时间轴，总结后自动叠加场景（第X天 / 时段 / 地点 / 重要事情）</div>');
+            list.html('<div class="st-sd__empty">暂无时间轴，总结后自动叠加场景（第X天 / 年月日几时几分 / 地点 / 重要事情）</div>');
         } else {
             list.html(entries.map(e => {
                 if (e.id === timelineEditingId) {
                     return '<div class="st-sd__tl-item st-sd__tl-item--edit" data-id="' + e.id + '">'
                         + '<div class="st-sd__tl-edit-row">'
                         + '<input type="number" class="st-sd__tl-e-day" placeholder="第几天" min="0" value="' + (e.day != null ? e.day : '') + '">'
-                        + '<input type="text" class="st-sd__tl-e-time" placeholder="时段" value="' + escapeHtml(e.time) + '">'
+                        + '<input type="text" class="st-sd__tl-e-time" placeholder="年月日几时几分" value="' + escapeHtml(e.time) + '">'
                         + '<input type="text" class="st-sd__tl-e-loc" placeholder="地点" value="' + escapeHtml(e.location) + '">'
                         + '</div>'
                         + '<input type="text" class="st-sd__tl-e-event" placeholder="重要事情" value="' + escapeHtml(e.event) + '">'
@@ -898,6 +908,22 @@ function resetCurrentChar() {
     renderBlockedWords();
     renderInstructions();
     toastr.success('已清空「' + name + '」的 Serendipity 数据');
+}
+
+// 开启新对话时清空「剧情记录」（记忆/时间轴/世界状态/剧情时间），保留配置（屏蔽词/指令/开关/世界书选择）
+function resetStoryRecords() {
+    settings.memories = [];
+    settings.longMemories = [];
+    settings.worldState = [];
+    settings.timeline = [];
+    settings.storyTime = '';
+    settings.storyDay = null;
+    settings.storyPeriod = '';
+    settings.storyLocation = '';
+    settings.lastSummaryIndex = -1;
+    settings.roundsSinceSummary = 0;
+    settings.archivedWorldBook = '';
+    settings.worldReminderShown = false;
 }
 
 // ---------------- 屏蔽词功能 ----------------
@@ -1103,14 +1129,11 @@ function buildPanel() {
         </div>
         <div class="st-sd__add-row">
           <input type="number" class="st-sd__axis-day" placeholder="第几天" min="0">
-          <select class="st-sd__axis-period">
-            <option value="">时段</option>
-            ${PERIODS.map(p => `<option value="${p}">${p}</option>`).join('')}
-          </select>
+          <input type="text" class="st-sd__axis-time" placeholder="年月日几时几分">
           <input type="text" class="st-sd__axis-loc" placeholder="地点">
           <button type="button" class="st-sd__axis-save">设定</button>
         </div>
-        <div class="st-sd__hint">手动设定时间轴锚点（第X天 + 时段 + 地点），下次总结从这里接力推进。下方时间线按「第X天 / 时段 / 地点 / 重要事情」不断叠加，可编辑/删除。</div>
+        <div class="st-sd__hint">手动设定时间轴锚点（第X天 + 年月日几时几分 + 地点），下次总结从这里接力推进。下方时间线按「第X天 / 年月日几时几分 / 地点 / 重要事情」不断叠加，可编辑/删除。</div>
         <div class="st-sd__axis-hints"></div>
         <div class="st-sd__axis-list"></div>
       </div>
@@ -1292,20 +1315,22 @@ function bindPanelEvents() {
     // 时间轴：手动设定锚点
     const saveAxis = () => {
         const dayVal = parseInt(panel.find('.st-sd__axis-day').val(), 10);
-        const period = panel.find('.st-sd__axis-period').val() || '';
+        const storyTime = panel.find('.st-sd__axis-time').val().trim();
         const location = panel.find('.st-sd__axis-loc').val().trim();
-        if (isNaN(dayVal) && !period && !location) { toastr.warning('请至少填一项（天数/时段/地点）'); return; }
+        if (isNaN(dayVal) && !storyTime && !location) { toastr.warning('请至少填一项（天数/年月日几时几分/地点）'); return; }
         if (!isNaN(dayVal) && dayVal >= 0) settings.storyDay = dayVal;
-        if (period) settings.storyPeriod = period;
+        if (storyTime) settings.storyTime = storyTime;
         if (location) settings.storyLocation = location;
         saveSettings();
         updatePromptInjection();
         renderTimeAxis();
         panel.find('.st-sd__axis-day').val('');
+        panel.find('.st-sd__axis-time').val('');
         panel.find('.st-sd__axis-loc').val('');
         toastr.success('已设定时间轴');
     };
     panel.find('.st-sd__axis-save').on('click', saveAxis);
+    panel.find('.st-sd__axis-time').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
     panel.find('.st-sd__axis-loc').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
 
     // 世界状态：添加/编辑/删除
@@ -1454,10 +1479,13 @@ jQuery(async () => {
             }
         }, 200);
     });
-    // 切换聊天/角色后：切换到该角色对应的数据
+    // 切换聊天/角色后：切换到该角色对应的数据；开启新对话（空聊天）时清空上一段聊天的剧情记录
     eventSource.on(event_types.CHAT_CHANGED, () => {
         setTimeout(() => {
             activateCharacter();
+            const msgs = Array.isArray(chat) ? chat.filter(m => m && typeof m.mes === 'string' && m.mes.trim() && !m.is_system) : [];
+            if (msgs.length <= 1) resetStoryRecords(); // 新对话几乎为空 → 视为新开一局
+            saveSettings();
             updatePromptInjection();
             applyCensorAll();
             renderMemories();
