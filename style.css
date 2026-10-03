@@ -1004,6 +1004,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     min-width: 0;
 }
 .st-sd__rel-a:focus, .st-sd__rel-b:focus, .st-sd__rel-relation:focus { border-color: var(--sd-accent); box-shadow: 0 0 0 3px rgba(205, 179, 176, 0.20); }
+.st-sd__rel-a, .st-sd__rel-b { cursor: pointer; }
 
 /* ============ 人物页 ============ */
 .st-sd__section-title {

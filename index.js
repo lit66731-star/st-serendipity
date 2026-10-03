@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.17.1'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.18.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -433,6 +433,19 @@ function normalizeCharSettings(cs) {
         cs.worldState = remaining;
         cs._relUnified = true;
     }
+    // 关系线 a/b 迁移：旧裸名字 → 实体引用（'你' / '@<id>' / 裸名）；幂等（已是引用则原样保留）
+    const mapRef = (name) => {
+        const n = String(name || '').trim();
+        if (!n || n === '你' || n.startsWith('@')) return n || '你';
+        const ms = cs.entities.filter(e => e.name === n);
+        if (ms.length === 1) return '@' + ms[0].id;
+        if (ms.length > 1) return '@' + ms[ms.length - 1].id;
+        return n;
+    };
+    for (const l of cs.relationshipLines) {
+        l.a = mapRef(l.a);
+        l.b = mapRef(l.b);
+    }
     if (cs.injectForeshadows === undefined) cs.injectForeshadows = false;
     if (cs.autoRegisterEntities === undefined) cs.autoRegisterEntities = true;
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
@@ -681,7 +694,7 @@ function worldStateLines(byCat) {
 // 把当前关系线渲染成紧凑文本（供总结锚点与正文注入复用）
 function relationshipCurrentText() {
     return settings.relationshipLines.map(l =>
-        l.a + '→' + l.b + '：关系 ' + (l.current.relationship || '未知')
+        resolveEntityRef(l.a).display + '→' + resolveEntityRef(l.b).display + '：关系 ' + (l.current.relationship || '未知')
         + (l.current.affection ? '，好感 ' + l.current.affection : '')
         + (l.current.attitude ? '，态度 ' + l.current.attitude : '')
     ).join('\n');
@@ -690,6 +703,34 @@ function relationshipCurrentText() {
 // 角色实体渲染成紧凑文本（供正文注入复用；身份域非空时拼成「世界·时间线·身份」标签）
 function entityDomain(n) {
     return [n.world, n.timeline, n.identity].filter(Boolean).join('·');
+}
+// 关系线引用解析：'你' → 用户；'@<entityId>' → 实体；裸字符串 → 未登记名字（尽量按名匹配唯一实体以带上身份域）
+function resolveEntityRef(ref) {
+    const r = typeof ref === 'string' ? ref : '';
+    if (r.startsWith('@')) {
+        const id = r.slice(1);
+        const e = settings.entities.find(x => x.id === id);
+        if (e) {
+            const domain = entityDomain(e);
+            return { name: e.name, display: e.name + (domain ? '（' + domain + '）' : ''), entityId: id };
+        }
+        return { name: r, display: r, entityId: '' };
+    }
+    const matches = settings.entities.filter(e => e.name === r);
+    if (matches.length === 1) {
+        const domain = entityDomain(matches[0]);
+        return { name: r, display: r + (domain ? '（' + domain + '）' : ''), entityId: matches[0].id };
+    }
+    return { name: r, display: r, entityId: '' };
+}
+// 名字 → 关系线引用（总结解析/手动建立时用）：'你' 保留；唯一同名 → 该实体；多个同名 → 取最新（第 3 步再做智能识别）；无实体 → 保留裸名
+function nameToRef(name) {
+    const n = String(name || '').trim();
+    if (!n || n === '你') return '你';
+    const ms = settings.entities.filter(e => e.name === n);
+    if (ms.length === 1) return '@' + ms[0].id;
+    if (ms.length > 1) return '@' + ms[ms.length - 1].id;
+    return n;
 }
 function npcText() {
     return settings.entities.map(n => n.name
@@ -780,7 +821,7 @@ function findRelationshipLine(a, b) {
 // 追加关系变化：历史只追加不改写；current 更新为最新状态
 function applyRelationshipChange(ch) {
     if (!ch || !ch.a || !ch.b) return;
-    const line = findRelationshipLine(ch.a, ch.b);
+    const line = findRelationshipLine(nameToRef(ch.a), nameToRef(ch.b));
     if (ch.to) line.current.relationship = ch.to;
     if (ch.affection) line.current.affection = ch.affection;
     if (ch.attitude) line.current.attitude = ch.attitude;
@@ -1067,7 +1108,7 @@ function buildRelationshipBlock() {
 
     // 当前关系：始终注入
     const cur = lines.map(l => {
-        let s = l.a + ' → ' + l.b + '：关系 ' + (l.current.relationship || '未知');
+        let s = resolveEntityRef(l.a).display + ' → ' + resolveEntityRef(l.b).display + '：关系 ' + (l.current.relationship || '未知');
         if (l.current.affection) s += '，好感 ' + l.current.affection;
         if (l.current.attitude) s += '，态度 ' + l.current.attitude;
         return s;
@@ -1080,7 +1121,7 @@ function buildRelationshipBlock() {
         for (const h of l.history.slice(-3)) {
             recent.push({
                 day: h.day,
-                text: l.a + '→' + l.b + '：' + (h.to ? '变为' + h.to : (h.change || '关系变化')) + (h.reason ? '，因为' + h.reason : ''),
+                text: resolveEntityRef(l.a).display + '→' + resolveEntityRef(l.b).display + '：' + (h.to ? '变为' + h.to : (h.change || '关系变化')) + (h.reason ? '，因为' + h.reason : ''),
             });
         }
     }
@@ -1094,7 +1135,7 @@ function buildRelationshipBlock() {
     const nodes = lines.map(l => {
         const first = l.history[0];
         if (!first) return null;
-        return l.a + '→' + l.b + '：' + (first.day != null ? '第' + first.day + '天 ' : '') + (first.to || first.change || '建立关系');
+        return resolveEntityRef(l.a).display + '→' + resolveEntityRef(l.b).display + '：' + (first.day != null ? '第' + first.day + '天 ' : '') + (first.to || first.change || '建立关系');
     }).filter(Boolean);
     if (nodes.length) {
         parts.push('关系关键节点：\n' + nodes.join('\n'));
@@ -1560,10 +1601,24 @@ function renderPeople() {
     renderWorldState();
 }
 
+// 刷新关系线建立区的人物下拉（「你」+ 所有角色实体）
+function renderRelSelects() {
+    const opts = ['<option value="你">你</option>']
+        .concat(settings.entities.slice().sort((x, y) => x.name.localeCompare(y.name, 'zh')).map(e => {
+            const domain = entityDomain(e);
+            const label = e.name + (domain ? '（' + domain + '）' : '');
+            return '<option value="@' + e.id + '">' + escapeHtml(label) + '</option>';
+        }));
+    const html = opts.join('');
+    $('#st-serendipity .st-sd__rel-a').html(html);
+    $('#st-serendipity .st-sd__rel-b').html(html);
+}
+
 // 情感线 / 关系轨迹（列表：每条线一张卡片，含当前关系 + 历史轨迹）
 function renderRelationship() {
     const list = $('#st-serendipity .st-sd__rel-list');
     if (!list.length) return;
+    renderRelSelects();
     if (!settings.relationshipLines.length) {
         list.html('<div class="st-sd__empty">暂无关系线。总结时若发现人物关系变化会自动建立，或在上方手动建立。</div>');
         return;
@@ -1573,7 +1628,7 @@ function renderRelationship() {
         const hist = l.history.slice().sort((a, b) => (a.day == null ? 1 : 0) - (b.day == null ? 1 : 0) || (a.day || 0) - (b.day || 0));
         html += '<div class="st-sd__rel-item" data-id="' + l.id + '">';
         html += '<div class="st-sd__rel-head">'
-            + '<span class="st-sd__rel-pair">' + escapeHtml(l.a) + ' <span class="st-sd__rel-arrow">→</span> ' + escapeHtml(l.b) + '</span>'
+            + '<span class="st-sd__rel-pair">' + escapeHtml(resolveEntityRef(l.a).display) + ' <span class="st-sd__rel-arrow">→</span> ' + escapeHtml(resolveEntityRef(l.b).display) + '</span>'
             + '<span class="st-sd__rel-current">' + escapeHtml(l.current.relationship || '未知')
                 + (l.current.affection ? ' · 好感 ' + escapeHtml(l.current.affection) : '')
                 + (l.current.attitude ? ' · ' + escapeHtml(l.current.attitude) : '') + '</span>'
@@ -1663,7 +1718,7 @@ function exportMemories() {
     lines.push('========== 情感线 / 关系轨迹 ==========');
     if (settings.relationshipLines.length) {
         for (const l of settings.relationshipLines) {
-            lines.push(l.a + ' → ' + l.b + '：关系 ' + (l.current.relationship || '未知')
+            lines.push(resolveEntityRef(l.a).display + ' → ' + resolveEntityRef(l.b).display + '：关系 ' + (l.current.relationship || '未知')
                 + (l.current.affection ? '，好感 ' + l.current.affection : '')
                 + (l.current.attitude ? '，态度 ' + l.current.attitude : ''));
             const hist = l.history.slice().sort((a, b) => (a.day == null ? 1 : 0) - (b.day == null ? 1 : 0) || (a.day || 0) - (b.day || 0));
@@ -2073,12 +2128,12 @@ function buildPanel() {
 
         <div class="st-sd__section-title">关系 / 好感</div>
         <div class="st-sd__add-row">
-          <input type="text" class="st-sd__rel-a" placeholder="人物A（谁对谁，如「你」）">
-          <input type="text" class="st-sd__rel-b" placeholder="人物B（如「沈砚」）">
+          <select class="st-sd__rel-a" title="人物A（谁对谁）"></select>
+          <select class="st-sd__rel-b" title="人物B"></select>
           <input type="text" class="st-sd__rel-relation" placeholder="当前关系（如「暧昧」，可空）">
           <button type="button" class="st-sd__rel-add">建立关系线</button>
         </div>
-        <div class="st-sd__hint">关系回答「现在是什么」，情感线回答「怎么变成现在这样」。总结发现关系变化时自动追加到轨迹（历史只追加、不覆盖），可手动补记、删除。</div>
+        <div class="st-sd__hint">关系回答「现在是什么」，情感线回答「怎么变成现在这样」。人物从下拉里选（可区分同名角色，如「沈昭（现代·医生）」与「沈昭（前世·将军）」）。总结发现关系变化时自动追加到轨迹（历史只追加、不覆盖），可手动补记、删除。</div>
         <div class="st-sd__rel-list"></div>
 
         <div class="st-sd__section-title">物品 · 日程</div>
@@ -2412,19 +2467,17 @@ function bindPanelEvents() {
 
     // 情感线：建立关系线 / 删除线 / 删除单条变化 / 补记变化
     const addRel = () => {
-        const a = panel.find('.st-sd__rel-a').val().trim();
-        const b = panel.find('.st-sd__rel-b').val().trim();
-        if (!a || !b) { toastr.warning('人物A和人物B都要填'); return; }
+        const a = panel.find('.st-sd__rel-a').val();
+        const b = panel.find('.st-sd__rel-b').val();
+        if (!a || !b) { toastr.warning('请选择人物A和人物B'); return; }
         const rel = panel.find('.st-sd__rel-relation').val().trim();
         const line = findRelationshipLine(a, b);
         if (rel) line.current.relationship = rel;
         saveSettings();
         updatePromptInjection();
         renderRelationship();
-        panel.find('.st-sd__rel-a').val('');
-        panel.find('.st-sd__rel-b').val('');
         panel.find('.st-sd__rel-relation').val('');
-        toastr.success('已建立/更新关系线「' + a + ' → ' + b + '」');
+        toastr.success('已建立/更新关系线「' + resolveEntityRef(a).display + ' → ' + resolveEntityRef(b).display + '」');
     };
     panel.find('.st-sd__rel-add').on('click', addRel);
     panel.find('.st-sd__rel-relation').on('keydown', (e) => { if (e.key === 'Enter') addRel(); });
