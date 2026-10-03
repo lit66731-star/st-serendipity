@@ -129,11 +129,13 @@ function currentCharKey() {
     return '';
 }
 
-// 当前聊天的唯一标识（ST 会给每个聊天文件一个 chat_id）；取不到时退回空，退化为「按角色」存储
+// 当前聊天的唯一标识：ST 用 characters[this_chid].chat（当前聊天文件名，官方唯一标识）区分不同聊天；
+// 取不到时退回 chat_metadata.integrity（聊天文件头里的 UUID，同样唯一且稳定）。
 function currentChatId() {
-    if (typeof chat_metadata === 'object' && chat_metadata && (chat_metadata.chat_id || chat_metadata.chatId)) {
-        return String(chat_metadata.chat_id || chat_metadata.chatId);
-    }
+    const c = (this_chid !== undefined && Array.isArray(characters) && characters[this_chid]) ? characters[this_chid] : null;
+    if (c && typeof c.chat === 'string' && c.chat) return 'chat::' + c.chat;
+    const cm = (typeof chat_metadata === 'object' && chat_metadata) ? chat_metadata : null;
+    if (cm && cm.integrity) return 'integrity::' + cm.integrity;
     return '';
 }
 
@@ -936,22 +938,6 @@ function resetCurrentChar() {
     toastr.success('已清空「' + name + '」的 Serendipity 数据');
 }
 
-// 开启新对话时清空「剧情记录」（记忆/时间轴/世界状态/剧情时间），保留配置（屏蔽词/指令/开关/世界书选择）
-function resetStoryRecords() {
-    settings.memories = [];
-    settings.longMemories = [];
-    settings.worldState = [];
-    settings.timeline = [];
-    settings.storyTime = '';
-    settings.storyDay = null;
-    settings.storyPeriod = '';
-    settings.storyLocation = '';
-    settings.lastSummaryIndex = -1;
-    settings.roundsSinceSummary = 0;
-    settings.archivedWorldBook = '';
-    settings.worldReminderShown = false;
-}
-
 // ---------------- 屏蔽词功能 ----------------
 const CENSOR_EXCLUDE = 'script, style, textarea, input, select, option, #st-serendipity, .st-sd, [contenteditable]';
 
@@ -1509,12 +1495,6 @@ jQuery(async () => {
     eventSource.on(event_types.CHAT_CHANGED, () => {
         setTimeout(() => {
             activateCharacter();
-            // 兜底：取不到 chat_id 时退化为「按角色」存储，此时用空聊天判断清空上一段记录
-            if (!currentChatId()) {
-                const msgs = Array.isArray(chat) ? chat.filter(m => m && typeof m.mes === 'string' && m.mes.trim() && !m.is_system) : [];
-                if (msgs.length <= 1) resetStoryRecords();
-            }
-            saveSettings();
             updatePromptInjection();
             applyCensorAll();
             renderMemories();
