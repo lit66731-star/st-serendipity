@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.14.5'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.15.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -246,7 +246,28 @@ Serendipity 中可能同时存在：
 
 如果当前状态发生变化：
 
-更新当前状态，但保留历史。`;
+更新当前状态，但保留历史。
+
+⸻
+
+十一、人物关系与情感变化
+
+除了剧情事件，还必须关注本轮剧情中人物之间关系、好感、态度或情绪的变化。
+
+只有剧情中确实发生了明确的变化时才记录；没有变化时不要虚构，更不要因为普通对话就写“感情更加深厚”。
+
+记录时应包含：变化的双方（谁对谁）、变化前关系、变化后关系、好感变化（如能明确判断）、当前态度或情绪变化、导致变化的具体剧情事件、发生时间。
+
+规则：
+
+1. 关系变化必须有剧情依据，不得凭空推断。
+2. 不要因为本轮没有提到某段关系，就认为这段关系不存在或已经结束。
+3. 不要覆盖已经发生的历史关系变化；历史只追加，不改写。
+4. 当前关系是历史变化累积后的结果。
+5. 后续发生冲突时，应记录新的关系变化，而不是修改过去的历史。
+6. 关系可以变好，也可以恶化、疏远、决裂或恢复。
+7. 描述感情变化应尽量说明“为什么变化”，而不仅仅是给一个好感数字。
+8. 关系变化必须结合当前剧情时间记录，不能用模糊的“最近”“之前”代替已确定的剧情时间。`;
 
 const defaultSettings = {
     chars: {},       // { [角色名]: 该角色的记忆/屏蔽词/指令等数据 }
@@ -279,6 +300,7 @@ function freshCharSettings() {
         storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
         storyLocation: '',      // 当前地点
         worldState: [],         // 世界状态列表 [{ id, cat: '年龄'|'好感'|'关系'|'物品'|'日程', text }]
+        relationshipLines: [],  // 情感线/关系轨迹 [{ id, a, b, current:{affection,relationship,attitude}, history:[{id,day,from,to,change,reason,event}] }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
         foreshadows: [],        // 伏笔/未完成事项 [{ id, title, status, note, day }]
@@ -292,7 +314,7 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'timeline', 'checks', 'foreshadows']) {
+    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'relationshipLines', 'timeline', 'checks', 'foreshadows']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
     // 迁移：旧版「永久记忆」档已取消，原永久记忆并入长期记忆（随后一起归档到世界书）
@@ -321,6 +343,28 @@ function normalizeCharSettings(cs) {
         note: typeof e.note === 'string' ? e.note : '',
         day: (e.day == null || isNaN(e.day)) ? null : Number(e.day),
     }));
+    cs.relationshipLines = cs.relationshipLines.filter(e => e && e.id && typeof e.a === 'string' && typeof e.b === 'string' && (e.a.trim() || e.b.trim())).map(e => {
+        const cur = (e.current && typeof e.current === 'object') ? e.current : {};
+        return {
+            id: e.id,
+            a: String(e.a),
+            b: String(e.b),
+            current: {
+                affection: typeof cur.affection === 'string' ? cur.affection : (cur.affection == null ? '' : String(cur.affection)),
+                relationship: typeof cur.relationship === 'string' ? cur.relationship : '',
+                attitude: typeof cur.attitude === 'string' ? cur.attitude : '',
+            },
+            history: (Array.isArray(e.history) ? e.history : []).filter(h => h && h.id).map(h => ({
+                id: h.id,
+                day: (h.day == null || isNaN(h.day)) ? null : Number(h.day),
+                from: typeof h.from === 'string' ? h.from : '',
+                to: typeof h.to === 'string' ? h.to : '',
+                change: typeof h.change === 'string' ? h.change : '',
+                reason: typeof h.reason === 'string' ? h.reason : '',
+                event: typeof h.event === 'string' ? h.event : '',
+            })),
+        };
+    });
     if (cs.injectForeshadows === undefined) cs.injectForeshadows = false;
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
@@ -471,6 +515,10 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
     const worldStateAnchor = settings.worldState.length
         ? '当前已知的世界状态（请在此基础上增量更新，某个类别没有新变化就写「无」）：\n' + worldStateLines(worldStateByCat())
         : '请根据本段内容提取当前世界状态（年龄/好感/关系/物品/日程），没有的类别写「无」。';
+    // 关系线锚点：把当前已知关系线回传，让模型增量追加历史（没有新变化写「无」），不覆盖已有轨迹
+    const relationshipAnchor = settings.relationshipLines.length
+        ? '当前已知的人物关系线（请在此基础上增量追加；本轮没有明确的关系变化就写「无」；发生冲突时追加新变化，不要改写已有历史）：\n' + relationshipCurrentText()
+        : '请关注本段剧情中人物之间关系、好感、态度或情绪是否发生明确变化；没有变化写「无」，不要为了填充而虚构变化。';
     return {
         systemPrompt: [
             '你是剧情记忆助手。请阅读下面这段对话，提取信息并总结。只输出总结本身，不要复述、不要添加任何解释或客套。',
@@ -480,6 +528,8 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
             timeAxisAnchor,
             '',
             worldStateAnchor,
+            '',
+            relationshipAnchor,
             '',
             '严格按照以下格式逐行输出（除【时间】外，某项信息未提及时写「无」）：',
             '',
@@ -496,6 +546,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
             '【详细总结】本段对话的详细总结',
             '【时间轴】本段结束时的剧情进度，严格写成「第X天|地点|本段重要事情」三段（X 是从故事开始算的天数，如「第27天|北境营地|与斥候队长会面」；地点或事情未知写「无」）',
             '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：年龄/好感/关系/物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」，需要清空某类写「空」）',
+            '【关系变化】本轮人物关系是否发生明确变化；没有写「无」，有则严格写成「A→B|变化|变化前|变化后|好感变化|当前态度|原因|事件|第X天」单行（A→B=谁对谁；变化如「好感上升/关系升温/产生信任」；好感变化如「+10」「-5」，写不出写「无」；当前态度写不出写「无」；原因与事件写具体剧情；第X天为该变化发生的剧情天数）',
         ].join('\n'),
         prompt: transcript,
     };
@@ -557,6 +608,15 @@ function worldStateByCat() {
 function worldStateLines(byCat) {
     return WORLD_CATS.map(cat => cat + '：' + (byCat[cat] && byCat[cat].length ? byCat[cat].join('、') : '无')).join('\n');
 }
+
+// 把当前关系线渲染成紧凑文本（供总结锚点与正文注入复用）
+function relationshipCurrentText() {
+    return settings.relationshipLines.map(l =>
+        l.a + '→' + l.b + '：关系 ' + (l.current.relationship || '未知')
+        + (l.current.affection ? '，好感 ' + l.current.affection : '')
+        + (l.current.attitude ? '，态度 ' + l.current.attitude : '')
+    ).join('\n');
+}
 // 从总结结果里解析【世界状态】行 → { entries: [{ cat, text }], clearCats: [cat] }
 // 约定：某类别写「无」= 保留原样；写「空」= 清空该类
 function extractWorldState(text) {
@@ -595,6 +655,64 @@ function applyWorldState(parsed) {
         settings.worldState = settings.worldState.filter(e => e.cat !== cat);
         for (const it of items) settings.worldState.push({ id: uid(), cat, text: it.text });
     }
+}
+
+// ---------------- 情感线 / 关系轨迹 ----------------
+// 从总结结果里解析【关系变化】行 → { a, b, change, from, to, affection, attitude, reason, event, day }（无变化/解析失败返回 null）
+// 格式：A→B|变化|变化前|变化后|好感变化|当前态度|原因|事件|第X天
+function extractRelationshipChange(text) {
+    const m = String(text).match(/【关系变化】\s*([^\n]+)/);
+    if (!m || !m[1]) return null;
+    const raw = m[1].trim();
+    if (!raw || raw === '无') return null;
+    const p = raw.split(/[|｜]/).map(s => s.trim());
+    const pair = (p[0] || '').split(/→|->|➜|⟶/).map(s => s.trim()).filter(Boolean);
+    if (pair.length < 2) return null;
+    const dayM = (p[8] || '').match(/第\s*(\d+)\s*天/);
+    const clean = (idx) => {
+        const v = p[idx];
+        return (v && v !== '无' && v !== '未知') ? v : '';
+    };
+    return {
+        a: pair[0],
+        b: pair[1],
+        change: clean(1),
+        from: clean(2),
+        to: clean(3),
+        affection: clean(4),
+        attitude: clean(5),
+        reason: clean(6),
+        event: clean(7),
+        day: dayM ? parseInt(dayM[1], 10) : null,
+    };
+}
+
+// 找到（或新建）一条 A→B 的关系线（方向敏感：A 对 B）
+function findRelationshipLine(a, b) {
+    let line = settings.relationshipLines.find(l => l.a === a && l.b === b);
+    if (!line) {
+        line = { id: uid(), a, b, current: { affection: '', relationship: '', attitude: '' }, history: [] };
+        settings.relationshipLines.push(line);
+    }
+    return line;
+}
+
+// 追加关系变化：历史只追加不改写；current 更新为最新状态
+function applyRelationshipChange(ch) {
+    if (!ch || !ch.a || !ch.b) return;
+    const line = findRelationshipLine(ch.a, ch.b);
+    if (ch.to) line.current.relationship = ch.to;
+    if (ch.affection) line.current.affection = ch.affection;
+    if (ch.attitude) line.current.attitude = ch.attitude;
+    line.history.push({
+        id: uid(),
+        day: (ch.day != null) ? ch.day : settings.storyDay,
+        from: ch.from,
+        to: ch.to,
+        change: ch.change,
+        reason: ch.reason,
+        event: ch.event,
+    });
 }
 
 // ---------------- 剧情一致性检查 ----------------
@@ -783,8 +901,10 @@ async function summarizeLastRound() {
             }
             // 世界状态：解析并按类别快照合并（「无」保留、「空」清空、有新内容替换）
             applyWorldState(extractWorldState(result));
-            // 记忆正文去掉【时间轴】【世界状态】行（结构化数据已单独存，正文保持干净）
-            const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').trim();
+            // 情感线：解析并追加关系变化（无变化/解析失败则不动；历史只追加不改写）
+            applyRelationshipChange(extractRelationshipChange(result));
+            // 记忆正文去掉【时间轴】【世界状态】【关系变化】行（结构化数据已单独存，正文保持干净）
+            const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
             settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, text: memoryText });
             settings.lastSummaryIndex = chat.length - 1; // 记录已总结到的消息下标，下次只总结新增部分
@@ -794,6 +914,7 @@ async function summarizeLastRound() {
             renderMemories();
             renderTimeAxis();
             renderWorldState();
+            renderRelationship();
             refreshLocalChecks();
 
             // 弹窗提示：总结成功 + 是否触发晋级
@@ -834,6 +955,50 @@ function buildMemoryBlock() {
     return parts.join('\n\n');
 }
 
+// 情感线注入正文：当前关系（始终）+ 最近变化（限 5 条）+ 关键节点（每条线第一条），控制 token 不爆
+function buildRelationshipBlock() {
+    const lines = settings.relationshipLines;
+    if (!lines.length) return '';
+    const parts = [];
+
+    // 当前关系：始终注入
+    const cur = lines.map(l => {
+        let s = l.a + ' → ' + l.b + '：关系 ' + (l.current.relationship || '未知');
+        if (l.current.affection) s += '，好感 ' + l.current.affection;
+        if (l.current.attitude) s += '，态度 ' + l.current.attitude;
+        return s;
+    }).join('\n');
+    parts.push('当前关系：\n' + cur);
+
+    // 最近变化：所有线取最近 3 条，按天数降序后取前 5 条
+    const recent = [];
+    for (const l of lines) {
+        for (const h of l.history.slice(-3)) {
+            recent.push({
+                day: h.day,
+                text: l.a + '→' + l.b + '：' + (h.to ? '变为' + h.to : (h.change || '关系变化')) + (h.reason ? '，因为' + h.reason : ''),
+            });
+        }
+    }
+    recent.sort((x, y) => (y.day == null ? -1 : y.day) - (x.day == null ? -1 : x.day));
+    const recentTop = recent.slice(0, 5);
+    if (recentTop.length) {
+        parts.push('最近关系变化：\n' + recentTop.map(r => (r.day != null ? '第' + r.day + '天 ' : '') + r.text).join('\n'));
+    }
+
+    // 关键节点：每条线的第一条（建立/首次变化）
+    const nodes = lines.map(l => {
+        const first = l.history[0];
+        if (!first) return null;
+        return l.a + '→' + l.b + '：' + (first.day != null ? '第' + first.day + '天 ' : '') + (first.to || first.change || '建立关系');
+    }).filter(Boolean);
+    if (nodes.length) {
+        parts.push('关系关键节点：\n' + nodes.join('\n'));
+    }
+
+    return parts.join('\n\n');
+}
+
 // 把记忆 + 禁止词注入正文 prompt（IN_PROMPT：进入系统提示，正文生成时会被模型读取）
 function updatePromptInjection() {
     // 记忆底层规则注入（记忆开启时常驻，让模型遵守剧情时间/事件/人物/世界状态的连续性规则）
@@ -870,6 +1035,15 @@ function updatePromptInjection() {
     setExtensionPrompt(
         'serendipity_world',
         worldLines ? '[Serendipity 世界状态]\n' + worldLines + '\n请记住并在后续生成中遵守这些世界状态（年龄/好感/关系/物品/日程），剧情产生新变化时自然更新。' : '',
+        extension_prompt_types.IN_PROMPT,
+        0,
+    );
+
+    // 情感线注入：当前关系 + 最近变化 + 关键节点（有数据才注入）
+    const relBlock = settings.memoryEnabled ? buildRelationshipBlock().trim() : '';
+    setExtensionPrompt(
+        'serendipity_relationship',
+        relBlock ? '[Serendipity 情感线]\n以下是人物之间的关系轨迹（当前关系 + 最近变化 + 关键节点）。请保持关系连续、不要倒退或遗忘；历史关系只追加不改写，只有剧情明确发生分手/决裂/失忆/关系重建等时才记录新的变化。\n\n' + relBlock : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
@@ -1234,6 +1408,47 @@ function renderWorldState() {
     list.html(html);
 }
 
+// 情感线 / 关系轨迹（列表：每条线一张卡片，含当前关系 + 历史轨迹）
+function renderRelationship() {
+    const list = $('#st-serendipity .st-sd__rel-list');
+    if (!list.length) return;
+    if (!settings.relationshipLines.length) {
+        list.html('<div class="st-sd__empty">暂无关系线。总结时若发现人物关系变化会自动建立，或在上方手动建立。</div>');
+        return;
+    }
+    let html = '';
+    for (const l of settings.relationshipLines) {
+        const hist = l.history.slice().sort((a, b) => (a.day == null ? 1 : 0) - (b.day == null ? 1 : 0) || (a.day || 0) - (b.day || 0));
+        html += '<div class="st-sd__rel-item" data-id="' + l.id + '">';
+        html += '<div class="st-sd__rel-head">'
+            + '<span class="st-sd__rel-pair">' + escapeHtml(l.a) + ' <span class="st-sd__rel-arrow">→</span> ' + escapeHtml(l.b) + '</span>'
+            + '<span class="st-sd__rel-current">' + escapeHtml(l.current.relationship || '未知')
+                + (l.current.affection ? ' · 好感 ' + escapeHtml(l.current.affection) : '')
+                + (l.current.attitude ? ' · ' + escapeHtml(l.current.attitude) : '') + '</span>'
+            + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__rel-del" data-id="' + l.id + '">删除</button></span>'
+            + '</div>';
+        if (hist.length) {
+            html += '<div class="st-sd__rel-hist">';
+            for (const h of hist) {
+                const day = h.day != null ? '第' + h.day + '天' : '—';
+                html += '<div class="st-sd__rel-row">'
+                    + '<span class="st-sd__rel-day">' + day + '</span>'
+                    + '<span class="st-sd__rel-to">' + escapeHtml(h.to || h.change || '变化') + '</span>'
+                    + '<span class="st-sd__rel-reason">' + escapeHtml(h.reason + (h.event ? (h.reason ? ' · ' : '') + '「' + h.event + '」' : '')) + '</span>'
+                    + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__rel-row-del" data-id="' + h.id + '">删除</button></span>'
+                    + '</div>';
+            }
+            html += '</div>';
+        }
+        html += '<div class="st-sd__rel-addhist">'
+            + '<input type="text" class="st-sd__rel-hist-input" placeholder="补记一条变化（如：确认恋爱关系 / 因误会疏远）">'
+            + '<button type="button" class="st-sd__rel-hist-add" data-id="' + l.id + '">补记</button>'
+            + '</div>';
+        html += '</div>';
+    }
+    list.html(html);
+}
+
 // 导出全部记忆为 txt 文件
 function exportMemories() {
     const lines = ['Serendipity 剧情记忆·时间线·世界状态导出', '导出时间：' + fmtTime(Date.now()), ''];
@@ -1274,6 +1489,27 @@ function exportMemories() {
             const items = settings.worldState.filter(e => e.cat === cat);
             if (!items.length) continue;
             lines.push(cat + '：' + items.map(e => e.text).join('、'));
+        }
+    } else {
+        lines.push('（暂无）');
+    }
+
+    // 情感线 / 关系轨迹
+    lines.push('');
+    lines.push('========== 情感线 / 关系轨迹 ==========');
+    if (settings.relationshipLines.length) {
+        for (const l of settings.relationshipLines) {
+            lines.push(l.a + ' → ' + l.b + '：关系 ' + (l.current.relationship || '未知')
+                + (l.current.affection ? '，好感 ' + l.current.affection : '')
+                + (l.current.attitude ? '，态度 ' + l.current.attitude : ''));
+            const hist = l.history.slice().sort((a, b) => (a.day == null ? 1 : 0) - (b.day == null ? 1 : 0) || (a.day || 0) - (b.day || 0));
+            for (const h of hist) {
+                const day = h.day != null ? '第' + h.day + '天' : '—';
+                lines.push('  ' + day + '  ' + (h.to || h.change || '变化')
+                    + (h.reason ? '（' + h.reason + '）' : '')
+                    + (h.event ? '「' + h.event + '」' : ''));
+            }
+            lines.push('');
         }
     } else {
         lines.push('（暂无）');
@@ -1340,7 +1576,7 @@ function addManualNote() {
 function resetCurrentChar() {
     activateCharacter();
     const name = activeChar || '当前角色';
-    if (!confirm('确定清空「' + name + '」的全部 Serendipity 数据吗？记忆、时间轴、世界状态、屏蔽词、指令都会被清空，且不可撤销。')) return;
+    if (!confirm('确定清空「' + name + '」的全部 Serendipity 数据吗？记忆、时间轴、世界状态、情感线、屏蔽词、指令都会被清空，且不可撤销。')) return;
     const keepWorldBook = settings.worldBook;
     Object.assign(settings, freshCharSettings());
     settings.worldBook = keepWorldBook; // 保留用户选择的世界书，方便下次直接注入
@@ -1349,6 +1585,7 @@ function resetCurrentChar() {
     renderMemories();
     renderTimeAxis();
     renderWorldState();
+    renderRelationship();
     renderBlockedWords();
     renderInstructions();
     renderForeshadows();
@@ -1576,6 +1813,7 @@ function buildPanel() {
         <button type="button" class="st-sd__tab" data-tab="instruct">指令</button>
         <button type="button" class="st-sd__tab" data-tab="time">时间轴</button>
         <button type="button" class="st-sd__tab" data-tab="world">世界</button>
+        <button type="button" class="st-sd__tab" data-tab="rel">情感线</button>
         <button type="button" class="st-sd__tab" data-tab="fore">伏笔</button>
         <button type="button" class="st-sd__tab" data-tab="check">检查</button>
       </div>
@@ -1659,6 +1897,17 @@ function buildPanel() {
         </div>
         <div class="st-sd__hint">世界状态按类别分组列出，总结时自动快照更新（某类别有新内容就替换整类，无变化保留）。可手动添加/编辑/删除。</div>
         <div class="st-sd__world-list"></div>
+      </div>
+
+      <div class="st-sd__pane" data-pane="rel" style="display:none">
+        <div class="st-sd__add-row">
+          <input type="text" class="st-sd__rel-a" placeholder="人物A（谁对谁，如「你」）">
+          <input type="text" class="st-sd__rel-b" placeholder="人物B（如「沈砚」）">
+          <input type="text" class="st-sd__rel-relation" placeholder="当前关系（如「暧昧」，可空）">
+          <button type="button" class="st-sd__rel-add">建立关系线</button>
+        </div>
+        <div class="st-sd__hint">世界状态里的「好感/关系」回答「现在是什么」，情感线回答「怎么变成现在这样」。总结发现关系变化时自动追加到轨迹（历史只追加、不覆盖），可手动补记、删除。</div>
+        <div class="st-sd__rel-list"></div>
       </div>
 
       <div class="st-sd__pane" data-pane="fore" style="display:none">
@@ -1914,6 +2163,63 @@ function bindPanelEvents() {
         renderWorldState();
     });
 
+    // 情感线：建立关系线 / 删除线 / 删除单条变化 / 补记变化
+    const addRel = () => {
+        const a = panel.find('.st-sd__rel-a').val().trim();
+        const b = panel.find('.st-sd__rel-b').val().trim();
+        if (!a || !b) { toastr.warning('人物A和人物B都要填'); return; }
+        const rel = panel.find('.st-sd__rel-relation').val().trim();
+        const line = findRelationshipLine(a, b);
+        if (rel) line.current.relationship = rel;
+        saveSettings();
+        updatePromptInjection();
+        renderRelationship();
+        panel.find('.st-sd__rel-a').val('');
+        panel.find('.st-sd__rel-b').val('');
+        panel.find('.st-sd__rel-relation').val('');
+        toastr.success('已建立/更新关系线「' + a + ' → ' + b + '」');
+    };
+    panel.find('.st-sd__rel-add').on('click', addRel);
+    panel.find('.st-sd__rel-relation').on('keydown', (e) => { if (e.key === 'Enter') addRel(); });
+
+    panel.on('click', '.st-sd__rel-del', function () {
+        const id = String($(this).data('id'));
+        settings.relationshipLines = settings.relationshipLines.filter(l => l.id !== id);
+        saveSettings();
+        updatePromptInjection();
+        renderRelationship();
+    });
+    panel.on('click', '.st-sd__rel-row-del', function () {
+        const id = String($(this).data('id'));
+        for (const l of settings.relationshipLines) {
+            l.history = l.history.filter(h => h.id !== id);
+        }
+        saveSettings();
+        updatePromptInjection();
+        renderRelationship();
+    });
+    panel.on('click', '.st-sd__rel-hist-add', function () {
+        const id = String($(this).data('id'));
+        const line = settings.relationshipLines.find(l => l.id === id);
+        if (!line) return;
+        const input = $(this).closest('.st-sd__rel-addhist').find('.st-sd__rel-hist-input');
+        const text = input.val().trim();
+        if (!text) { toastr.warning('先写点内容再补记'); return; }
+        line.history.push({
+            id: uid(),
+            day: settings.storyDay,
+            from: line.current.relationship || '',
+            to: text,
+            change: '',
+            reason: '',
+            event: '',
+        });
+        line.current.relationship = text;
+        saveSettings();
+        updatePromptInjection();
+        renderRelationship();
+    });
+
     // 时间线列表：编辑/删除/保存
     panel.on('click', '.st-sd__tl-edit', function () {
         timelineEditingId = String($(this).data('id'));
@@ -2109,6 +2415,7 @@ jQuery(async () => {
     renderMemories();
     renderTimeAxis();
     renderWorldState();
+    renderRelationship();
     renderBlockedWords();
     renderInstructions();
     renderForeshadows();
