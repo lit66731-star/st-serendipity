@@ -35,11 +35,10 @@
     bottom: 0;
     left: 0;
     z-index: 2147483000 !important;
-    width: 100vw;
-    height: 100vh;
-    height: 100dvh;
     max-width: none;
     max-height: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    box-sizing: border-box;
     background: var(--sd-bg);
     border: none;
     border-radius: 0;
@@ -867,6 +866,8 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 /* ============ 移动端（≤1000px） ============ */
 @media screen and (max-width: 1000px) {
     .st-sd__head { padding: 20px 20px 16px; }
+    .st-sd__tabs { padding: 0 8px; overflow-x: auto; }
+    .st-sd__tab { flex: 1 0 auto; padding: 12px 8px 11px; font-size: 12px; }
     .st-sd__pane { padding: 20px 20px 28px; }
     .st-sd__memory-actions,
     .st-sd__tl-item .st-sd__memory-actions,
