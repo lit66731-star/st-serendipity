@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.22.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.23.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -354,6 +354,12 @@ function normalizeCharSettings(cs) {
     for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
+    // 记忆重要度：非 S/A/B 一律归为 ''（未评级，注入时按 B 处理）
+    for (const arr of [cs.memories, cs.longMemories]) {
+        for (const m of arr) {
+            if (m.importance !== 'S' && m.importance !== 'A' && m.importance !== 'B') m.importance = '';
+        }
+    }
     // 旧字段 npcs → entities 一次性迁移（同名角色隔离的数据地基）
     if (Array.isArray(cs.npcs) && cs.npcs.length) {
         cs.entities = cs.npcs.concat(cs.entities);
@@ -650,6 +656,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
             '【约定/承诺】新产生的约定或承诺',
             '【已完成约定】已完成的约定或承诺',
             '【详细总结】本段对话的详细总结',
+            '【重要度】本段剧情的重要度，只写一个字母：S=绝对不能忘（重大转折/死亡/背叛/确认关系/世界规则/重大秘密/主线真相/重要承诺），A=重要剧情（关键事件/重要关系变化/重要道具），B=普通日常；拿不准写 B',
             '【时间轴】本段结束时的剧情进度，严格写成「第X天|地点|本段重要事情」三段（X 是从故事开始算的天数，如「第27天|北境营地|与斥候队长会面」；地点或事情未知写「无」）',
             '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」，需要清空某类写「空」）',
             '【关系变化】本轮人物关系是否发生明确变化；没有写「无」，有则严格写成「A→B|变化|变化前|变化后|好感变化|当前态度|原因|事件|第X天」单行（A→B=谁对谁；变化如「好感上升/关系升温/产生信任」；好感变化如「+10」「-5」，写不出写「无」；当前态度写不出写「无」；原因与事件写具体剧情；第X天为该变化发生的剧情天数）',
@@ -889,6 +896,13 @@ function registerEntities(names) {
         settings.entities.push({ id: uid(), name, age: '', note: '', world: '', timeline: '', identity: '', body: '', mind: '', goal: '', secret: '', promise: '' });
     }
 }
+// 从总结结果里解析【重要度】行 → 'S' | 'A' | 'B'（解析失败/非 S/A 默认 'B'）
+function extractImportance(text) {
+    const m = String(text).match(/【重要度】\s*([^\n]+)/);
+    if (!m || !m[1]) return 'B';
+    const v = m[1].trim().toUpperCase().replace(/[^SAB]/g, '');
+    return (v === 'S' || v === 'A') ? v : 'B';
+}
 // 从总结结果里解析【人物档案】行 → [{ name, age, note, world, timeline, identity, body, mind, goal, secret, promise }]（过滤代词/空名/「无」；「空」保留为清除标记）
 function extractEntityInfos(text) {
     const m = String(text).match(/【人物档案】\s*([^\n]+)/);
@@ -1120,7 +1134,8 @@ function promoteMemories() {
         // 合并后的条目沿用「最新一条」的剧情时间与时间轴，保持时间线可读
         const last = settings.memories[settings.memories.length - 1];
         const lastStoryTime = last.storyTime || settings.storyTime || '';
-        settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, text: mergeEntries(settings.memories) });
+        const imp = settings.memories.some(m => m.importance === 'S') ? 'S' : (settings.memories.some(m => m.importance === 'A') ? 'A' : 'B');
+        settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, importance: imp, text: mergeEntries(settings.memories) });
         settings.memories = [];
         saveSettings();
         toLong = true;
@@ -1187,7 +1202,7 @@ async function summarizeLastRound() {
             // 记忆正文去掉【时间轴】【世界状态】【关系变化】【人物档案】行（结构化数据已单独存，正文保持干净）
             const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
-            settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, text: memoryText });
+            settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), text: memoryText });
             settings.lastSummaryIndex = chat.length - 1; // 记录已总结到的消息下标，下次只总结新增部分
             const promoted = promoteMemories();
             saveSettings();
@@ -1224,13 +1239,17 @@ async function summarizeLastRound() {
 }
 
 // ---------------- 记忆注入正文（防失忆） ----------------
+// S 级记忆排最前并加醒目标记，A 级次之，B/未评级正常排后；让「不能忘」的内容始终压在最前面
 function buildMemoryBlock() {
+    const rank = v => (v === 'S' ? 0 : v === 'A' ? 1 : 2);
+    const join = arr => [...arr].sort((a, b) => rank(a.importance) - rank(b.importance))
+        .map(m => (m.importance === 'S' ? '⚠ 绝对不能忘：' + m.text : m.text)).join('\n\n');
     const parts = [];
     if (settings.longMemories.length) {
-        parts.push('【长期记忆】\n' + settings.longMemories.map(m => m.text).join('\n\n'));
+        parts.push('【长期记忆】\n' + join(settings.longMemories));
     }
     if (settings.memories.length) {
-        parts.push('【短期记忆】\n' + settings.memories.map(m => m.text).join('\n\n'));
+        parts.push('【短期记忆】\n' + join(settings.memories));
     }
     return parts.join('\n\n');
 }
@@ -1498,6 +1517,8 @@ function memoryItemHtml(m, deletable, tier) {
     const recLabel = escapeHtml(fmtTime(m.time));
     const hasStory = !!(dayLabel || timeLabel);
     if (!hasStory) timeLabel = recLabel; // 无剧情时间时回退显示记录时间
+    const impBadge = m.importance === 'S' ? '<span class="st-sd__memory-imp st-sd__memory-imp--s">S·不能忘</span>'
+        : m.importance === 'A' ? '<span class="st-sd__memory-imp st-sd__memory-imp--a">A·重要</span>' : '';
 
     if (m.id === editingId) {
         // 编辑态：文本变为可编辑 textarea，操作区换成保存/取消
@@ -1506,6 +1527,7 @@ function memoryItemHtml(m, deletable, tier) {
                 <div class="st-sd__memory-meta">
                     ${dayLabel ? `<span class="st-sd__memory-day">${dayLabel}</span>` : ''}
                     ${timeLabel ? `<span class="st-sd__memory-clock">${timeLabel}</span>` : ''}
+                    ${impBadge}
                 </div>
                 ${locLabel ? `<div class="st-sd__memory-loc">${locLabel}</div>` : ''}
                 <span class="st-sd__memory-actions">
@@ -1513,6 +1535,11 @@ function memoryItemHtml(m, deletable, tier) {
                     <button type="button" class="st-sd__memory-cancel" title="放弃修改">取消</button>
                 </span>
             </div>
+            <select class="st-sd__memory-imp-select">
+                <option value="S"${m.importance === 'S' ? ' selected' : ''}>S·不能忘</option>
+                <option value="A"${m.importance === 'A' ? ' selected' : ''}>A·重要</option>
+                <option value="B"${(!m.importance || m.importance === 'B') ? ' selected' : ''}>B·普通</option>
+            </select>
             <textarea class="st-sd__memory-edit-text" spellcheck="false">${escapeHtml(m.text)}</textarea>
         </div>`;
     }
@@ -1526,6 +1553,7 @@ function memoryItemHtml(m, deletable, tier) {
             <div class="st-sd__memory-meta">
                 ${dayLabel ? `<span class="st-sd__memory-day">${dayLabel}</span>` : ''}
                 ${timeLabel ? `<span class="st-sd__memory-clock">${timeLabel}</span>` : ''}
+                ${impBadge}
             </div>
             ${locLabel ? `<div class="st-sd__memory-loc">${locLabel}</div>` : ''}
         </div>
@@ -1836,7 +1864,8 @@ function exportMemories() {
         if (!arr.length) return;
         lines.push('========== ' + title + ' ==========');
         for (const m of arr) {
-            lines.push('[' + fmtTime(m.time) + ']');
+            const impTag = m.importance === 'S' ? '[S·不能忘] ' : m.importance === 'A' ? '[A·重要] ' : '';
+            lines.push(impTag + '[' + fmtTime(m.time) + ']');
             lines.push(m.text);
             lines.push('');
         }
@@ -1956,6 +1985,7 @@ function addManualNote() {
         storyDay: settings.storyDay,
         storyPeriod: settings.storyPeriod || '',
         storyLocation: settings.storyLocation || '',
+        importance: 'S',
         text: text,
     });
     saveSettings();
@@ -2449,6 +2479,8 @@ function bindPanelEvents() {
         const v = (ta.val() || '').trim();
         if (!v) { toastr.warning('内容不能为空'); return; }
         m.text = v;
+        const impSel = panel.find('.st-sd__memory-imp-select');
+        if (impSel.length) m.importance = impSel.val() || 'B';
         editingId = null;
         saveSettings();
         updatePromptInjection();
