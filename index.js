@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.23.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.24.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -358,6 +358,7 @@ function normalizeCharSettings(cs) {
     for (const arr of [cs.memories, cs.longMemories]) {
         for (const m of arr) {
             if (m.importance !== 'S' && m.importance !== 'A' && m.importance !== 'B') m.importance = '';
+            m.entityRef = typeof m.entityRef === 'string' ? m.entityRef : ''; // 关联角色实体（空=未关联）
         }
     }
     // 旧字段 npcs → entities 一次性迁移（同名角色隔离的数据地基）
@@ -767,6 +768,12 @@ function nameToRef(name) {
     if (ms.length > 1) return '@' + ms[ms.length - 1].id;
     return n;
 }
+// 记忆按角色挂靠：文本里出现且只出现一个实体的名字 → 关联该实体；多个名字/同名多个 → 留空（避免误挂）
+function inferMemoryEntity(text) {
+    const t = String(text || '');
+    const hits = settings.entities.filter(e => e.name && t.includes(e.name));
+    return hits.length === 1 ? hits[0].id : '';
+}
 function npcText() {
     return settings.entities.map(n => n.name
         + (entityDomain(n) ? '（' + entityDomain(n) + '）' : '')
@@ -1135,7 +1142,10 @@ function promoteMemories() {
         const last = settings.memories[settings.memories.length - 1];
         const lastStoryTime = last.storyTime || settings.storyTime || '';
         const imp = settings.memories.some(m => m.importance === 'S') ? 'S' : (settings.memories.some(m => m.importance === 'A') ? 'A' : 'B');
-        settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, importance: imp, text: mergeEntries(settings.memories) });
+        // 合并条目：只有当这一批短期记忆全部挂靠同一个角色时才带上该关联，混合多角色则留空（归「剧情整体」）
+        const refs = [...new Set(settings.memories.map(m => m.entityRef || '').filter(Boolean))];
+        const entityRef = refs.length === 1 ? refs[0] : '';
+        settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, importance: imp, entityRef: entityRef, text: mergeEntries(settings.memories) });
         settings.memories = [];
         saveSettings();
         toLong = true;
@@ -1202,7 +1212,7 @@ async function summarizeLastRound() {
             // 记忆正文去掉【时间轴】【世界状态】【关系变化】【人物档案】行（结构化数据已单独存，正文保持干净）
             const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
-            settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), text: memoryText });
+            settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
             settings.lastSummaryIndex = chat.length - 1; // 记录已总结到的消息下标，下次只总结新增部分
             const promoted = promoteMemories();
             saveSettings();
@@ -1519,6 +1529,10 @@ function memoryItemHtml(m, deletable, tier) {
     if (!hasStory) timeLabel = recLabel; // 无剧情时间时回退显示记录时间
     const impBadge = m.importance === 'S' ? '<span class="st-sd__memory-imp st-sd__memory-imp--s">S·不能忘</span>'
         : m.importance === 'A' ? '<span class="st-sd__memory-imp st-sd__memory-imp--a">A·重要</span>' : '';
+    const ent = settings.entities.find(e => e.id === m.entityRef);
+    const entityBadge = ent ? `<span class="st-sd__memory-ent" title="关联角色">👤${escapeHtml(ent.name)}</span>` : '';
+    const entOptions = '<option value=""' + (!m.entityRef ? ' selected' : '') + '>未关联角色</option>'
+        + settings.entities.map(e => `<option value="${e.id}"${m.entityRef === e.id ? ' selected' : ''}>${escapeHtml(e.name + (entityDomain(e) ? '（' + entityDomain(e) + '）' : ''))}</option>`).join('');
 
     if (m.id === editingId) {
         // 编辑态：文本变为可编辑 textarea，操作区换成保存/取消
@@ -1528,6 +1542,7 @@ function memoryItemHtml(m, deletable, tier) {
                     ${dayLabel ? `<span class="st-sd__memory-day">${dayLabel}</span>` : ''}
                     ${timeLabel ? `<span class="st-sd__memory-clock">${timeLabel}</span>` : ''}
                     ${impBadge}
+                    ${entityBadge}
                 </div>
                 ${locLabel ? `<div class="st-sd__memory-loc">${locLabel}</div>` : ''}
                 <span class="st-sd__memory-actions">
@@ -1540,6 +1555,7 @@ function memoryItemHtml(m, deletable, tier) {
                 <option value="A"${m.importance === 'A' ? ' selected' : ''}>A·重要</option>
                 <option value="B"${(!m.importance || m.importance === 'B') ? ' selected' : ''}>B·普通</option>
             </select>
+            <select class="st-sd__memory-ent-select">${entOptions}</select>
             <textarea class="st-sd__memory-edit-text" spellcheck="false">${escapeHtml(m.text)}</textarea>
         </div>`;
     }
@@ -1554,6 +1570,7 @@ function memoryItemHtml(m, deletable, tier) {
                 ${dayLabel ? `<span class="st-sd__memory-day">${dayLabel}</span>` : ''}
                 ${timeLabel ? `<span class="st-sd__memory-clock">${timeLabel}</span>` : ''}
                 ${impBadge}
+                ${entityBadge}
             </div>
             ${locLabel ? `<div class="st-sd__memory-loc">${locLabel}</div>` : ''}
         </div>
@@ -1865,7 +1882,9 @@ function exportMemories() {
         lines.push('========== ' + title + ' ==========');
         for (const m of arr) {
             const impTag = m.importance === 'S' ? '[S·不能忘] ' : m.importance === 'A' ? '[A·重要] ' : '';
-            lines.push(impTag + '[' + fmtTime(m.time) + ']');
+            const ent = settings.entities.find(e => e.id === m.entityRef);
+            const entTag = ent ? '[关于 ' + ent.name + '] ' : '';
+            lines.push(entTag + impTag + '[' + fmtTime(m.time) + ']');
             lines.push(m.text);
             lines.push('');
         }
@@ -1986,6 +2005,7 @@ function addManualNote() {
         storyPeriod: settings.storyPeriod || '',
         storyLocation: settings.storyLocation || '',
         importance: 'S',
+        entityRef: inferMemoryEntity(text),
         text: text,
     });
     saveSettings();
@@ -2481,6 +2501,8 @@ function bindPanelEvents() {
         m.text = v;
         const impSel = panel.find('.st-sd__memory-imp-select');
         if (impSel.length) m.importance = impSel.val() || 'B';
+        const entSel = panel.find('.st-sd__memory-ent-select');
+        if (entSel.length) m.entityRef = entSel.val() || '';
         editingId = null;
         saveSettings();
         updatePromptInjection();
