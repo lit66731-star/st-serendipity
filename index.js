@@ -18,7 +18,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.32.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.33.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1910,6 +1910,14 @@ function renderRecall() {
         statusEl.html(chips.join(''));
     }
 
+    // 预览调参默认值：沿用酒馆向量存储当前的阈值/条数；用户手改过就保留
+    const thresholdInput = panel.find('.st-sd__recall-threshold');
+    const topkInput = panel.find('.st-sd__recall-topk');
+    if (vs) {
+        if (!thresholdInput.val()) thresholdInput.val(vs.score_threshold != null ? vs.score_threshold : 0.25);
+        if (!topkInput.val()) topkInput.val(vs.max_entries != null ? vs.max_entries : 5);
+    }
+
     const names = Array.isArray(world_names) ? [...world_names] : [];
     const current = settings.archivedWorldBook || settings.worldBook || '';
     if (current && !names.includes(current)) names.unshift(current);
@@ -1941,8 +1949,10 @@ async function runSemanticSearch() {
         const body = vectorsRequestBody({});
         body.collectionId = 'world_' + getStringHash(world);
         body.searchText = query;
-        body.topK = Number(vs.max_entries) || 5;
-        body.threshold = Number(vs.score_threshold) || 0;
+        const thresholdRaw = parseFloat(panel.find('.st-sd__recall-threshold').val());
+        const topkRaw = parseInt(panel.find('.st-sd__recall-topk').val(), 10);
+        body.topK = (!isNaN(topkRaw) && topkRaw >= 1) ? topkRaw : (Number(vs.max_entries) || 5);
+        body.threshold = (!isNaN(thresholdRaw) && thresholdRaw >= 0) ? thresholdRaw : (Number(vs.score_threshold) || 0);
         body.source = vs.source;
         const resp = await fetch('/api/vector/query', {
             method: 'POST',
@@ -2660,7 +2670,12 @@ function buildPanel() {
           <input type="text" class="st-sd__recall-input" placeholder="输入一句话，看语义召回会带回哪几条记忆，如「沈砚身上的旧伤」" autocomplete="off">
           <button type="button" class="st-sd__recall-run">语义搜索</button>
         </div>
-        <div class="st-sd__hint">这里直接调一次酒馆「向量存储」，列出按语义相似度从高到低排序、会被召回的记忆原文（结果与模型每轮实际召回到的一致）。前提：在酒馆「扩展 → 向量存储」里①启用「世界书向量化」②配好 embedding 源；且这本世界书已激活、开过至少一轮生成让向量库索引到这些条目。</div>
+        <div class="st-sd__recall-tune">
+          <span class="st-sd__label">预览调参</span>
+          <label class="st-sd__recall-tune-item">阈值 <input type="number" class="st-sd__recall-threshold" min="0" max="1" step="0.05" title="相似度阈值：只显示分数≥此值的条目。没召回时把它调低（如 0）看向量库里到底有什么；只影响这里预览，不改实际召回"></label>
+          <label class="st-sd__recall-tune-item">条数 <input type="number" class="st-sd__recall-topk" min="1" max="20" step="1" title="最多显示几条（只影响这里预览，不改实际召回）"></label>
+        </div>
+        <div class="st-sd__hint">这里直接调一次酒馆「向量存储」，列出按语义相似度从高到低排序、会被召回的记忆原文（结果与模型每轮实际召回到的一致）。前提：在酒馆「扩展 → 向量存储」里①启用「世界书向量化」②配好 embedding 源；且这本世界书已激活、开过至少一轮生成让向量库索引到这些条目。没召回时把「阈值」调低到 0 试试。</div>
         <div class="st-sd__recall-list"></div>
       </div>
 

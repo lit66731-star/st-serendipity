@@ -377,7 +377,9 @@
 .st-sd__tl-e-day, .st-sd__tl-e-time, .st-sd__tl-e-loc, .st-sd__tl-e-event,
 .st-sd__world-select, .st-sd__world-cat,
 .st-sd__npc-name, .st-sd__npc-age, .st-sd__npc-note,
-.st-sd__npc-world, .st-sd__npc-timeline, .st-sd__npc-identity {
+.st-sd__npc-world, .st-sd__npc-timeline, .st-sd__npc-identity,
+.st-sd__search-input, .st-sd__recall-input, .st-sd__recall-world,
+.st-sd__recall-threshold, .st-sd__recall-topk {
     border: 1px solid var(--sd-border-2);
     border-radius: 6px;
     height: 34px;
@@ -396,11 +398,13 @@
 .st-sd__tl-e-day:focus, .st-sd__tl-e-time:focus, .st-sd__tl-e-loc:focus,
 .st-sd__tl-e-event:focus, .st-sd__world-select:focus, .st-sd__world-cat:focus,
 .st-sd__npc-name:focus, .st-sd__npc-age:focus, .st-sd__npc-note:focus,
-.st-sd__npc-world:focus, .st-sd__npc-timeline:focus, .st-sd__npc-identity:focus {
+.st-sd__npc-world:focus, .st-sd__npc-timeline:focus, .st-sd__npc-identity:focus,
+.st-sd__search-input:focus, .st-sd__recall-input:focus, .st-sd__recall-world:focus,
+.st-sd__recall-threshold:focus, .st-sd__recall-topk:focus {
     border-color: var(--sd-accent);
     box-shadow: 0 0 0 3px rgba(205, 179, 176, 0.20);
 }
-.st-sd__world-select, .st-sd__world-cat { background: var(--sd-surface); cursor: pointer; }
+.st-sd__world-select, .st-sd__world-cat, .st-sd__recall-world { background: var(--sd-surface); cursor: pointer; }
 
 /* 记忆编辑 textarea */
 .st-sd__memory-edit-text {
@@ -479,6 +483,9 @@
 .st-sd__recall-search { display: flex; gap: 8px; margin-bottom: 12px; }
 .st-sd__recall-input { flex: 1; min-width: 0; }
 .st-sd__recall-run { flex: 0 0 auto; }
+.st-sd__recall-tune { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.st-sd__recall-tune-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--sd-text-2); }
+.st-sd__recall-threshold, .st-sd__recall-topk { width: 62px; flex: 0 0 auto; text-align: center; }
 .st-sd__recall-list {
     flex: 1;
     min-height: 0;
