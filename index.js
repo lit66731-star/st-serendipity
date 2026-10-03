@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.20.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.21.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -336,6 +336,7 @@ function freshCharSettings() {
         worldState: [],         // 世界状态列表（非人物信息）[{ id, cat: '物品'|'日程', text }]
         entities: [],           // 角色实体 [{ id, name, age, note, world, timeline, identity }]（姓名/年龄/简介 + 身份域：世界/时间线/身份）
         autoRegisterEntities: true, // 总结时是否自动把「在场人物」登记进角色实体（默认开）
+        pendingEntityAssignments: [], // 待人工确认的同名角色归属 [{ id, name, age, note, world, timeline, identity, candidates:[entityId] }]
         relationshipLines: [],  // 情感线/关系轨迹 [{ id, a, b, current:{affection,relationship,attitude}, history:[{id,day,from,to,change,reason,event}] }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
@@ -448,6 +449,18 @@ function normalizeCharSettings(cs) {
     }
     if (cs.injectForeshadows === undefined) cs.injectForeshadows = false;
     if (cs.autoRegisterEntities === undefined) cs.autoRegisterEntities = true;
+    // 待确认同名角色归属：规范化 + 清理失效项（候选实体已删光、或姓名空的丢弃）
+    if (!Array.isArray(cs.pendingEntityAssignments)) cs.pendingEntityAssignments = [];
+    cs.pendingEntityAssignments = cs.pendingEntityAssignments.filter(p => p && typeof p.name === 'string' && p.name.trim()).map(p => ({
+        id: p.id || uid(),
+        name: String(p.name),
+        age: typeof p.age === 'string' ? p.age : '',
+        note: typeof p.note === 'string' ? p.note : '',
+        world: typeof p.world === 'string' ? p.world : '',
+        timeline: typeof p.timeline === 'string' ? p.timeline : '',
+        identity: typeof p.identity === 'string' ? p.identity : '',
+        candidates: Array.isArray(p.candidates) ? p.candidates.filter(c => typeof c === 'string') : [],
+    })).filter(p => p.candidates.some(cid => cs.entities.some(e => e.id === cid)));
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
     if (!(cs.summarizeEvery >= 1)) cs.summarizeEvery = 1;
@@ -902,7 +915,7 @@ function fillEntityEmptyFields(e, info) {
 // 把人物档案信息合并进角色实体：
 //   新名字 → 新建实体；
 //   唯一同名 → 只补空字段（不覆盖手填内容）；
-//   同名多个 → 按身份域（世界/时间线/身份）匹配，唯一最佳命中则补空字段到该实体；无清晰命中但模型给了身份域 → 默认新建独立实体（可区分）；既无匹配又无身份域 → 跳过（避免反复制造空壳同名实体）
+//   同名多个 → 按身份域（世界/时间线/身份）匹配：唯一最佳命中 → 补空字段；无任何命中但模型给了身份域 → 默认新建独立实体；并列最高分或没给身份域 → 排队待人工确认
 function mergeEntityInfos(infos) {
     if (!Array.isArray(infos)) return;
     for (const info of infos) {
@@ -927,17 +940,30 @@ function mergeEntityInfos(infos) {
             }
             if (best && bestScore >= 1 && unique) {
                 fillEntityEmptyFields(best, info);
-            } else if (info.world || info.timeline || info.identity) {
-                // 无清晰归属，但模型给了身份域：默认新建独立实体（身份域可区分同名角色）
+            } else if (bestScore === 0 && (info.world || info.timeline || info.identity)) {
+                // 无任何命中、但模型给了身份域：默认新建独立实体（域不同即不同人）
                 settings.entities.push({
                     id: uid(), name,
                     age: info.age || '', note: info.note || '',
                     world: info.world || '', timeline: info.timeline || '', identity: info.identity || '',
                 });
+            } else {
+                // 并列最高分、或模型没给身份域：无法确定归属，排队待人工确认
+                queueEntityAssignment(info, matches);
             }
-            // 既无清晰匹配、模型又没给身份域：跳过
         }
     }
+}
+// 排队待人工确认的同名角色归属（同名已有未处理项则去重，不重复排队）
+function queueEntityAssignment(info, matches) {
+    if (settings.pendingEntityAssignments.some(p => p.name === info.name)) return;
+    settings.pendingEntityAssignments.push({
+        id: uid(),
+        name: info.name,
+        age: info.age || '', note: info.note || '',
+        world: info.world || '', timeline: info.timeline || '', identity: info.identity || '',
+        candidates: matches.map(e => e.id),
+    });
 }
 
 // ---------------- 剧情一致性检查 ----------------
@@ -1679,9 +1705,36 @@ function renderNpcs() {
     }).join(''));
 }
 
+// 待人工确认的同名角色归属（列表：每个待确认项列出候选实体 + 「新建独立」）
+function renderPendingAssignments() {
+    const box = $('#st-serendipity .st-sd__pending');
+    if (!box.length) return;
+    const pend = settings.pendingEntityAssignments;
+    if (!pend.length) { box.html(''); return; }
+    box.html(pend.map(p => {
+        const domainParts = [p.world, p.timeline, p.identity].filter(Boolean);
+        const domainText = domainParts.length ? domainParts.join('·') : '未给出身份域';
+        const candBtns = p.candidates.map(cid => {
+            const e = settings.entities.find(x => x.id === cid);
+            if (!e) return '';
+            const ed = entityDomain(e);
+            const label = e.name + (ed ? '（' + ed + '）' : '（无身份域）');
+            return '<button type="button" class="st-sd__pend-merge" data-id="' + escapeHtml(p.id) + '" data-cid="' + escapeHtml(cid) + '">归到 ' + escapeHtml(label) + '</button>';
+        }).join('');
+        return '<div class="st-sd__pend-item" data-id="' + escapeHtml(p.id) + '">'
+            + '<div class="st-sd__pend-head">⚠ 同名角色「' + escapeHtml(p.name) + '」待确认归属 <span class="st-sd__pend-domain">' + escapeHtml(domainText) + '</span></div>'
+            + '<div class="st-sd__pend-actions">' + candBtns
+            + '<button type="button" class="st-sd__pend-new" data-id="' + escapeHtml(p.id) + '">新建独立实体</button>'
+            + '<button type="button" class="st-sd__pend-skip" data-id="' + escapeHtml(p.id) + '">忽略</button>'
+            + '</div>'
+            + '</div>';
+    }).join(''));
+}
+
 // 「人物」页统一渲染：人物档案 + 关系线 + 物品/日程
 function renderPeople() {
     renderNpcs();
+    renderPendingAssignments();
     renderRelationship();
     renderWorldState();
 }
@@ -2192,7 +2245,7 @@ function buildPanel() {
       <div class="st-sd__pane" data-pane="people" style="display:none">
         <div class="st-sd__section-title">人物档案</div>
         <div class="st-sd__toolbar">
-          <label class="st-sd__switch" title="开启后，每次总结会自动把在场人物登记进人物档案，并带出模型给出的年龄/简介/世界/时间线/身份（只补空字段，不覆盖你手填的内容；同名多个不猜测归属）">
+          <label class="st-sd__switch" title="开启后，每次总结会自动把在场人物登记进人物档案，并带出模型给出的年龄/简介/世界/时间线/身份（只补空字段，不覆盖你手填的内容；同名多个按身份域自动归属，拿不准的会弹在下方待你确认）">
             <input type="checkbox" class="st-sd__npc-auto"><span class="st-sd__switch-slider"></span>
           </label>
           <span class="st-sd__label">总结时自动登记在场人物</span>
@@ -2209,6 +2262,7 @@ function buildPanel() {
           <button type="button" class="st-sd__npc-add">添加</button>
         </div>
         <div class="st-sd__hint">身份域（世界·时间线·身份）用来区分同名角色：前世「沈昭·将军」与今生「沈昭·医生」是两个独立实体。好感与关系在下方「关系」里按 A→B 配对维护，两者不重复。</div>
+        <div class="st-sd__pending"></div>
         <div class="st-sd__npc-list"></div>
 
         <div class="st-sd__section-title">关系 / 好感</div>
@@ -2503,6 +2557,47 @@ function bindPanelEvents() {
         saveSettings();
         updatePromptInjection();
         renderNpcs();
+        renderPendingAssignments();
+    });
+
+    // 待确认同名角色归属：归到某候选 / 新建独立 / 忽略
+    const resolvePending = (pid, action) => {
+        const idx = settings.pendingEntityAssignments.findIndex(p => p.id === pid);
+        if (idx < 0) return;
+        const p = settings.pendingEntityAssignments[idx];
+        if (action === 'skip') {
+            settings.pendingEntityAssignments.splice(idx, 1);
+        } else if (action === 'new') {
+            settings.entities.push({
+                id: uid(), name: p.name,
+                age: p.age || '', note: p.note || '',
+                world: p.world || '', timeline: p.timeline || '', identity: p.identity || '',
+            });
+            settings.pendingEntityAssignments.splice(idx, 1);
+            toastr.success('已新建独立实体「' + p.name + '」');
+        } else if (action.startsWith('@')) {
+            const e = settings.entities.find(x => x.id === action.slice(1));
+            if (e) {
+                fillEntityEmptyFields(e, p);
+                settings.pendingEntityAssignments.splice(idx, 1);
+                toastr.success('已归到「' + (e.name + (entityDomain(e) ? '（' + entityDomain(e) + '）' : '')) + '」');
+            } else {
+                settings.pendingEntityAssignments.splice(idx, 1); // 候选已删，直接清掉
+            }
+        }
+        saveSettings();
+        updatePromptInjection();
+        renderNpcs();
+        renderPendingAssignments();
+    };
+    panel.on('click', '.st-sd__pend-merge', function () {
+        resolvePending(String($(this).data('id')), '@' + String($(this).data('cid')));
+    });
+    panel.on('click', '.st-sd__pend-new', function () {
+        resolvePending(String($(this).data('id')), 'new');
+    });
+    panel.on('click', '.st-sd__pend-skip', function () {
+        resolvePending(String($(this).data('id')), 'skip');
     });
 
     // 世界状态：添加/编辑/删除

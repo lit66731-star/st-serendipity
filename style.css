@@ -1032,6 +1032,40 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     overflow-y: visible;
 }
 
+.st-sd__pending { margin-bottom: 8px; }
+.st-sd__pend-item {
+    border: 1px solid var(--sd-accent-deep);
+    border-left: 3px solid var(--sd-accent-deep);
+    background: var(--sd-accent-bg);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+}
+.st-sd__pend-head {
+    font-size: 12.5px;
+    color: var(--sd-text);
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+.st-sd__pend-domain { font-weight: 400; color: var(--sd-accent-deep); }
+.st-sd__pend-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.st-sd__pend-actions button {
+    border: 1px solid var(--sd-border-2);
+    background: var(--sd-surface);
+    color: var(--sd-text);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.st-sd__pend-actions button:hover { border-color: var(--sd-accent); color: var(--sd-accent-deep); }
+.st-sd__pend-actions .st-sd__pend-new {
+    border-color: var(--sd-accent-deep);
+    background: var(--sd-accent-deep);
+    color: #fff;
+}
+.st-sd__pend-actions .st-sd__pend-new:hover { color: #fff; }
+
 .st-sd__npc-list { margin-bottom: 4px; }
 .st-sd__npc-item {
     display: flex;
