@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.18.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.19.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -618,6 +618,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
             '【时间】剧情中的具体时间（年/月/日 周几 几时几分，必须给出具体时间，不要写「无」）',
             '【天气】天气情况',
             '【在场人物】有哪些人在场',
+            '【人物档案】在场各角色的身份信息，每个角色写成「姓名|年龄|简介|世界|时间线|身份」一段，多个角色用「；」分隔（世界/时间线/身份用于区分同名角色；某字段未知写「无」）',
             '【地点】发生地点/场景',
             '【关键事件】本段发生的关键事件',
             '【角色衣着】' + charName + '的衣着',
@@ -858,6 +859,49 @@ function registerEntities(names) {
         settings.entities.push({ id: uid(), name, age: '', note: '', world: '', timeline: '', identity: '' });
     }
 }
+// 从总结结果里解析【人物档案】行 → [{ name, age, note, world, timeline, identity }]（过滤代词/空名/「无」）
+function extractEntityInfos(text) {
+    const m = String(text).match(/【人物档案】\s*([^\n]+)/);
+    if (!m || !m[1]) return [];
+    const raw = m[1].trim();
+    if (!raw || raw === '无') return [];
+    const FIELDS = ['name', 'age', 'note', 'world', 'timeline', 'identity'];
+    const infos = [];
+    for (const seg of raw.split(/[；;]+/)) {
+        const parts = seg.split(/[|｜]/).map(s => s.replace(/^[「『"']+|[」』"']+$/g, '').trim());
+        const info = {};
+        for (let i = 0; i < FIELDS.length; i++) {
+            const v = (parts[i] || '').trim();
+            info[FIELDS[i]] = (v && v !== '无' && v !== '未知') ? v : '';
+        }
+        const name = String(info.name || '').trim();
+        if (!name || ENTITY_PRONOUNS.has(name)) continue;
+        infos.push(info);
+    }
+    return infos;
+}
+// 把人物档案信息合并进角色实体：新名字→新建实体；唯一同名→只补空字段，不覆盖手填内容；同名多个→跳过（不猜测归属）
+function mergeEntityInfos(infos) {
+    if (!Array.isArray(infos)) return;
+    for (const info of infos) {
+        const name = String(info.name || '').trim();
+        if (!name) continue;
+        const matches = settings.entities.filter(e => e.name === name);
+        if (matches.length === 1) {
+            const e = matches[0];
+            for (const k of ['age', 'note', 'world', 'timeline', 'identity']) {
+                if (!e[k] && info[k]) e[k] = info[k];
+            }
+        } else if (matches.length === 0) {
+            settings.entities.push({
+                id: uid(), name,
+                age: info.age || '', note: info.note || '',
+                world: info.world || '', timeline: info.timeline || '', identity: info.identity || '',
+            });
+        }
+        // matches.length > 1：同名多个，无法确定归属，跳过（不覆盖、不新建）
+    }
+}
 
 // ---------------- 剧情一致性检查 ----------------
 // 本地（免费、不调模型）时间冲突启发式：时间线/记忆里出现「第N天」晚于当前天 → 时间倒退/超前冲突
@@ -1047,10 +1091,14 @@ async function summarizeLastRound() {
             applyWorldState(extractWorldState(result));
             // 情感线：解析并追加关系变化（无变化/解析失败则不动；历史只追加不改写）
             applyRelationshipChange(extractRelationshipChange(result));
-            // 角色实体自动登记（开关开启时）：把【在场人物】里的新名字登记为实体（身份域留空）
-            if (settings.autoRegisterEntities) registerEntities(extractPresentChars(result));
-            // 记忆正文去掉【时间轴】【世界状态】【关系变化】行（结构化数据已单独存，正文保持干净）
-            const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').trim();
+            // 角色实体自动登记（开关开启时）：优先用【人物档案】带出年龄/简介/身份域；模型没输出该行时退回只登记【在场人物】名字
+            if (settings.autoRegisterEntities) {
+                const infos = extractEntityInfos(result);
+                if (infos.length) mergeEntityInfos(infos);
+                else registerEntities(extractPresentChars(result));
+            }
+            // 记忆正文去掉【时间轴】【世界状态】【关系变化】【人物档案】行（结构化数据已单独存，正文保持干净）
+            const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
             settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, text: memoryText });
             settings.lastSummaryIndex = chat.length - 1; // 记录已总结到的消息下标，下次只总结新增部分
@@ -2107,7 +2155,7 @@ function buildPanel() {
       <div class="st-sd__pane" data-pane="people" style="display:none">
         <div class="st-sd__section-title">人物档案</div>
         <div class="st-sd__toolbar">
-          <label class="st-sd__switch" title="开启后，每次总结会自动把「在场人物」里的新名字登记进人物档案（身份域留空，同名不重复）">
+          <label class="st-sd__switch" title="开启后，每次总结会自动把在场人物登记进人物档案，并带出模型给出的年龄/简介/世界/时间线/身份（只补空字段，不覆盖你手填的内容；同名多个不猜测归属）">
             <input type="checkbox" class="st-sd__npc-auto"><span class="st-sd__switch-slider"></span>
           </label>
           <span class="st-sd__label">总结时自动登记在场人物</span>
