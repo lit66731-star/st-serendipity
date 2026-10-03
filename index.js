@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.17.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.17.1'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -335,6 +335,7 @@ function freshCharSettings() {
         storyLocation: '',      // 当前地点
         worldState: [],         // 世界状态列表（非人物信息）[{ id, cat: '物品'|'日程', text }]
         entities: [],           // 角色实体 [{ id, name, age, note, world, timeline, identity }]（姓名/年龄/简介 + 身份域：世界/时间线/身份）
+        autoRegisterEntities: true, // 总结时是否自动把「在场人物」登记进角色实体（默认开）
         relationshipLines: [],  // 情感线/关系轨迹 [{ id, a, b, current:{affection,relationship,attitude}, history:[{id,day,from,to,change,reason,event}] }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
@@ -433,6 +434,7 @@ function normalizeCharSettings(cs) {
         cs._relUnified = true;
     }
     if (cs.injectForeshadows === undefined) cs.injectForeshadows = false;
+    if (cs.autoRegisterEntities === undefined) cs.autoRegisterEntities = true;
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (cs.censorEnabled === undefined) cs.censorEnabled = true;
     if (!(cs.summarizeEvery >= 1)) cs.summarizeEvery = 1;
@@ -793,6 +795,29 @@ function applyRelationshipChange(ch) {
     });
 }
 
+// ---------------- 角色实体自动登记 ----------------
+// 从总结结果里解析【在场人物】行 → 名字数组（过滤代词/无意义指称）
+const ENTITY_PRONOUNS = new Set(['你', '我', '他', '她', '它', '你们', '我们', '他们', '她们', '大家', '众人', '自己', '某人', '路人', '群众', '主角', '那个人', '那个男人', '那个女人', '这位', '那位']);
+function extractPresentChars(text) {
+    const m = String(text).match(/【在场人物】\s*([^\n]+)/);
+    if (!m || !m[1]) return [];
+    const raw = m[1].trim();
+    if (!raw || raw === '无') return [];
+    return raw.split(/[、，,；;\s]+/)
+        .map(s => s.replace(/^[「『"']+|[」』"']+$/g, '').trim())
+        .filter(Boolean)
+        .filter(name => !ENTITY_PRONOUNS.has(name));
+}
+// 把名字登记为角色实体（身份域留空；同名已存在则不重复，不自动拆分同名）
+function registerEntities(names) {
+    if (!Array.isArray(names)) return;
+    for (const name of names) {
+        if (!name) continue;
+        if (settings.entities.some(e => e.name === name)) continue;
+        settings.entities.push({ id: uid(), name, age: '', note: '', world: '', timeline: '', identity: '' });
+    }
+}
+
 // ---------------- 剧情一致性检查 ----------------
 // 本地（免费、不调模型）时间冲突启发式：时间线/记忆里出现「第N天」晚于当前天 → 时间倒退/超前冲突
 function localConsistencyCheck() {
@@ -981,6 +1006,8 @@ async function summarizeLastRound() {
             applyWorldState(extractWorldState(result));
             // 情感线：解析并追加关系变化（无变化/解析失败则不动；历史只追加不改写）
             applyRelationshipChange(extractRelationshipChange(result));
+            // 角色实体自动登记（开关开启时）：把【在场人物】里的新名字登记为实体（身份域留空）
+            if (settings.autoRegisterEntities) registerEntities(extractPresentChars(result));
             // 记忆正文去掉【时间轴】【世界状态】【关系变化】行（结构化数据已单独存，正文保持干净）
             const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
@@ -2024,6 +2051,12 @@ function buildPanel() {
 
       <div class="st-sd__pane" data-pane="people" style="display:none">
         <div class="st-sd__section-title">人物档案</div>
+        <div class="st-sd__toolbar">
+          <label class="st-sd__switch" title="开启后，每次总结会自动把「在场人物」里的新名字登记进人物档案（身份域留空，同名不重复）">
+            <input type="checkbox" class="st-sd__npc-auto"><span class="st-sd__switch-slider"></span>
+          </label>
+          <span class="st-sd__label">总结时自动登记在场人物</span>
+        </div>
         <div class="st-sd__add-row">
           <input type="text" class="st-sd__npc-world" placeholder="世界/平行世界（可空）">
           <input type="text" class="st-sd__npc-timeline" placeholder="时间线/前世今生（可空）">
@@ -2268,7 +2301,11 @@ function bindPanelEvents() {
     panel.find('.st-sd__axis-time').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
     panel.find('.st-sd__axis-loc').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
 
-    // 人物档案（角色实体）：添加/编辑/删除
+    // 人物档案（角色实体）：自动登记开关 + 添加/编辑/删除
+    panel.find('.st-sd__npc-auto').prop('checked', !!settings.autoRegisterEntities).on('change', function () {
+        settings.autoRegisterEntities = this.checked;
+        saveSettings();
+    });
     const addNpc = () => {
         const name = panel.find('.st-sd__npc-name').val().trim();
         if (!name) { toastr.warning('姓名必填'); return; }
