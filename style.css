@@ -853,6 +853,12 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 }
 .st-sd__fore-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
+/* 移动端动量滚动 */
+.st-sd__memory-list, .st-sd__word-list, .st-sd__instr-list,
+.st-sd__axis-list, .st-sd__world-list, .st-sd__check-list, .st-sd__fore-list {
+    -webkit-overflow-scrolling: touch;
+}
+
 /* ============ 滚动条 ============ */
 #st-serendipity ::-webkit-scrollbar { width: 8px; height: 8px; }
 #st-serendipity ::-webkit-scrollbar-thumb {
@@ -869,6 +875,8 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     .st-sd__tabs { padding: 0 8px; overflow-x: auto; }
     .st-sd__tab { flex: 1 0 auto; padding: 12px 8px 11px; font-size: 12px; }
     .st-sd__pane { padding: 20px 20px 28px; }
+    /* ST 移动端给 body 设了 touch-action:none + overflow:hidden，这里在面板打开时恢复触摸滚动 */
+    body.st-sd-open { touch-action: auto !important; }
     .st-sd__memory-actions,
     .st-sd__tl-item .st-sd__memory-actions,
     .st-sd__world-item .st-sd__memory-actions,

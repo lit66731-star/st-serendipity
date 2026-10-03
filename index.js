@@ -14,7 +14,7 @@ import {
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.14.3'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '1.14.4'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2029,25 +2029,11 @@ function bindPanelEvents() {
 
 // 用真实视口尺寸定位面板，保证手机端一定不出屏（酒馆移动端 body 是 fixed+overflow:hidden，vh/bottom 会失真）
 function fitPanelToViewport() {
+    // 面板现在由 CSS 固定铺满全屏（桌面/移动端一致），这里只清除可能残留的内联定位，
+    // 避免旧版「浮窗 + 四周边距」的内联样式覆盖掉全屏布局。
     const panel = $('#st-serendipity');
     if (!panel.length) return;
-    if (window.innerWidth <= 1000) {
-        const margin = 8;
-        const top = 56;
-        const bottomGap = 60; // 底部留白，避免被输入栏/底部工具条遮挡
-        panel.css({
-            top: top + 'px',
-            bottom: 'auto',
-            left: margin + 'px',
-            right: 'auto',
-            width: (window.innerWidth - margin * 2) + 'px',
-            maxWidth: 'none',
-            maxHeight: Math.max(200, window.innerHeight - top - bottomGap) + 'px',
-        });
-    } else {
-        // 桌面端恢复 CSS 默认
-        panel.css({ top: '', bottom: '', left: '', right: '', width: '', maxWidth: '', maxHeight: '' });
-    }
+    panel.css({ top: '', bottom: '', left: '', right: '', width: '', maxWidth: '', maxHeight: '' });
 }
 
 function togglePanel(force) {
@@ -2068,6 +2054,8 @@ function togglePanel(force) {
     } else {
         panel.hide();
     }
+    // 打开面板时给 body 打标记，用于移动端恢复触摸滚动（ST 移动端给 body 设了 touch-action:none）
+    document.body.classList.toggle('st-sd-open', show);
 }
 
 // ---------------- 初始化 ----------------
