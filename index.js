@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.2.8'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.2.9'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1268,7 +1268,7 @@ function applyEntityInfo(e, info) {
 }
 // 把人物档案信息合并进角色实体：
 //   新名字 → 新建实体；
-//   唯一同名 → 合并（稳定字段补空、状态字段快照替换）；
+//   唯一同名 → 先比身份域：双方都有的域全部一致或有一方没给域 → 合并（稳定字段补空、状态字段快照替换）；域完全不同 → 新建独立实体；部分一致部分冲突 → 排队待人工确认；
 //   同名多个 → 按身份域（世界/时间线/身份）匹配：唯一最佳命中 → 合并；无任何命中但模型给了身份域 → 默认新建独立实体；并列最高分或没给身份域 → 排队待人工确认
 function mergeEntityInfos(infos) {
     if (!Array.isArray(infos)) return;
@@ -1279,7 +1279,10 @@ function mergeEntityInfos(infos) {
         if (matches.length === 0) {
             settings.entities.push(entityFromInfo(name, info));
         } else if (matches.length === 1) {
-            applyEntityInfo(matches[0], info);
+            const { score, overlap } = entityDomainScore(info, matches[0]);
+            if (overlap === 0 || score === overlap) applyEntityInfo(matches[0], info);
+            else if (score === 0) settings.entities.push(entityFromInfo(name, info));
+            else queueEntityAssignment(info, matches);
         } else {
             // 同名多个：按身份域找唯一最佳归属
             let best = null, bestScore = 0, unique = true;
@@ -3529,21 +3532,24 @@ function resetCurrentChar() {
 // ---------------- 屏蔽词功能 ----------------
 const CENSOR_EXCLUDE = 'script, style, textarea, input, select, option, #st-serendipity, .st-sd, [contenteditable]';
 
-function censorText(text) {
-    const words = blockedWordList();
-    if (!censorOn() || !words.length) return text;
-    let out = text;
-    for (const w of words) {
-        if (!w) continue;
-        const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        out = out.replace(new RegExp(esc, 'g'), '');
+let censorRegexCache = { key: '', re: null, test: null };
+function censorRegex() {
+    const words = censorOn() ? blockedWordList().filter(Boolean) : [];
+    if (!words.length) return null;
+    const key = words.join('\u0000');
+    if (censorRegexCache.key !== key) {
+        const src = [...words].sort((a, b) => b.length - a.length).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+        censorRegexCache = { key, re: new RegExp(src, 'g'), test: new RegExp(src) };
     }
-    return out;
+    return censorRegexCache;
+}
+function censorText(text) {
+    const c = censorRegex();
+    return c ? text.replace(c.re, '') : text;
 }
 
 function censorTextInNode(node) {
-    const words = blockedWordList();
-    if (!censorOn() || !words.length) return;
+    if (!censorRegex()) return;
     if (node.nodeType === 3) { // 文本节点
         const v = node.nodeValue;
         if (!v) return;
@@ -3558,10 +3564,7 @@ function censorTextInNode(node) {
             const p = n.parentElement;
             if (!p || (p.closest && p.closest(CENSOR_EXCLUDE))) return NodeFilter.FILTER_REJECT;
             if (!n.nodeValue) return NodeFilter.FILTER_REJECT;
-            for (const w of words) {
-                if (w && n.nodeValue.includes(w)) return NodeFilter.FILTER_ACCEPT;
-            }
-            return NodeFilter.FILTER_REJECT;
+            return censorRegex().test.test(n.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
         },
     });
     let n;
@@ -3571,26 +3574,42 @@ function censorTextInNode(node) {
 }
 
 function applyCensorAll() {
-    if (!censorOn() || !blockedWordList().length) return;
+    syncCensorObserver();
+    if (!censorRegex()) return;
     censorTextInNode(document.body);
 }
 
+// 观察器只在「屏蔽开启且有屏蔽词」时运行；变动先攒起来，下一帧统一处理（流式输出时不会每个字都扫一遍）
 let censorObserver = null;
-function initCensorObserver() {
-    if (censorObserver) censorObserver.disconnect();
-    const opts = { childList: true, subtree: true, characterData: true };
-    censorObserver = new MutationObserver((mutations) => {
-        censorObserver.disconnect();
-        for (const m of mutations) {
-            if (m.type === 'characterData') {
-                censorTextInNode(m.target);
-            } else if (m.type === 'childList') {
-                for (const node of m.addedNodes) censorTextInNode(node);
+let censorPending = new Set();
+let censorRaf = 0;
+function flushCensor() {
+    censorRaf = 0;
+    const nodes = censorPending;
+    censorPending = new Set();
+    if (!censorRegex()) return;
+    for (const n of nodes) {
+        if (n.isConnected) censorTextInNode(n);
+    }
+    if (censorObserver) censorObserver.takeRecords(); // 丢弃我们自己改文本产生的变动
+}
+function syncCensorObserver() {
+    const need = !!censorRegex();
+    if (need && !censorObserver) {
+        censorObserver = new MutationObserver((mutations) => {
+            for (const m of mutations) {
+                if (m.type === 'characterData') censorPending.add(m.target);
+                else for (const node of m.addedNodes) censorPending.add(node);
             }
-        }
-        censorObserver.observe(document.body, opts);
-    });
-    censorObserver.observe(document.body, opts);
+            if (!censorRaf) censorRaf = requestAnimationFrame(flushCensor);
+        });
+        censorObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+    } else if (!need && censorObserver) {
+        censorObserver.disconnect();
+        censorObserver = null;
+        censorPending.clear();
+        if (censorRaf) { cancelAnimationFrame(censorRaf); censorRaf = 0; }
+    }
 }
 
 function renderBlockedWords() {
@@ -3994,7 +4013,7 @@ function bindPanelEvents() {
         sharedPrefs().censorEnabled = this.checked;
         saveSettings();
         updatePromptInjection();
-        if (this.checked) applyCensorAll();
+        if (this.checked) applyCensorAll(); else syncCensorObserver();
     });
 
     // 关闭
@@ -4212,6 +4231,7 @@ function bindPanelEvents() {
     panel.on('click', '.st-sd__word-del', function () {
         const w = String($(this).data('word'));
         sharedPrefs().blockedWords = blockedWordList().filter(x => x !== w);
+        syncCensorObserver();
         saveSettings();
         renderBlockedWords();
         updatePromptInjection();
@@ -4975,7 +4995,7 @@ jQuery(async () => {
 
     // 初始屏蔽 + 注入正文提示
     applyCensorAll();
-    initCensorObserver();
+    syncCensorObserver();
     updatePromptInjection();
 
     // 生成结束后按设定频率自动总结（每 N 轮一次）
