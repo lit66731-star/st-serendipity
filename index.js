@@ -18,7 +18,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.1.1'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.1.2'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2028,7 +2028,7 @@ function recallItem(type, id, text, importance, day, entityRef, extra) {
     };
 }
 
-// 历史事实标签：【第4天 · 2026/04/20 19:40 · 二楼】；没有发生时间的（人物/关系/世界状态）标为当前状态快照
+// 历史事实标签：【第N天 · 具体时间 · 地点】；没有发生时间的（人物/关系/世界状态）标为当前状态快照
 function recallTimeLabel(it) {
     if (it.day == null && !it.time) return '【当前状态】';
     const parts = [];
@@ -2246,11 +2246,11 @@ async function runSemanticRecallInjection() {
             + '重要规则：\n'
             + '1. 每条历史资料的发生时间以前面【】中的标注为准。\n'
             + '2. 历史事件不得因为当前语境而被重新归入今天、昨晚、昨天等时间。\n'
-            + '3. 若某条资料发生在第4天，即使当前剧情是第6天，也必须视为第4天发生的事情。\n'
+            + '3. 若某条资料标注的是过去的某一天，即使当前剧情已推进到之后的日期，也必须视为那一天发生的事情。\n'
             + '4. 不要把“曾经发生过”理解成“最近发生过”。\n'
             + '5. 若当前剧情没有明确说明某件事再次发生，不得认为它在当前时间重新发生。\n'
             + '6. 标注为【当前状态】的是现状快照，不是某个具体时间发生的事件。\n'
-            + '7. 若无法确认某个相对时间（如“昨晚”）对应的具体事件，避免主动补充具体的历史事件。\n'
+            + '7. 若无法确认某个相对时间（如“昨天”“前天”）对应的具体事件，避免主动补充具体的历史事件。\n'
             + '资料：\n'
             + lines.join('\n');
         setExtensionPrompt('serendipity_semantic_recall', block, extension_prompt_types.IN_PROMPT, 0);
