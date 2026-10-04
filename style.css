@@ -383,7 +383,7 @@
 .st-sd__world-input, .st-sd__world-edit-text,
 .st-sd__fore-input, .st-sd__fore-e-title, .st-sd__fore-e-note,
 .st-sd__tl-e-day, .st-sd__tl-e-time, .st-sd__tl-e-loc, .st-sd__tl-e-event,
-.st-sd__world-select, .st-sd__world-cat,
+.st-sd__world-select, .st-sd__world-cat, .st-sd__world-search,
 .st-sd__npc-name, .st-sd__npc-age, .st-sd__npc-note,
 .st-sd__npc-world, .st-sd__npc-timeline, .st-sd__npc-identity,
 .st-sd__recall-input, .st-sd__recall-world,
@@ -405,7 +405,7 @@
 .st-sd__axis-loc:focus, .st-sd__world-input:focus, .st-sd__world-edit-text:focus,
 .st-sd__fore-input:focus, .st-sd__fore-e-title:focus, .st-sd__fore-e-note:focus,
 .st-sd__tl-e-day:focus, .st-sd__tl-e-time:focus, .st-sd__tl-e-loc:focus,
-.st-sd__tl-e-event:focus, .st-sd__world-select:focus, .st-sd__world-cat:focus,
+.st-sd__tl-e-event:focus, .st-sd__world-select:focus, .st-sd__world-cat:focus, .st-sd__world-search:focus,
 .st-sd__npc-name:focus, .st-sd__npc-age:focus, .st-sd__npc-note:focus,
 .st-sd__npc-world:focus, .st-sd__npc-timeline:focus, .st-sd__npc-identity:focus,
 .st-sd__recall-input:focus, .st-sd__recall-world:focus,
@@ -447,7 +447,8 @@
 }
 .st-sd__every-input { width: 64px; flex: 0 0 auto; text-align: center; }
 .st-sd__world-row { margin-bottom: 8px; }
-.st-sd__world-select { width: 100%; }
+.st-sd__world-select, .st-sd__world-search { width: 100%; }
+.st-sd__world-search { margin-bottom: 6px; }
 .st-sd__vec-switch { margin-left: 10px; vertical-align: middle; }
 .st-sd__vec-label { margin-left: 8px; font-size: 12px; color: var(--sd-text-2); vertical-align: middle; }
 

@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.1'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.2'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2181,17 +2181,29 @@ async function injectToWorldBook() {
 }
 
 // 世界书下拉：列出全部世界书，让用户自己选要注入到哪一本
+function filterWorldNames(names, query) {
+    const terms = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return names;
+    return names.filter(n => { const l = String(n).toLowerCase(); return terms.every(t => l.includes(t)); });
+}
+
 function renderWorldSelect() {
     const selectEl = $('#st-serendipity .st-sd__world-select');
     if (!selectEl.length) return;
     const names = Array.isArray(world_names) ? world_names : [];
     const current = getSelectedWorldBook();
+    const query = String($('#st-serendipity .st-sd__world-search').val() || '').trim();
+    const shown = filterWorldNames(names, query);
+    // 已选中的那本即使不匹配也保留，避免搜索时悄悄改掉选择
+    if (current && names.includes(current) && !shown.includes(current)) shown.unshift(current);
     let html = '<option value="">未选择世界书</option>';
-    for (const n of names) {
+    for (const n of shown) {
         const selected = n === current ? ' selected' : '';
         html += `<option value="${escapeHtml(n)}"${selected}>${escapeHtml(n)}</option>`;
     }
+    if (query && !filterWorldNames(names, query).length) html += '<option value="" disabled>没有匹配的世界书</option>';
     selectEl.html(html);
+    $('#st-serendipity .st-sd__world-search').attr('title', query ? ('匹配 ' + filterWorldNames(names, query).length + ' / ' + names.length + ' 本') : ('共 ' + names.length + ' 本世界书'));
 }
 
 // 长期记忆满 10 时高亮「注入世界书」按钮，提醒用户归档
@@ -3878,6 +3890,7 @@ function buildPanel() {
           <button type="button" class="st-sd__add-note">补记</button>
         </div>
         <div class="st-sd__world-row">
+          <input type="text" class="st-sd__world-search" placeholder="搜索世界书（空格分隔多个关键词，回车选中第一个）" autocomplete="off">
           <select class="st-sd__world-select" title="选择要注入记忆的世界书"></select>
         </div>
         <div class="st-sd__world-row">
@@ -4157,6 +4170,18 @@ function bindPanelEvents() {
     });
     // 注入世界书（事件委托，按钮即使被重建也始终能触发）
     panel.on('click', '.st-sd__inject-world', injectToWorldBook);
+    // 搜索世界书：边输入边过滤下拉；回车选中第一个匹配项
+    panel.on('input', '.st-sd__world-search', () => renderWorldSelect());
+    panel.on('keydown', '.st-sd__world-search', function (e) {
+        if (e.key !== 'Enter') return;
+        const hit = filterWorldNames(Array.isArray(world_names) ? world_names : [], this.value)[0];
+        if (!hit) return;
+        settings.worldBook = hit;
+        saveSettings();
+        this.value = '';
+        renderWorldSelect();
+        toastr.success('已选择世界书「' + hit + '」');
+    });
     // 选择要注入的世界书（事件委托）
     panel.on('change', '.st-sd__world-select', function () {
         settings.worldBook = this.value || '';
