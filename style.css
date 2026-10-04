@@ -1406,3 +1406,6 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     border-radius: 5px; padding: 3px 12px; font-size: 12px; cursor: pointer;
 }
 .st-sd-toast-btn:hover { background: rgba(255, 255, 255, 0.3); }
+
+/* 酒馆提示（toastr）要盖在面板之上，否则面板打开时看不到提示/更新提醒 */
+#toast-container { z-index: 2147483600 !important; }

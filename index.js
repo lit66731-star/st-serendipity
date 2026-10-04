@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.2.5'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.2.6'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2228,6 +2228,7 @@ function renderMemories() {
     const list = $('#st-serendipity .st-sd__memory-list');
     if (!list.length) return;
 
+    $('#st-serendipity .st-sd__mem-toggle').prop('checked', !!settings.memoryEnabled);
     renderStoryTime();
     renderWorldSelect();
     updateInjectHint();
@@ -2384,6 +2385,7 @@ function renderRecall() {
     const statusEl = panel.find('.st-sd__recall-status');
     const worldSelect = panel.find('.st-sd__recall-world');
     if (!statusEl.length) return;
+    panel.find('.st-sd__vec-toggle').prop('checked', !!settings.archiveVectorized);
 
     const vs = extension_settings.vectors;
     if (!vs) {
@@ -3140,6 +3142,7 @@ function renderWorldState() {
 function renderNpcs() {
     const list = $('#st-serendipity .st-sd__npc-list');
     if (!list.length) return;
+    $('#st-serendipity .st-sd__npc-auto').prop('checked', !!settings.autoRegisterEntities);
     if (!settings.entities.length) {
         list.html('<div class="st-sd__empty">暂无人物档案。总结时若出现新人物可手动登记，或在上方添加。</div>');
         return;
@@ -3901,7 +3904,7 @@ function bindPanelEvents() {
     const panel = $('#st-serendipity');
 
     // 开关
-    panel.find('.st-sd__mem-toggle').prop('checked', !!settings.memoryEnabled).on('change', function () {
+    panel.find('.st-sd__mem-toggle').on('change', function () {
         settings.memoryEnabled = this.checked;
         saveSettings();
         updatePromptInjection();
@@ -3996,7 +3999,7 @@ function bindPanelEvents() {
         saveSettings();
     });
     // 归档条目是否标记 vectorized（语义召回）
-    panel.find('.st-sd__vec-toggle').prop('checked', !!settings.archiveVectorized).on('change', function () {
+    panel.find('.st-sd__vec-toggle').on('change', function () {
         settings.archiveVectorized = this.checked;
         saveSettings();
     });
@@ -4118,6 +4121,7 @@ function bindPanelEvents() {
     panel.on('click', '.st-sd__memory-del', function () {
         const id = $(this).data('id');
         const tier = $(this).data('tier');
+        if (!confirm('确定删除这条' + (tier === 'long' ? '长期' : '短期') + '记忆吗？删除后无法恢复。')) return;
         if (tier === 'short') settings.memories = settings.memories.filter(m => m.id !== id);
         else if (tier === 'long') settings.longMemories = settings.longMemories.filter(m => m.id !== id);
         saveSettings();
@@ -4191,7 +4195,7 @@ function bindPanelEvents() {
     panel.find('.st-sd__axis-loc').on('keydown', (e) => { if (e.key === 'Enter') saveAxis(); });
 
     // 人物档案（角色实体）：自动登记开关 + 添加/编辑/删除
-    panel.find('.st-sd__npc-auto').prop('checked', !!settings.autoRegisterEntities).on('change', function () {
+    panel.find('.st-sd__npc-auto').on('change', function () {
         settings.autoRegisterEntities = this.checked;
         saveSettings();
     });
@@ -4253,11 +4257,22 @@ function bindPanelEvents() {
     });
     panel.on('click', '.st-sd__npc-del', function () {
         const id = String($(this).data('id'));
+        const ent = settings.entities.find(x => x.id === id);
+        if (!ent) return;
+        if (!confirm('确定删除人物档案「' + ent.name + '」吗？关联它的记忆会变为「未关联角色」，关系线会保留人物名字。删除后无法恢复。')) return;
         settings.entities = settings.entities.filter(x => x.id !== id);
+        for (const m of settings.memories) if (m.entityRef === id) m.entityRef = '';
+        for (const m of settings.longMemories) if (m.entityRef === id) m.entityRef = '';
+        for (const l of settings.relationshipLines) {
+            if (l.a === '@' + id) l.a = ent.name;
+            if (l.b === '@' + id) l.b = ent.name;
+        }
+        for (const p of settings.pendingEntityAssignments) p.candidates = p.candidates.filter(c => c !== id);
+        settings.pendingEntityAssignments = settings.pendingEntityAssignments.filter(p => p.candidates.length);
         saveSettings();
         updatePromptInjection();
-        renderNpcs();
-        renderPendingAssignments();
+        renderPeople();
+        renderMemories();
     });
 
     // 待确认同名角色归属：归到某候选 / 新建独立 / 忽略
@@ -4335,6 +4350,7 @@ function bindPanelEvents() {
     });
     panel.on('click', '.st-sd__world-del', function () {
         const id = String($(this).data('id'));
+        if (!confirm('确定删除这条世界状态吗？')) return;
         settings.worldState = settings.worldState.filter(x => x.id !== id);
         saveSettings();
         updatePromptInjection();
@@ -4360,6 +4376,7 @@ function bindPanelEvents() {
 
     panel.on('click', '.st-sd__rel-del', function () {
         const id = String($(this).data('id'));
+        if (!confirm('确定删除整条关系线吗？它的全部变化记录都会一起删除，无法恢复。')) return;
         settings.relationshipLines = settings.relationshipLines.filter(l => l.id !== id);
         saveSettings();
         updatePromptInjection();
@@ -4367,6 +4384,7 @@ function bindPanelEvents() {
     });
     panel.on('click', '.st-sd__rel-row-del', function () {
         const id = String($(this).data('id'));
+        if (!confirm('确定删除这条关系变化记录吗？')) return;
         for (const l of settings.relationshipLines) {
             l.history = l.history.filter(h => h.id !== id);
         }
@@ -4423,6 +4441,7 @@ function bindPanelEvents() {
     });
     panel.on('click', '.st-sd__tl-del', function () {
         const id = String($(this).data('id'));
+        if (!confirm('确定删除这条时间轴记录吗？')) return;
         settings.timeline = settings.timeline.filter(x => x.id !== id);
         saveSettings();
         renderTimeAxis();
@@ -4488,6 +4507,7 @@ function bindPanelEvents() {
     });
     panel.on('click', '.st-sd__fore-del', function () {
         const id = String($(this).data('id'));
+        if (!confirm('确定删除这条伏笔/未完成事项吗？')) return;
         settings.foreshadows = settings.foreshadows.filter(x => x.id !== id);
         saveSettings();
         updatePromptInjection();
@@ -4507,6 +4527,8 @@ function bindPanelEvents() {
         saveSettings();
     });
     panel.find('.st-sd__check-clear').on('click', function () {
+        if (!settings.checks.length) return;
+        if (!confirm('确定清空全部一致性检查结果吗？')) return;
         settings.checks = [];
         saveSettings();
         renderChecks();
