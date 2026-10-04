@@ -18,7 +18,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '1.36.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.1.1'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2012,8 +2012,30 @@ function entityRecallText(e) {
         + (e.promise ? '；承诺：' + e.promise : '');
 }
 
-function recallItem(type, id, text, importance, day, entityRef) {
-    return { type, id, text, importance: importance || '', day: (day == null || isNaN(day)) ? null : Number(day), entityRef: entityRef || '' };
+// text = 写入向量库的文本（改动会触发重新嵌入，保持不变）；extra = 注入时用的结构化时间元数据：
+// { tag: 类型标签, body: 不含时间前缀的正文, time: 具体时间, location: 地点 }
+function recallItem(type, id, text, importance, day, entityRef, extra) {
+    const x = extra || {};
+    return {
+        type, id, text,
+        importance: importance || '',
+        day: (day == null || isNaN(day)) ? null : Number(day),
+        entityRef: entityRef || '',
+        tag: x.tag || '',
+        body: x.body != null ? String(x.body) : text,
+        time: x.time || '',
+        location: x.location || '',
+    };
+}
+
+// 历史事实标签：【第4天 · 2026/04/20 19:40 · 二楼】；没有发生时间的（人物/关系/世界状态）标为当前状态快照
+function recallTimeLabel(it) {
+    if (it.day == null && !it.time) return '【当前状态】';
+    const parts = [];
+    if (it.day != null) parts.push('第' + it.day + '天');
+    if (it.time) parts.push(it.time);
+    if (it.location) parts.push(it.location);
+    return '【' + parts.join(' · ') + '】';
 }
 
 // 把当前角色所有可召回数据拍平成条目列表（每条 = 一个可被语义检索的文本块）
@@ -2025,23 +2047,28 @@ function buildRecallItems() {
         const when = (day || time) ? (day + (time ? ' · ' + time : '') + '：') : '';
         return '[' + tier + '] ' + when + m.text;
     };
-    for (const m of settings.memories) if (m && m.text) items.push(recallItem('memory', m.id, memText(m, '短期记忆'), m.importance, m.storyDay, m.entityRef));
-    for (const m of settings.longMemories) if (m && m.text) items.push(recallItem('long', m.id, memText(m, '长期记忆'), m.importance, m.storyDay, m.entityRef));
+    const memExtra = (m, tag) => ({ tag, body: m.text, time: m.storyTime || '', location: m.storyLocation || '' });
+    for (const m of settings.memories) if (m && m.text) items.push(recallItem('memory', m.id, memText(m, '短期记忆'), m.importance, m.storyDay, m.entityRef, memExtra(m, '短期记忆')));
+    for (const m of settings.longMemories) if (m && m.text) items.push(recallItem('long', m.id, memText(m, '长期记忆'), m.importance, m.storyDay, m.entityRef, memExtra(m, '长期记忆')));
     for (const t of settings.timeline) if (t && t.id) {
         const line = '第' + (t.day != null ? t.day : '?') + '天' + (t.time ? ' ' + t.time : '') + (t.location ? ' ' + t.location : '') + (t.event ? '：' + t.event : '');
-        items.push(recallItem('timeline', t.id, '[时间线] ' + line, '', t.day, ''));
+        items.push(recallItem('timeline', t.id, '[时间线] ' + line, '', t.day, '', { tag: '时间线', body: t.event || '', time: t.time || '', location: t.location || '' }));
     }
-    for (const e of settings.entities) if (e && e.id) items.push(recallItem('entity', e.id, '[人物] ' + entityRecallText(e), '', null, e.id));
+    for (const e of settings.entities) if (e && e.id) {
+        const body = entityRecallText(e);
+        items.push(recallItem('entity', e.id, '[人物] ' + body, '', null, e.id, { tag: '人物档案', body }));
+    }
     for (const l of settings.relationshipLines) if (l && l.id) {
         const a = resolveEntityRef(l.a).display;
         const b = resolveEntityRef(l.b).display;
         const cur = (l.current.relationship || '未知') + (l.current.affection ? '，好感' + l.current.affection : '') + (l.current.attitude ? '，态度' + l.current.attitude : '');
-        items.push(recallItem('relation', l.id, '[关系] ' + a + ' → ' + b + '：' + cur, '', null, ''));
+        items.push(recallItem('relation', l.id, '[关系] ' + a + ' → ' + b + '：' + cur, '', null, '', { tag: '关系', body: a + ' → ' + b + '：' + cur }));
     }
     for (const f of settings.foreshadows) if (f && f.id && f.status !== '已回收') {
-        items.push(recallItem('foreshadow', f.id, '[伏笔] [' + f.status + '] ' + f.title + (f.note ? '（' + f.note + '）' : ''), '', f.day, ''));
+        const body = '[' + f.status + '] ' + f.title + (f.note ? '（' + f.note + '）' : '');
+        items.push(recallItem('foreshadow', f.id, '[伏笔] ' + body, '', f.day, '', { tag: '伏笔（埋下日）', body }));
     }
-    for (const w of settings.worldState) if (w && w.id) items.push(recallItem('world', w.id, '[世界状态] ' + w.cat + '：' + w.text, '', null, ''));
+    for (const w of settings.worldState) if (w && w.id) items.push(recallItem('world', w.id, '[世界状态] ' + w.cat + '：' + w.text, '', null, '', { tag: '世界状态', body: w.cat + '：' + w.text }));
     return items;
 }
 
@@ -2185,7 +2212,8 @@ async function runSemanticRecallInjection() {
                 else if (diff > 2 && diff <= 6) score += 1;
             }
             if (it.entityRef && recentEnts.includes(it.entityRef)) score += 2;
-            return { text: String(m.text || '').trim(), score };
+            // 保留结构化时间元数据；索引里没有该条（已被删改）就退回向量库里的原文
+            return { text: String(m.text || '').trim(), score, item: it.id ? it : null };
         }).filter(x => x.text);
 
         // 去重（正文归一化后一致就跳过）+ 取前 topK
@@ -2203,8 +2231,28 @@ async function runSemanticRecallInjection() {
             setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
             return;
         }
-        const block = '[Serendipity 语义召回]\n以下是与当前对话语义最相关的过往剧情/人物/关系/伏笔，请自然参考并保持剧情连续，不必逐条复述：\n'
-            + picked.map((x, i) => (i + 1) + '. ' + x.text).join('\n');
+        // 每条 = 【发生时间】+ 类型 + 正文；时间来自结构化元数据，不依赖模型从正文里自己推断
+        const lines = picked.map((x, i) => {
+            if (!x.item) return (i + 1) + '. ' + x.text;
+            const it = x.item;
+            return (i + 1) + '. ' + recallTimeLabel(it) + '\n   ' + (it.tag ? '[' + it.tag + '] ' : '') + it.body;
+        });
+        const nowLine = curDay != null
+            ? '当前剧情时间：第' + curDay + '天' + (settings.storyTime ? ' · ' + settings.storyTime : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '') + '\n'
+            : '';
+        const block = '[Serendipity 语义召回]\n'
+            + '以下内容均为历史资料，仅用于保持剧情连续。\n'
+            + nowLine
+            + '重要规则：\n'
+            + '1. 每条历史资料的发生时间以前面【】中的标注为准。\n'
+            + '2. 历史事件不得因为当前语境而被重新归入今天、昨晚、昨天等时间。\n'
+            + '3. 若某条资料发生在第4天，即使当前剧情是第6天，也必须视为第4天发生的事情。\n'
+            + '4. 不要把“曾经发生过”理解成“最近发生过”。\n'
+            + '5. 若当前剧情没有明确说明某件事再次发生，不得认为它在当前时间重新发生。\n'
+            + '6. 标注为【当前状态】的是现状快照，不是某个具体时间发生的事件。\n'
+            + '7. 若无法确认某个相对时间（如“昨晚”）对应的具体事件，避免主动补充具体的历史事件。\n'
+            + '资料：\n'
+            + lines.join('\n');
         setExtensionPrompt('serendipity_semantic_recall', block, extension_prompt_types.IN_PROMPT, 0);
     } catch (e) {
         console.error('[Serendipity] 语义召回注入失败：', e);
