@@ -18,7 +18,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.1.2'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.1.3'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -686,15 +686,22 @@ async function callLLM({ prompt, systemPrompt }) {
 }
 
 // ---------------- 记忆功能 ----------------
+const TIMELINE_ANCHOR_MAX = 12; // 回传给总结模型的最近时间线条数
+const TIMELINE_JUMP_WARN = 3;   // 相邻时间线条目天数跳跃超过该值视为可疑
+
 function buildSummaryPrompt(transcript, userName, charName, storyTime) {
     // 时间锚点：把上一次剧情时间传进去，让模型接力推进，避免每轮孤立猜测导致时间线乱掉
     const timeAnchor = storyTime
-        ? '当前剧情时间基准（上一次剧情进行到）：' + storyTime + '。若本段对话没有明确推进时间，请沿用这个时间；若剧情明确推进了时间，请给出推进后的具体时间。'
-        : '请根据本段内容判断剧情发生的大致时间（年/月/日 周几 几时几分）；若内容未明确，请给出合理推断的具体时间。';
+        ? '当前剧情时间基准（上一次剧情进行到）：' + storyTime + '。若本段对话没有明确推进时间，请沿用这个时间；若剧情明确推进了时间，请给出推进后的具体时间。对话中仅仅回忆、提及过去的事，不算时间推进。'
+        : '请根据本段内容判断剧情发生的大致时间（年/月/日 周几 几时几分）；若内容没有明确的时间信息，写出最接近的大致时间即可，不要虚构精确到分钟的具体时间。';
     // 结构化时间轴锚点（第X天 + 年月日几时几分 + 地点）：让模型接力推进天数，而不是每轮孤立猜测
     const timeAxisAnchor = (settings.storyDay != null)
-        ? '当前剧情时间轴：第' + settings.storyDay + '天' + (settings.storyTime ? ' · ' + settings.storyTime : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '') + '。若本段剧情没有明确推进天数，请沿用第' + settings.storyDay + '天；若明确过了若干天，请给出推进后的天数。'
-        : '请根据本段内容，从故事开始估算当前是「第几天」（第X天），以及当前具体时间（年月日几时几分）和发生地点；若未明确，请给出合理推断。';
+        ? '当前剧情时间轴：第' + settings.storyDay + '天' + (settings.storyTime ? ' · ' + settings.storyTime : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '') + '。若本段剧情没有明确推进天数，请沿用第' + settings.storyDay + '天；若明确过了若干天，请给出推进后的天数。不得虚构新的具体时间，不得跳到更晚的天数，也不得退回更早的天数；对话中只是回忆、提及过去某一天的事，当前天数不变。'
+        : '请根据本段内容，从故事开始估算当前是「第几天」（第X天），以及当前具体时间（年月日几时几分）和发生地点；若没有明确信息，按最保守的估计写，不要虚构。';
+    // 已有时间线锚点：把已发生事件的时间事实回传，禁止模型改写历史事件的发生时间
+    const timelineAnchor = settings.timeline.length
+        ? '已有剧情时间线（历史时间事实，已经发生，不得改写）：\n' + settings.timeline.slice(-TIMELINE_ANCHOR_MAX).map(t => '- ' + [t.day != null ? '第' + t.day + '天' : '', t.time || '', t.location || '', t.event || ''].filter(Boolean).join(' · ')).join('\n') + '\n规则：1) 上面每条事件的发生时间固定不变，不得把它们重新归入当前日期；2) 当前对话只是提及、回忆旧事件时，该事件仍属于它原来的那一天，不要当成本段新发生的事件，【时间轴】里也不要写成回忆的那一天；3) 【时间】和【时间轴】只描述本段结束时「现在」的进度，只能沿用或向后推进，不能倒退。'
+        : '';
     // 世界状态锚点：把当前已知状态回传，让模型增量更新（某类别无变化写「无」），而不是每轮从零重造
     const worldStateAnchor = settings.worldState.length
         ? '当前已知的世界状态（请在此基础上增量更新，某个类别没有新变化就写「无」）：\n' + worldStateLines(worldStateByCat())
@@ -711,13 +718,14 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
             '',
             timeAxisAnchor,
             '',
+            ...(timelineAnchor ? [timelineAnchor, ''] : []),
             worldStateAnchor,
             '',
             relationshipAnchor,
             '',
             '严格按照以下格式逐行输出（除【时间】外，某项信息未提及时写「无」）：',
             '',
-            '【时间】剧情中的具体时间（年/月/日 周几 几时几分，必须给出具体时间，不要写「无」）',
+            '【时间】本段结束时「现在」的剧情时间（年/月/日 周几 几时几分；沿用当前时间锚点，没有明确推进就写原时间，不要写「无」）',
             '【天气】天气情况',
             '【在场人物】有哪些人在场',
             '【人物档案】在场各角色的身份与状态信息，每个角色写成「姓名|年龄|简介|世界|时间线|身份|身体|心理|目标|秘密|承诺」一段，多个角色用「；」分隔（世界/时间线/身份用于区分同名角色；身体/心理/目标/秘密/承诺是当前状态，无则写「无」，要清除某项写「空」；年龄/简介/身份域没提到写「无」）',
@@ -1090,6 +1098,18 @@ function localConsistencyCheck() {
     const cur = settings.storyDay;
     if (cur == null) return items;
     const seen = new Set();
+    let prev = null;
+    for (const e of settings.timeline) {
+        if (e.day == null) continue;
+        if (prev != null && e.day < prev) {
+            const text = '时间线出现倒退：「第' + e.day + '天」' + (e.event ? '（' + e.event + '）' : '') + '排在「第' + prev + '天」之后，可能是回忆被记成了当前进度';
+            if (!seen.has(text)) { seen.add(text); items.push({ type: 'time', text }); }
+        } else if (prev != null && e.day - prev > TIMELINE_JUMP_WARN) {
+            const text = '时间线从「第' + prev + '天」直接跳到「第' + e.day + '天」' + (e.event ? '（' + e.event + '）' : '') + '，中间缺了' + (e.day - prev - 1) + '天';
+            if (!seen.has(text)) { seen.add(text); items.push({ type: 'time', text }); }
+        }
+        prev = e.day;
+    }
     for (const e of settings.timeline) {
         if (e.day != null && e.day > cur) {
             const text = '时间线记录到「第' + e.day + '天」' + (e.event ? '（' + e.event + '）' : '') + '，但当前剧情才进行到第' + cur + '天';
@@ -1261,11 +1281,20 @@ async function summarizeLastRound() {
         const result = await callLLM({ prompt, systemPrompt });
         if (result && result.trim()) {
             // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
-            const newStoryTime = extractStoryTime(result) || settings.storyTime;
-            settings.storyTime = newStoryTime;
+            let newStoryTime = extractStoryTime(result) || settings.storyTime;
             // 解析结构化时间轴（第X天/地点/重要事情），解析失败则沿用上一次，保证时间轴不倒退
             const axis = extractTimeAxis(result);
-            if (axis) {
+            // 写入保护：天数比当前小 = 模型把「回忆过去」写成了当前进度，不回退时间轴、不记成当前条目
+            const prevDay = settings.storyDay;
+            const backward = !!axis && axis.day != null && prevDay != null && axis.day < prevDay;
+            if (backward) {
+                newStoryTime = settings.storyTime;
+                toastr.warning('总结把当前进度写成了第' + axis.day + '天（当前第' + prevDay + '天），疑似只是回忆过去，已保持时间轴不变', undefined, { timeOut: 8000 });
+            } else if (axis && axis.day != null && prevDay != null && axis.day - prevDay > TIMELINE_JUMP_WARN) {
+                toastr.warning('时间轴从第' + prevDay + '天一次跳到第' + axis.day + '天，请确认剧情是否真的过了这么久', undefined, { timeOut: 8000 });
+            }
+            settings.storyTime = newStoryTime;
+            if (axis && !backward) {
                 if (axis.day != null) settings.storyDay = axis.day;
                 if (axis.period) settings.storyPeriod = axis.period;
                 if (axis.location) settings.storyLocation = axis.location;
