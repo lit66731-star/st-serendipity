@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.1'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -3735,7 +3735,7 @@ const THEMES = [
     { id: 'mint', name: '薄荷汽水', desc: '清爽薄荷 · 圆润卡片', layout: 'soft', sw: ['#F0FAF6', '#7CCBB0', '#2A8A6D'] },
     { id: 'lavender', name: '薰衣草', desc: '淡紫梦境 · 圆润卡片', layout: 'soft', sw: ['#F6F3FD', '#B7A3EB', '#7357C9'] },
     { id: 'cream', name: '奶油布丁', desc: '暖黄奶油 · 圆润卡片 · 衬线标题', layout: 'soft', sw: ['#FFF9EC', '#F2B84B', '#B97A12'] },
-    { id: 'night', name: '夜航', desc: '深色 · 紧凑 · 等宽标题', layout: 'compact', sw: ['#16151C', '#8E9BE8', '#E8E6F0'] },
+    { id: 'sky', name: '云朵蓝', desc: '白 · 浅天蓝 · 简约排版', layout: 'plain', sw: ['#F7FAFD', '#9CC0E6', '#3F78B3'] },
 ];
 
 function currentThemeId() {

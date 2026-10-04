@@ -1424,7 +1424,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 
 /* ==========================================================================
    主题系统：data-sd-theme 覆盖配色 / 字体 / 圆角 / 密度，data-sd-layout 决定排版族
-   plain = 默认编辑式；soft = 圆润卡片；compact = 紧凑
+   plain = 简约编辑式；soft = 圆润卡片
    ========================================================================== */
 
 /* —— 头部：绑定角色 + 主题按钮 —— */
@@ -1510,18 +1510,16 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     --sd-danger: #CF6A55; --sd-danger-bg: #FCE9E3;
     --sd-orn: "☆";
 }
-/* —— 夜航（深色） —— */
-#st-serendipity[data-sd-theme="night"] {
-    color-scheme: dark;
-    --sd-bg: #16151C; --sd-surface: #1F1E28; --sd-surface-2: #2A2935;
-    --sd-text: #E8E6F0; --sd-text-2: #A09DB3; --sd-text-3: #77748C;
-    --sd-border: #2E2D3A; --sd-border-2: #403E50;
-    --sd-accent: #6F7BC9; --sd-accent-deep: #A9B4F5; --sd-accent-bg: #262A44;
-    --sd-primary: #8E9BE8; --sd-primary-hover: #A9B4F5; --sd-on-primary: #14131A;
-    --sd-ok: #7FC3A0; --sd-ok-bg: #1E3029; --sd-warn: #D8B26A; --sd-warn-bg: #38301D;
-    --sd-danger: #E58A8A; --sd-danger-bg: #3A2326;
-    --sd-serif: ui-monospace, "SF Mono", Menlo, Consolas, "PingFang SC", monospace;
-    --sd-orn: "☾";
+/* —— 云朵蓝（简约亮色） —— */
+#st-serendipity[data-sd-theme="sky"] {
+    --sd-bg: #F7FAFD; --sd-surface: #FFFFFF; --sd-surface-2: #EDF3FA;
+    --sd-text: #26323F; --sd-text-2: #6E7C8C; --sd-text-3: #9FABB8;
+    --sd-border: #E1E9F2; --sd-border-2: #CBD7E5;
+    --sd-accent: #9CC0E6; --sd-accent-deep: #4F86BE; --sd-accent-bg: #E6F0FA;
+    --sd-primary: #3F78B3; --sd-primary-hover: #2F6498; --sd-on-primary: #FFFFFF;
+    --sd-ok: #6FAE92; --sd-ok-bg: #E6F4EE; --sd-warn: #B58A3E; --sd-warn-bg: #F8EFDC;
+    --sd-danger: #CC6A6A; --sd-danger-bg: #FBE9E9;
+    --sd-r: 8px; --sd-r-lg: 10px; --sd-r-sm: 5px;
 }
 
 /* —— 圆润卡片族（cute） —— */
@@ -1555,24 +1553,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 }
 #st-serendipity[data-sd-layout="soft"] .st-sd__update { padding-left: 36px; padding-right: 36px; }
 
-/* —— 紧凑族（compact） —— */
-#st-serendipity[data-sd-layout="compact"] {
-    --sd-r: 4px; --sd-r-lg: 6px; --sd-r-sm: 3px;
-    --sd-head-pad: 14px 28px 12px;
-    --sd-pane-pad: 18px 28px 28px;
-    --sd-fs: 12.5px; --sd-lh: 1.5;
-}
-#st-serendipity[data-sd-layout="compact"] .st-sd__title { font-size: 18px; letter-spacing: 0.06em; }
-#st-serendipity[data-sd-layout="compact"] .st-sd__tabs { padding: 0 14px; }
-#st-serendipity[data-sd-layout="compact"] .st-sd__tab { padding: 9px 12px 8px; font-size: 12px; }
-#st-serendipity[data-sd-layout="compact"] .st-sd__memory:not(.is-editing) { padding: 9px 2px; }
-#st-serendipity[data-sd-layout="compact"] .st-sd__tl-item:not(.st-sd__tl-item--edit),
-#st-serendipity[data-sd-layout="compact"] .st-sd__fore:not(.st-sd__fore--edit) { padding: 8px 2px; }
-#st-serendipity[data-sd-layout="compact"] .st-sd__update { padding-left: 28px; padding-right: 28px; }
-
 @media screen and (max-width: 1000px) {
-    #st-serendipity[data-sd-layout="soft"] .st-sd__update,
-    #st-serendipity[data-sd-layout="compact"] .st-sd__update { padding-left: 20px; padding-right: 20px; }
+    #st-serendipity[data-sd-layout="soft"] .st-sd__update { padding-left: 20px; padding-right: 20px; }
     #st-serendipity[data-sd-layout="soft"] .st-sd__tabs { padding: 8px; }
-    #st-serendipity[data-sd-layout="compact"] .st-sd__tabs { padding: 0 8px; }
 }
