@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.2.10'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -579,6 +579,7 @@ function ensureGlobalPrefs(g) {
     if (!g.shared || typeof g.shared !== 'object' || Array.isArray(g.shared)) g.shared = {};
     g.shared.blockedWords = normalizeWordList(g.shared.blockedWords);
     g.shared.censorEnabled = g.shared.censorEnabled !== false;
+    if (typeof g.shared.theme !== 'string') g.shared.theme = 'quiet';
     if (!g.charPrefs || typeof g.charPrefs !== 'object' || Array.isArray(g.charPrefs)) g.charPrefs = {};
     return g;
 }
@@ -3727,6 +3728,62 @@ function cycleForeshadowStatus(f) {
     f.status = FORESHADOW_STATUSES[(i + 1) % FORESHADOW_STATUSES.length];
 }
 
+// ---------------- 主题（仅本机偏好，存于全局设置，不进入任何聊天数据） ----------------
+const THEMES = [
+    { id: 'quiet', name: '静谧', desc: '暖白 · 灰玫瑰 · 编辑式排版（默认）', layout: 'plain', sw: ['#F8F6F2', '#CDB3B0', '#292724'] },
+    { id: 'peach', name: '蜜桃牛奶', desc: '奶粉色 · 圆润卡片 · 软萌字体', layout: 'soft', sw: ['#FFF4F1', '#F59BB0', '#D4597A'] },
+    { id: 'mint', name: '薄荷汽水', desc: '清爽薄荷 · 圆润卡片', layout: 'soft', sw: ['#F0FAF6', '#7CCBB0', '#2A8A6D'] },
+    { id: 'lavender', name: '薰衣草', desc: '淡紫梦境 · 圆润卡片', layout: 'soft', sw: ['#F6F3FD', '#B7A3EB', '#7357C9'] },
+    { id: 'cream', name: '奶油布丁', desc: '暖黄奶油 · 圆润卡片 · 衬线标题', layout: 'soft', sw: ['#FFF9EC', '#F2B84B', '#B97A12'] },
+    { id: 'night', name: '夜航', desc: '深色 · 紧凑 · 等宽标题', layout: 'compact', sw: ['#16151C', '#8E9BE8', '#E8E6F0'] },
+];
+
+function currentThemeId() {
+    const id = globalSettings && globalSettings.shared && globalSettings.shared.theme;
+    return THEMES.some(t => t.id === id) ? id : 'quiet';
+}
+
+function applyTheme() {
+    const t = THEMES.find(x => x.id === currentThemeId()) || THEMES[0];
+    $('#st-serendipity').attr('data-sd-theme', t.id).attr('data-sd-layout', t.layout);
+}
+
+function renderThemePicker() {
+    const cur = currentThemeId();
+    const items = THEMES.map(t => `
+        <button type="button" class="st-sd__theme-item${t.id === cur ? ' is-active' : ''}" data-theme="${t.id}">
+          <span class="st-sd__theme-sw">${t.sw.map(c => `<i style="background:${c}"></i>`).join('')}</span>
+          <span class="st-sd__theme-txt"><span class="st-sd__theme-name">${t.name}</span><span class="st-sd__theme-desc">${t.desc}</span></span>
+          <span class="st-sd__theme-tick">✓</span>
+        </button>`).join('');
+    $('#st-serendipity .st-sd__theme-pop').html('<div class="st-sd__theme-pop-title">选择主题（只影响本机显示）</div>' + items);
+}
+
+function toggleThemePicker(force) {
+    const pop = $('#st-serendipity .st-sd__theme-pop');
+    const open = force === undefined ? !pop.hasClass('is-open') : force;
+    if (open) renderThemePicker();
+    pop.toggleClass('is-open', open);
+    $('#st-serendipity .st-sd__theme-btn').toggleClass('is-open', open);
+}
+
+function bindThemeEvents() {
+    const panel = $('#st-serendipity');
+    panel.on('click', '.st-sd__theme-btn', e => { e.stopPropagation(); toggleThemePicker(); });
+    panel.on('click', '.st-sd__theme-item', function (e) {
+        e.stopPropagation();
+        const id = String($(this).data('theme'));
+        if (!THEMES.some(t => t.id === id)) return;
+        globalSettings.shared.theme = id;
+        saveSettings();
+        applyTheme();
+        renderThemePicker();
+    });
+    panel.on('click', e => {
+        if (!$(e.target).closest('.st-sd__theme-pop, .st-sd__theme-btn').length) toggleThemePicker(false);
+    });
+}
+
 function renderCharBinding() {
     const el = $('#st-serendipity .st-sd__char');
     if (el.length) el.text(activeChar ? ('绑定角色：' + activeChar) : '未绑定角色');
@@ -3734,6 +3791,7 @@ function renderCharBinding() {
 
 // ---------------- 图标 ----------------
 const ICONS = {
+    palette: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.8-.5-1.2-.3-.4-.5-.7-.5-1.2 0-.9.8-1.7 1.7-1.7H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10.5" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>`,
     close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
 };
 
@@ -3763,7 +3821,11 @@ function buildPanel() {
             <span class="st-sd__version">v${VERSION}</span>
             <button type="button" class="st-sd__chk-update" title="检查插件是否有新版本">检查更新</button>
           </div>
-          <span class="st-sd__char"></span>
+          <div class="st-sd__bindrow">
+            <span class="st-sd__char"></span>
+            <button type="button" class="st-sd__theme-btn" title="切换面板主题">${ICONS.palette}<span>主题</span></button>
+            <div class="st-sd__theme-pop"></div>
+          </div>
         </div>
         <button type="button" class="st-sd__close" title="关闭">${ICONS.close}</button>
       </div>
@@ -3998,6 +4060,8 @@ function buildPanel() {
     </div>`;
     $('body').append(html);
     bindPanelEvents();
+    bindThemeEvents();
+    applyTheme();
 }
 
 function bindPanelEvents() {
@@ -4690,6 +4754,7 @@ function togglePanel(force) {
         renderCharBinding();
         renderRecall();
     } else {
+        toggleThemePicker(false);
         panel.hide();
     }
     // 打开面板时给 body 打标记，用于移动端恢复触摸滚动（ST 移动端给 body 设了 touch-action:none）
