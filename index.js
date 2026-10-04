@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.3'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.4'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -362,7 +362,8 @@ function freshCharSettings() {
         archiveVectorized: false, // 归档条目是否标记 vectorized（交给酒馆向量存储做语义召回，需 ST 向量存储已启用并配好 embedding 源）
         semanticRecall: {         // 对 Serendipity 自己数据做语义召回注入正文（复用酒馆 embedding 源，独立集合）
             enabled: false,       // 是否注入（默认关，避免默认开启影响现有用户）
-            topK: 4,              // 每轮注入条数
+            topK: 4,              // 每轮注入条数上限
+            charBudget: 1500,     // 每轮注入资料总字数预算（0=不限），先到哪个上限就停
             threshold: 0.25,      // 相似度阈值
             queryTopK: 20,        // 查询候选数（用于本地重要性/时间/角色重排）
             index: { model: '', items: {} }, // 已索引快照 { id: hash }，model=embedding 源签名（变了就全量重建）
@@ -543,6 +544,7 @@ function normalizeCharSettings(cs) {
         topK: (Number(cs.semanticRecall.topK) || 4),
         threshold: (cs.semanticRecall.threshold != null ? Number(cs.semanticRecall.threshold) : 0.25),
         queryTopK: (Number(cs.semanticRecall.queryTopK) || 20),
+        charBudget: (cs.semanticRecall.charBudget != null && Number(cs.semanticRecall.charBudget) >= 0 ? Number(cs.semanticRecall.charBudget) : 1500),
         index: (cs.semanticRecall.index && typeof cs.semanticRecall.index === 'object' && !Array.isArray(cs.semanticRecall.index))
             ? { model: typeof cs.semanticRecall.index.model === 'string' ? cs.semanticRecall.index.model : '', items: (cs.semanticRecall.index.items && typeof cs.semanticRecall.index.items === 'object') ? cs.semanticRecall.index.items : {} }
             : { model: '', items: {} },
@@ -2525,6 +2527,7 @@ function renderRecall() {
     if (injectTopk.length) injectTopk.val(Number(sr.topK) || 4);
     if (injectThreshold.length) injectThreshold.val(sr.threshold != null ? Number(sr.threshold) : 0.25);
     if (injectQueryTopk.length) injectQueryTopk.val(Number(sr.queryTopK) || 20);
+    panel.find('.st-sd__recall-inject-budget').val(sr.charBudget != null ? Number(sr.charBudget) : 1500);
     renderRecallIndexState();
 }
 
@@ -3148,12 +3151,17 @@ async function runSemanticRecallInjection(genType) {
         const picked = [];
         const seenId = new Set();
         const seenText = new Set();
+        const budget = sr.charBudget != null ? Number(sr.charBudget) : 1500;
+        let used = 0;
         for (const x of scored.sort((a, b) => b.score - a.score)) {
             const norm = x.item.body.replace(/\s+/g, '');
             if (seenId.has(x.item.id) || seenText.has(norm)) continue;
+            // 字数预算：放不下的长条目跳过、继续试后面更短的；第一条无论多长都保留，保证至少有一条
+            if (budget > 0 && picked.length && used + x.item.body.length > budget) continue;
             seenId.add(x.item.id);
             seenText.add(norm);
             picked.push(x);
+            used += x.item.body.length;
             if (picked.length >= (Number(sr.topK) || 4)) break;
         }
 
@@ -3999,6 +4007,7 @@ function buildPanel() {
           <span class="st-sd__label">注入调参</span>
           <label class="st-sd__recall-tune-item">召回条数 <input type="number" class="st-sd__recall-inject-topk" min="1" max="20" step="1" title="注入正文的条目条数上限（去重后）"></label>
           <label class="st-sd__recall-tune-item">候选阈值 <input type="number" class="st-sd__recall-inject-threshold" min="0" max="1" step="0.05" title="向量查询的相似度阈值，越低召回越多（候选池越大越可能命中相关条目）"></label>
+          <label class="st-sd__recall-tune-item">字数预算 <input type="number" class="st-sd__recall-inject-budget" min="0" max="20000" step="100" title="每轮注入资料的总字数上限，0 = 不限。条数和字数先到哪个就停：条目都很长时少放几条，都很短时可以多放（条数上限仍是「召回条数」）"></label>
           <label class="st-sd__recall-tune-item">候选条数 <input type="number" class="st-sd__recall-inject-querytopk" min="1" max="100" step="1" title="先取回这么多候选，再按重要性/时间/角色加权后挑最相关的几条"></label>
         </div>
         <div class="st-sd__recall-rebuild-row">
@@ -4287,7 +4296,7 @@ function bindPanelEvents() {
         renderRecallIndexState();
     });
     // 注入调参（召回条数 / 候选阈值 / 候选条数）
-    panel.on('change', '.st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk', function () {
+    panel.on('change', '.st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk, .st-sd__recall-inject-budget', function () {
         const sr = settings.semanticRecall;
         const t = parseInt(panel.find('.st-sd__recall-inject-topk').val(), 10);
         const th = parseFloat(panel.find('.st-sd__recall-inject-threshold').val());
@@ -4295,6 +4304,8 @@ function bindPanelEvents() {
         if (!isNaN(t) && t >= 1) sr.topK = t;
         if (!isNaN(th) && th >= 0) sr.threshold = th;
         if (!isNaN(qk) && qk >= 1) sr.queryTopK = qk;
+        const bd = parseInt(panel.find('.st-sd__recall-inject-budget').val(), 10);
+        if (!isNaN(bd) && bd >= 0) sr.charBudget = bd;
         saveSettings();
     });
     // 清空并重建索引：先清掉本聊天的向量集合再全量重新嵌入
