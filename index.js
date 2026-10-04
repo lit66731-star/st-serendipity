@@ -12,14 +12,15 @@ import {
     setExtensionPrompt,
     extension_prompt_types,
 } from '../../../../script.js';
-import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
+import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info, world_info } from '../../../world-info.js';
+import { power_user } from '../../../power-user.js';
 import { selected_group } from '../../../group-chats.js';
 import { getStringHash, copyText } from '../../../utils.js';
 import { textgen_types, textgenerationwebui_settings } from '../../../textgen-settings.js';
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.2.2'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.2.3'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1868,12 +1869,28 @@ function getSelectedWorldBook() {
 
 // 判断这本世界书当前是否已「激活」（设为全局世界书，或绑定为当前角色的主要世界书）。
 // 只有激活的世界书，酒馆才会把里面的条目拼进发给模型的 prompt，否则模型读不到。
+// 当前角色的酒馆「文件名」标识（头像文件名去扩展名，酒馆世界书的角色过滤、附加世界书都用它）；群聊/无角色返回 ''
+function currentCharFileName() {
+    const ch = (this_chid !== undefined && characters) ? characters[this_chid] : null;
+    return (ch && typeof ch.avatar === 'string') ? ch.avatar.replace(/\.[^/.]+$/, '') : '';
+}
+
 function isWorldBookActive(name) {
     if (!name) return false;
+    // 全局世界书
     if (Array.isArray(selected_world_info) && selected_world_info.includes(name)) return true;
+    // 当前聊天绑定的世界书
+    if (chat_metadata && chat_metadata.world_info === name) return true;
+    // 当前人设绑定的世界书
+    if (power_user && power_user.persona_description_lorebook === name) return true;
     if (this_chid !== undefined && characters && characters[this_chid]) {
+        // 角色主要世界书
         const w = characters[this_chid].data?.extensions?.world;
         if (typeof w === 'string' && w === name) return true;
+        // 角色附加世界书
+        const fileName = currentCharFileName();
+        const extra = world_info && Array.isArray(world_info.charLore) ? world_info.charLore.find(e => e && e.name === fileName) : null;
+        if (extra && Array.isArray(extra.extraBooks) && extra.extraBooks.includes(name)) return true;
     }
     return false;
 }
@@ -1938,7 +1955,7 @@ async function injectToWorldBook() {
             toastr.error('读取世界书「' + worldName + '」失败，可能已被删除，请重新选择');
             return;
         }
-        const charName = currentCharName();
+        const charFile = currentCharFileName();
         let written = 0;
         for (const m of settings.longMemories) {
             if (!m || !m.text) continue;
@@ -1949,8 +1966,8 @@ async function injectToWorldBook() {
             entry.key = memoryKeywords(m);        // 关键词：按人物/地点等召回
             entry.constant = false;               // 不常驻，靠关键词触发按需召回
             entry.selective = true;               // 选择性触发（关键词匹配）
-            entry.characterFilterNames = charName ? [charName] : []; // 绑定当前角色
-            entry.characterFilterExclude = false;
+            // 绑定当前角色：酒馆的过滤字段是 characterFilter.names，值为头像文件名去扩展名；群聊/无角色时不设过滤
+            if (charFile) entry.characterFilter = { isExclude: false, names: [charFile], tags: [] };
             entry.vectorized = !!settings.archiveVectorized; // 语义召回：标 true 交给酒馆向量存储按语义召回（需 ST 向量存储已启用并配好 embedding 源）
             entry.position = 0;                   // 注入位置：角色设定之前（召回时作为权威背景）
             entry.role = 0;                       // 系统角色
@@ -2317,11 +2334,8 @@ async function runSemanticSearch() {
     if (!world) { toastr.warning('请先选择要查询的世界书'); return; }
     if (!query) { toastr.warning('请输入要搜索的一句话'); return; }
     const vs = extension_settings.vectors;
-    if (!vs) { toastr.error('没有检测到酒馆「向量存储」扩展的设置'); return; }
-    if (vs.source === 'webllm') {
-        list.html('<div class="st-sd__empty">WebLLM（浏览器本地）源暂不支持面板内语义搜索，请改用其他 embedding 源。</div>');
-        return;
-    }
+    const issue = semanticSourceIssue(vs);
+    if (issue) { list.html('<div class="st-sd__empty">' + escapeHtml(issue) + '。</div>'); return; }
     if (!vs.enabled_world_info) {
         toastr.warning('酒馆向量存储的「世界书向量化」还没启用，向量库里可能没有数据', undefined, { timeOut: 4000 });
     }
@@ -2367,7 +2381,7 @@ async function runSemanticSearch() {
 
 // ---------------- 语义召回注入（对 Serendipity 自己的数据做语义召回，注入正文） ----------------
 // 复用酒馆向量存储的 embedding 源，把记忆/时间线/人物/关系/伏笔/世界状态存进独立集合，
-// 每轮生成后同步索引 + 按当前对话语义召回 + 重要性/时间/角色加权重排 + 去重，注入下一轮正文。
+// 数据变化后同步索引；每次生成前按最新对话语义召回 + 重要性/时间/角色加权重排 + 去重，注入正文。
 
 function semanticCollectionId() {
     return 'serendipity_' + getStringHash(currentDataKey() || currentCharKey() || 'default');
@@ -2418,11 +2432,12 @@ function parseRelativeDayRefs(text) {
     let rest = t;
     for (const m of t.matchAll(/大前天/g)) add(m[0], -3);
     rest = rest.replace(/大前天/g, '');
-    for (const m of rest.matchAll(/前天|前晚|前夜/g)) add(m[0], -2);
-    for (const m of rest.matchAll(/昨天|昨日|昨晚|昨夜|昨早|昨晨/g)) add(m[0], -1);
-    for (const m of rest.matchAll(/([0-9０-９一二两三四五六七八九十]+)\s*天(?:之)?前/g)) {
-        const n = parseDayNumber(m[1]);
-        if (n != null && n >= 1 && n <= 60) add(m[0].replace(/\s+/g, ''), -n);
+    // 排除常见误判：「前天空/前天地」「昨日重现」「第三天前往…」「三天前来…」（不用后行断言，兼容旧版 Safari）
+    for (const m of rest.matchAll(/前天(?![空地际使赋然下命])|前晚|前夜(?![之])/g)) add(m[0], -2);
+    for (const m of rest.matchAll(/昨天|昨晚|昨夜|昨早|昨晨|昨日(?![重再之])/g)) add(m[0], -1);
+    for (const m of rest.matchAll(/(^|[^第0-9０-９一二两三四五六七八九十])([0-9０-９一二两三四五六七八九十]+)\s*天(?:之)?前(?![往进来去夕方后面])/g)) {
+        const n = parseDayNumber(m[2]);
+        if (n != null && n >= 1 && n <= 60) add(m[0].slice(m[1].length).replace(/\s+/g, ''), -n);
     }
     return refs;
 }
@@ -2517,82 +2532,213 @@ function buildRecallItems() {
     return items;
 }
 
-async function semanticVectorFetch(path, body) {
-    const resp = await fetch(path, { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
-    if (!resp.ok) {
-        const t = await resp.text();
-        throw new Error('HTTP ' + resp.status + (t ? '：' + String(t).slice(0, 200) : ''));
+// 向量库里的唯一键：id + 文本。id 参与哈希，避免两条文字相同的条目共用一个 hash（酒馆按 hash 删除，会误删另一条）；
+// 文本参与哈希，内容一变 hash 就变，旧向量能被识别为过期并删除
+function recallHash(it) {
+    return getStringHash(it.id + '\u0000' + it.text);
+}
+
+// 插件当前用不了的 embedding 源 → 返回原因；可用返回 ''
+// （WebLLM / KoboldCpp 需要浏览器端先算好向量再随请求带上，插件走的是纯服务端请求，两者都不支持）
+function semanticSourceIssue(vs) {
+    if (!vs) return '没有检测到酒馆「向量存储」扩展的设置';
+    if (!vs.source) return '酒馆「向量存储」还没选择 embedding 源';
+    if (vs.source === 'webllm' || vs.source === 'koboldcpp') {
+        return '「' + vectorSourceLabel(vs.source) + '」源需要浏览器端先算好向量，插件暂不支持，请改用其他 embedding 源';
     }
-    return resp;
+    return '';
+}
+
+async function semanticVectorFetch(path, body, timeoutMs) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs || 120000);
+    try {
+        const resp = await fetch(path, { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body), signal: ctrl.signal });
+        if (!resp.ok) {
+            const t = await resp.text().catch(() => '');
+            throw new Error('HTTP ' + resp.status + (t ? '：' + String(t).slice(0, 200) : '（酒馆后台日志里有详细报错，常见原因：embedding 源没填 key / 模型名 / 接口地址）'));
+        }
+        return resp;
+    } catch (e) {
+        if (e && e.name === 'AbortError') throw new Error('请求超时');
+        throw e;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function semanticBody(collectionId, vs, extra) {
+    const body = vectorsRequestBody({});
+    body.collectionId = collectionId;
+    body.source = vs.source;
+    return Object.assign(body, extra || {});
+}
+
+async function semanticList(collectionId, vs) {
+    const resp = await semanticVectorFetch('/api/vector/list', semanticBody(collectionId, vs));
+    const data = await resp.json();
+    return Array.isArray(data) ? data.map(Number) : [];
 }
 
 async function semanticInsert(collectionId, vs, items) {
-    const body = vectorsRequestBody({});
-    body.collectionId = collectionId;
-    body.items = items.map(x => ({ hash: x.hash, text: x.text, index: x.index }));
-    body.source = vs.source;
-    await semanticVectorFetch('/api/vector/insert', body);
+    await semanticVectorFetch('/api/vector/insert', semanticBody(collectionId, vs, {
+        items: items.map(x => ({ hash: x.hash, text: x.text, index: x.index })),
+    }));
 }
 
 async function semanticDelete(collectionId, vs, hashes) {
-    const body = vectorsRequestBody({});
-    body.collectionId = collectionId;
-    body.hashes = hashes.map(Number);
-    body.source = vs.source;
-    await semanticVectorFetch('/api/vector/delete', body);
+    await semanticVectorFetch('/api/vector/delete', semanticBody(collectionId, vs, { hashes: hashes.map(Number) }));
 }
 
+// 删除该集合在所有 embedding 源/模型下的向量（酒馆的 purge 本来就是不分源的）
 async function semanticPurge(collectionId) {
     await semanticVectorFetch('/api/vector/purge', { collectionId });
 }
 
-// 同步索引：diff 当前数据与快照，插入新增/变更、删除已移除；embedding 源/模型变了则全量重建
-async function syncSemanticIndex() {
-    const vs = extension_settings.vectors;
-    if (!vs || vs.source === 'webllm') return;
-    const sr = settings.semanticRecall;
-    const idx = sr.index;
-    const sig = semanticModelSignature(vs);
-    const collectionId = semanticCollectionId();
-    const items = buildRecallItems();
-    const cur = {};
-    for (const it of items) cur[it.id] = getStringHash(it.text);
+// 同步状态（只在内存里，用于面板显示与错误提示）
+const semanticStatus = { running: false, done: 0, total: 0, error: '', errorKey: '' };
+let semanticLastToast = { msg: '', at: 0 };
 
-    // 源/模型变了 → 全量重建（向量不兼容）
-    if (idx.model && idx.model !== sig) {
-        await semanticPurge(collectionId).catch(() => {});
-        idx.items = {};
+function semanticReportError(e, context) {
+    const msg = (e && e.message) ? e.message : String(e);
+    console.error('[Serendipity] 语义' + context + '失败：', e);
+    semanticStatus.error = context + '失败：' + msg;
+    semanticStatus.errorKey = currentDataKey();
+    // 同一条错误 2 分钟内只弹一次，避免每轮都刷屏
+    const now = Date.now();
+    if (semanticLastToast.msg !== msg || now - semanticLastToast.at > 120000) {
+        semanticLastToast = { msg, at: now };
+        toastr.warning('语义' + context + '失败：' + msg, 'Serendipity', { timeOut: 8000 });
     }
-    idx.model = sig;
-
-    const toInsert = [];
-    const toDelete = [];
-    for (const it of items) {
-        if (idx.items[it.id] !== cur[it.id]) toInsert.push({ hash: cur[it.id], text: it.text, index: it.id });
-    }
-    for (const id of Object.keys(idx.items)) {
-        if (!(id in cur)) toDelete.push(idx.items[id]);
-    }
-
-    // 分批插入（一次别太多，避免超大请求）
-    for (let i = 0; i < toInsert.length; i += 50) {
-        await semanticInsert(collectionId, vs, toInsert.slice(i, i + 50));
-    }
-    if (toDelete.length) await semanticDelete(collectionId, vs, toDelete);
-
-    // idx 就是开始时捕获的那个聊天的索引对象，原地更新即可；不能再写 settings（同步期间可能已切到别的聊天）
-    idx.items = cur;
-    saveSettings();
-    if (settings.semanticRecall === sr) renderRecallIndexState();
-    return items.length;
+    renderRecallIndexState();
 }
 
-// 当前对话近期文本 → 语义查询词（最近 4 条非系统消息）
-function semanticQueryText() {
-    if (!Array.isArray(chat)) return '';
-    const msgs = chat.filter(m => m && typeof m.mes === 'string' && m.mes.trim() && !m.is_system).slice(-4);
-    if (!msgs.length) return '';
-    return msgs.map(m => m.mes).join('\n').slice(0, 2000);
+// 同步索引：以向量库里实际存在的内容为准（/list），而不是本地快照——
+// 缺的补、过期/多余/重复的删，先删后插。所以中断后重来、两个标签页同时跑、手动删过向量，结果都是对的。
+// job.rebuild = 先清空该集合再全量重建；job.force = 即使没开启注入也同步
+async function syncSemanticIndex(job = {}) {
+    const vs = extension_settings.vectors;
+    if (semanticSourceIssue(vs)) return 0;
+    const sr = settings.semanticRecall;
+    if (!sr || (!sr.enabled && !job.force && !job.rebuild)) return 0;
+    const key = currentDataKey();
+    if (!key) return 0;
+    const collectionId = semanticCollectionId();
+    const idx = sr.index; // 只写开始时捕获的这份聊天的索引，期间切换聊天也不会串档
+
+    const want = new Map(); // hash → 条目
+    for (const it of buildRecallItems()) {
+        const h = recallHash(it);
+        if (!want.has(h)) want.set(h, it);
+    }
+
+    if (job.rebuild) {
+        await semanticPurge(collectionId);
+        idx.items = {};
+    }
+    const listed = await semanticList(collectionId, vs);
+    const count = new Map();
+    for (const h of listed) count.set(h, (count.get(h) || 0) + 1);
+
+    const toDelete = [];
+    const toInsert = [];
+    for (const [h, c] of count) if (!want.has(h) || c > 1) toDelete.push(h); // 酒馆按 hash 删，重复项只能整组删掉重插
+    for (const [h, it] of want) if (!count.has(h) || count.get(h) > 1) toInsert.push({ hash: h, text: it.text, index: it.id });
+
+    const present = new Set();
+    for (const h of count.keys()) if (want.has(h) && count.get(h) === 1) present.add(h);
+    const commit = () => {
+        const items = {};
+        for (const h of present) { const it = want.get(h); if (it) items[it.id] = h; }
+        idx.items = items;
+        idx.model = semanticModelSignature(vs);
+        saveSettings();
+    };
+
+    semanticStatus.total = want.size;
+    semanticStatus.done = present.size;
+    try {
+        for (let i = 0; i < toDelete.length; i += 200) {
+            await semanticDelete(collectionId, vs, toDelete.slice(i, i + 200));
+        }
+        for (let i = 0; i < toInsert.length; i += 20) {
+            const batch = toInsert.slice(i, i + 20);
+            await semanticInsert(collectionId, vs, batch);
+            for (const b of batch) present.add(b.hash);
+            semanticStatus.done = present.size;
+            if (settings.semanticRecall === sr) renderRecallIndexState();
+        }
+    } finally {
+        commit(); // 中途失败也把已完成的部分记下来
+    }
+    if (settings.semanticRecall === sr) renderRecallIndexState();
+    return want.size;
+}
+
+// 单飞同步：同一时间只跑一个；运行期间再来请求就合并成「跑完再补一轮」，不会丢请求也不会并发
+let semanticSyncDone = null;
+let semanticSyncPending = null;
+function requestSemanticSync(opts = {}) {
+    const key = currentDataKey();
+    if (semanticSyncDone) {
+        const p = semanticSyncPending;
+        semanticSyncPending = {
+            rebuild: !!(opts.rebuild || (p && p.rebuild)),
+            force: !!(opts.force || (p && p.force)),
+            key,
+        };
+        return semanticSyncDone;
+    }
+    semanticStatus.running = true;
+    semanticSyncDone = (async () => {
+        let job = { rebuild: !!opts.rebuild, force: !!opts.force };
+        let ok = true;
+        try {
+            while (job) {
+                semanticSyncPending = null;
+                // 排队期间切到了别的聊天：不要把「重建」套到新聊天上
+                if (job.rebuild && job.key && job.key !== currentDataKey()) job = { force: job.force };
+                try {
+                    await syncSemanticIndex(job);
+                    if (semanticStatus.errorKey === currentDataKey()) semanticStatus.error = '';
+                } catch (e) {
+                    ok = false;
+                    semanticReportError(e, job.rebuild ? '重建索引' : '索引同步');
+                }
+                job = semanticSyncPending;
+            }
+        } finally {
+            semanticStatus.running = false;
+            semanticSyncDone = null;
+            renderRecallIndexState();
+        }
+        return ok;
+    })();
+    return semanticSyncDone;
+}
+
+// 清掉某个聊天的向量集合（重置数据时用），排在当前同步之后，避免刚清完又被写回去
+function purgeSemanticCollectionLater(collectionId) {
+    const run = () => semanticPurge(collectionId).catch(e => console.warn('[Serendipity] 清理向量集合失败：', e));
+    if (semanticSyncDone) semanticSyncDone.then(run); else run();
+}
+
+// 近期对话 → 干净文本（去掉 <think> 和 HTML 标签；重新生成/滑动时最后一条是即将被替换的旧回复，不算）
+function recentChatTexts(n, genType) {
+    if (!Array.isArray(chat)) return [];
+    let msgs = chat.filter(m => m && typeof m.mes === 'string' && m.mes.trim() && !m.is_system);
+    if ((genType === 'regenerate' || genType === 'swipe') && msgs.length && !msgs[msgs.length - 1].is_user) msgs = msgs.slice(0, -1);
+    return msgs.slice(-n).map(m => m.mes
+        .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()).filter(Boolean);
+}
+
+// 语义查询词：最近 3 条，总长超限时保留最新的那部分（本地 embedding 模型通常只吃前几百个 token）
+function semanticQueryText(genType) {
+    const text = recentChatTexts(3, genType).join('\n');
+    return text.length > 700 ? text.slice(-700) : text;
 }
 
 // 近期对话里被点名的人物实体 id（用于角色加权）
@@ -2607,50 +2753,52 @@ function recentEntityIds() {
 }
 
 let semanticSyncTimer = null;
-let semanticSyncRunning = false;
 function scheduleSemanticSync() {
     if (!(settings.semanticRecall && settings.semanticRecall.enabled)) return;
     if (semanticSyncTimer) clearTimeout(semanticSyncTimer);
     semanticSyncTimer = setTimeout(() => {
-        if (semanticSyncRunning) return;
-        semanticSyncRunning = true;
-        syncSemanticIndex().catch(e => console.error('[Serendipity] 语义索引同步失败：', e)).finally(() => { semanticSyncRunning = false; });
+        semanticSyncTimer = null;
+        requestSemanticSync();
     }, 800);
 }
 
-// 语义召回 + 加权重排 + 去重 + 注入正文（基于刚结束这轮的对话，为下一轮准备）
-async function runSemanticRecallInjection() {
+// 语义召回 + 加权重排 + 去重 + 注入正文。在每次生成真正组装提示词之前执行（GENERATION_AFTER_COMMANDS，酒馆会等它完成），
+// 所以用的是这一轮刚发出的消息，而不是上一轮的
+let semanticRecallSeq = 0;
+async function runSemanticRecallInjection(genType) {
+    const setBlock = (text) => setExtensionPrompt('serendipity_semantic_recall', text, extension_prompt_types.IN_PROMPT, 0);
     const sr = settings.semanticRecall;
     if (!sr || !sr.enabled) return;
     const vs = extension_settings.vectors;
-    if (!vs || vs.source === 'webllm') return;
-    const queryText = semanticQueryText();
-    if (!queryText) return;
+    if (semanticSourceIssue(vs)) return;
     const keyBefore = currentDataKey();
+    if (!keyBefore) return;
+    const st = settings;
+    const seq = ++semanticRecallSeq;
+    const queryText = semanticQueryText(genType);
+    if (!queryText) { setBlock(''); return; }
     try {
-        const body = vectorsRequestBody({});
-        body.collectionId = semanticCollectionId();
-        body.searchText = queryText;
-        body.topK = Math.max(1, Number(sr.queryTopK) || 20);
-        body.threshold = Number(sr.threshold) || 0;
-        body.source = vs.source;
-        const resp = await fetch('/api/vector/query', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
-        if (!resp.ok) return;
+        const resp = await semanticVectorFetch('/api/vector/query', semanticBody(semanticCollectionId(), vs, {
+            searchText: queryText,
+            topK: Math.max(1, Number(sr.queryTopK) || 20),
+            threshold: Number(sr.threshold) || 0,
+        }), 15000);
         const data = await resp.json();
-        if (currentDataKey() !== keyBefore) return; // 查询期间切换了聊天，结果作废
+        // 查询期间切换了聊天 / 又有新的召回请求：这次结果作废
+        if (currentDataKey() !== keyBefore || settings !== st || seq !== semanticRecallSeq) return;
         const meta = Array.isArray(data.metadata) ? data.metadata : [];
-        const bridge = buildRelativeTimeBridge(queryText);
-        if (!meta.length && !bridge) {
-            setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
-            return;
-        }
+        const bridge = buildRelativeTimeBridge(recentChatTexts(2, genType).join('\n'));
+        if (!meta.length && !bridge) { setBlock(''); return; }
         const itemMap = {};
         for (const it of buildRecallItems()) itemMap[it.id] = it;
         const recentEnts = recentEntityIds();
         const curDay = settings.storyDay;
         const total = meta.length;
-        const scored = meta.map((m, i) => {
-            const it = itemMap[m.index] || {};
+        const scored = [];
+        meta.forEach((m, i) => {
+            const it = itemMap[m.index];
+            // 条目已被删改（向量库还没同步到）→ 丢弃，绝不把已删除/已改写的旧内容注入
+            if (!it || Number(m.hash) !== recallHash(it)) return;
             let score = (total - i); // 相似度排序：越靠前越高
             if (it.importance === 'S') score += 4;
             else if (it.importance === 'A') score += 2;
@@ -2661,28 +2809,25 @@ async function runSemanticRecallInjection() {
             }
             if (it.entityRef && recentEnts.includes(it.entityRef)) score += 2;
             if (bridge && it.day != null && bridge.days.has(it.day)) score += 4; // 对话里提到的那一天的资料优先召回
-            // 保留结构化时间元数据；索引里没有该条（已被删改）就退回向量库里的原文
-            return { text: String(m.text || '').trim(), score, item: it.id ? it : null };
-        }).filter(x => x.text);
+            scored.push({ score, item: it });
+        });
 
-        // 去重（正文归一化后一致就跳过）+ 取前 topK
+        // 去重（同一条 id、正文归一化后一致）+ 取前 topK
         const picked = [];
-        const seen = new Set();
+        const seenId = new Set();
+        const seenText = new Set();
         for (const x of scored.sort((a, b) => b.score - a.score)) {
-            const norm = x.text.replace(/\s+/g, '');
-            if (seen.has(norm)) continue;
-            seen.add(norm);
+            const norm = x.item.body.replace(/\s+/g, '');
+            if (seenId.has(x.item.id) || seenText.has(norm)) continue;
+            seenId.add(x.item.id);
+            seenText.add(norm);
             picked.push(x);
             if (picked.length >= (Number(sr.topK) || 4)) break;
         }
 
-        if (!picked.length && !bridge) {
-            setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
-            return;
-        }
+        if (!picked.length && !bridge) { setBlock(''); return; }
         // 每条 = 【发生时间】+ 类型 + 正文；时间来自结构化元数据，不依赖模型从正文里自己推断
         const lines = picked.map((x, i) => {
-            if (!x.item) return (i + 1) + '. ' + x.text;
             const it = x.item;
             return (i + 1) + '. ' + recallTimeLabel(it) + '\n   ' + (it.tag ? '[' + it.tag + '] ' : '') + it.body;
         });
@@ -2702,24 +2847,30 @@ async function runSemanticRecallInjection() {
             + '7. 若无法确认某个相对时间（如“昨天”“前天”）对应的具体事件，避免主动补充具体的历史事件。\n'
             + (bridge ? bridge.text + '\n' : '')
             + (lines.length ? '资料：\n' + lines.join('\n') : '');
-        setExtensionPrompt('serendipity_semantic_recall', block, extension_prompt_types.IN_PROMPT, 0);
+        setBlock(block);
+        if (semanticStatus.errorKey === keyBefore && /召回/.test(semanticStatus.error)) { semanticStatus.error = ''; renderRecallIndexState(); }
     } catch (e) {
-        console.error('[Serendipity] 语义召回注入失败：', e);
+        // 召回失败时清掉旧块：宁可这一轮没有召回，也不能带着上一轮的旧资料
+        if (seq === semanticRecallSeq && currentDataKey() === keyBefore) setBlock('');
+        semanticReportError(e, '召回');
     }
 }
 
-// 面板里显示已索引条数
+// 面板里显示索引状态
 function renderRecallIndexState() {
     const el = $('#st-serendipity .st-sd__recall-index-state');
     if (!el.length) return;
     const sr = settings.semanticRecall;
-    const n = (sr && sr.index && sr.index.items) ? Object.keys(sr.index.items).length : 0;
     const vs = extension_settings.vectors;
-    if (!vs || vs.source === 'webllm') {
-        el.text('未配置可用的 embedding 源（或为 WebLLM 本地源），无法建立索引。');
-        return;
-    }
-    el.text(sr.enabled ? ('已索引 ' + n + ' 条（源：' + vectorSourceLabel(vs.source) + '）') : '注入关闭中，开启后自动建索引。');
+    const issue = semanticSourceIssue(vs);
+    if (issue) { el.text(issue + '，无法建立索引。'); return; }
+    const n = (sr && sr.index && sr.index.items) ? Object.keys(sr.index.items).length : 0;
+    let text;
+    if (semanticStatus.running) text = '正在同步索引…' + (semanticStatus.total ? '（' + semanticStatus.done + ' / ' + semanticStatus.total + '）' : '');
+    else if (!sr.enabled) text = '注入关闭中，开启后自动建索引。';
+    else text = '已索引 ' + n + ' 条（源：' + vectorSourceLabel(vs.source) + '）';
+    if (!semanticStatus.running && semanticStatus.error && semanticStatus.errorKey === currentDataKey()) text += ' ⚠ ' + semanticStatus.error;
+    el.text(text);
 }
 
 // ---------------- 时间轴 UI ----------------
@@ -3115,9 +3266,13 @@ function resetCurrentChar() {
     const name = activeChar || '当前角色';
     if (!confirm('确定清空「' + name + '」的全部 Serendipity 数据吗？记忆、时间轴、人物、世界状态、屏蔽词、指令都会被清空，且不可撤销。')) return;
     const keepWorldBook = settings.worldBook;
+    const hadIndex = !!(settings.semanticRecall && (settings.semanticRecall.enabled || Object.keys(settings.semanticRecall.index.items).length));
+    const collectionId = semanticCollectionId();
     Object.assign(settings, freshCharSettings());
     settings.worldBook = keepWorldBook; // 保留用户选择的世界书，方便下次直接注入
     saveSettings();
+    if (hadIndex) purgeSemanticCollectionLater(collectionId);
+    setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
     updatePromptInjection();
     renderMemories();
     renderTimeAxis();
@@ -3412,7 +3567,7 @@ function buildPanel() {
         <div class="st-sd__section-title">注入正文（自动语义召回）</div>
         <div class="st-sd__recall-inject">
           <label class="st-sd__switch"><input type="checkbox" class="st-sd__recall-inject-toggle"><span class="st-sd__switch-slider"></span></label>
-          <span class="st-sd__label">每轮生成后，按当前对话语义自动召回 Serendipity 里最相关的记忆/时间线/人物/关系/伏笔/世界状态，注入下一轮正文</span>
+          <span class="st-sd__label">每次生成前，按当前对话语义自动召回 Serendipity 里最相关的记忆/时间线/人物/关系/伏笔/世界状态，注入正文</span>
         </div>
         <div class="st-sd__recall-tune">
           <span class="st-sd__label">注入调参</span>
@@ -3421,10 +3576,10 @@ function buildPanel() {
           <label class="st-sd__recall-tune-item">候选条数 <input type="number" class="st-sd__recall-inject-querytopk" min="1" max="100" step="1" title="先取回这么多候选，再按重要性/时间/角色加权后挑最相关的几条"></label>
         </div>
         <div class="st-sd__recall-rebuild-row">
-          <button type="button" class="st-sd__recall-rebuild">重建索引</button>
+          <button type="button" class="st-sd__recall-rebuild">清空并重建</button>
           <span class="st-sd__recall-index-state"></span>
         </div>
-        <div class="st-sd__hint">把本角色当前的数据（记忆/长期记忆/时间线/人物/关系/未回收伏笔/世界状态）写进酒馆向量库的独立集合，每轮生成后自动增量同步并语义召回。需要：酒馆「扩展 → 向量存储」已启用并配好 embedding 源（WebLLM 本地源不支持）；换源/换模型会自动全量重建。</div>
+        <div class="st-sd__hint">把本角色当前的数据（记忆/长期记忆/时间线/人物/关系/未回收伏笔/世界状态）写进酒馆向量库的独立集合，数据变化后自动增量同步（只处理新增/改动的条目），每次生成前按最新消息语义召回。需要：酒馆「扩展 → 向量存储」里配好 embedding 源（WebLLM、KoboldCpp 不支持）。每个条目首次建索引会调用一次 embedding；用 API 源会产生用量，本地源（Transformers/Ollama 等）免费。换源/换模型后会自动在新模型下补建索引，旧模型的向量留在原处。</div>
 
         <div class="st-sd__section-title">手动预览</div>
         <div class="st-sd__recall-world-row">
@@ -3702,16 +3857,16 @@ function bindPanelEvents() {
         if (!isNaN(qk) && qk >= 1) sr.queryTopK = qk;
         saveSettings();
     });
-    // 重建索引（手动强制全量同步）
+    // 清空并重建索引：先清掉本聊天的向量集合再全量重新嵌入
     panel.find('.st-sd__recall-rebuild').on('click', async function () {
+        const issue = semanticSourceIssue(extension_settings.vectors);
+        if (issue) { toastr.warning(issue); return; }
+        if (!confirm('清空并重建会把本聊天的全部条目重新做一遍 embedding（走你配置的向量源，API 源会产生用量）。确定吗？')) return;
         const btn = $(this);
         btn.prop('disabled', true);
         try {
-            await syncSemanticIndex();
-            toastr.success('语义索引已重建');
-        } catch (e) {
-            console.error('[Serendipity] 重建索引失败：', e);
-            toastr.error('重建索引失败：' + (e && e.message ? e.message : String(e)));
+            const ok = await requestSemanticSync({ rebuild: true });
+            if (ok) toastr.success('语义索引已重建');
         } finally {
             btn.prop('disabled', false);
         }
@@ -4258,8 +4413,6 @@ jQuery(async () => {
             if (!settings) return;
             activateCharacter();
             reconcileWithChat(); // 重新生成/滑动后先回滚旧记忆，再按新内容总结
-            // 语义召回：每轮生成结束后基于本轮对话做语义召回，为下一轮准备（与酒馆向量化索引同节奏）
-            runSemanticRecallInjection();
             if (!settings.memoryEnabled) return;
             if (!hasUnsummarizedChat()) return; // 没有新对话（重新进入聊天等触发的生成结束事件）不计轮、不总结
             settings.roundsSinceSummary = (settings.roundsSinceSummary || 0) + 1;
@@ -4269,6 +4422,13 @@ jQuery(async () => {
                 summarizeLastRound();
             }
         }, 200);
+    });
+    // 语义召回：在每次生成组装提示词之前执行（酒馆会等这个事件的处理函数跑完），用的是这一轮刚发出的消息
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, async (type, params, dryRun) => {
+        if (dryRun || type === 'quiet') return;
+        if (!settings || !settings.semanticRecall || !settings.semanticRecall.enabled) return;
+        activateCharacter();
+        await runSemanticRecallInjection(type);
     });
     // 消息被删除 / 滑动换版本：对应的记忆立刻回滚（重新生成时酒馆也会先发删除事件）
     const onMessageChanged = () => setTimeout(() => { if (settings) { activateCharacter(); reconcileWithChat(); } }, 100);
@@ -4280,7 +4440,6 @@ jQuery(async () => {
         setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
         setTimeout(() => {
             activateCharacter();
-            runSemanticRecallInjection();
             updatePromptInjection();
             applyCensorAll();
             renderMemories();
