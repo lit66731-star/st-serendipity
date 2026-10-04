@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.5'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.6'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -4908,30 +4908,118 @@ function togglePanel(force) {
 }
 
 // ---------------- 对外只读接口（供第三方插件如 Amor 导演台读取剧情上下文） ----------------
-window.Serendipity = window.Serendipity || {};
-window.Serendipity.getDirectorContext = function () {
-    if (!settings) return '';
-    const parts = [];
+// 无参数调用 → 返回一整段纯文本（旧用法，行为不变）。
+// 传入 { purpose, tokenBudget, include } → 返回结构化对象：
+//   { schema, revision, tokenBudget, estimatedTokens, truncated, sections: { storyTime, ... }, text }
+// 各段按优先级依次占预算，预算不够时低优先级的段被截短或丢弃；revision 随事实内容变化，用于判断「有没有更新」。
+const DIRECTOR_SECTIONS = ['storyTime', 'recentMemory', 'timeline', 'characters', 'relationships', 'worldState', 'foreshadows', 'consistency'];
+const DIRECTOR_SECTION_TITLES = {
+    storyTime: '剧情时间',
+    recentMemory: '近期记忆',
+    timeline: '时间线（最近）',
+    characters: '人物档案',
+    relationships: '关系',
+    worldState: '世界状态',
+    foreshadows: '未完成伏笔',
+    consistency: '待处理的一致性问题',
+};
+const DIRECTOR_DEFAULT_BUDGET = 2500;
+const estimateTokens = (t) => Math.ceil(String(t || '').length / 1.5); // 中文偏保守的粗估
+
+function buildDirectorSections() {
+    const out = {};
     const timeLine = settings.storyDay != null
         ? '第' + settings.storyDay + '天' + (settings.storyTime ? ' · ' + settings.storyTime : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '')
         : '';
-    if (timeLine) parts.push('剧情时间：' + timeLine);
-    const tl = (settings.timeline || []).slice(-10).map(t =>
-        '第' + (t.day != null ? t.day : '?') + '天' + (t.location ? ' ' + t.location : '') + '：' + (t.event || '')
-    ).join('\n');
-    if (tl) parts.push('时间线（最近）：\n' + tl);
-    if ((settings.entities || []).length) parts.push('人物档案：\n' + npcText());
-    if ((settings.relationshipLines || []).length) parts.push('关系：\n' + relationshipCurrentText());
-    const world = (settings.worldState || []).length ? worldStateLines(worldStateByCat()) : '';
-    if (world) parts.push('世界状态：\n' + world);
-    const openFores = (settings.foreshadows || []).filter(f => f && f.status !== '已回收' && f.title && f.title.trim()).slice(-5);
-    if (openFores.length) parts.push('未完成伏笔：' + openFores.map(f => '[' + f.status + '] ' + f.title).join('；'));
+    if (timeLine) out.storyTime = timeLine;
     const mems = [
         ...(settings.longMemories || []).slice(-3).map(m => '（长期）' + m.text),
         ...(settings.memories || []).slice(-3).map(m => m.text),
-    ];
-    if (mems.length) parts.push('近期记忆：\n' + mems.join('\n'));
-    return parts.join('\n\n');
+    ].filter(Boolean);
+    if (mems.length) out.recentMemory = mems.join('\n');
+    const tl = (settings.timeline || []).slice(-10).map(t =>
+        '第' + (t.day != null ? t.day : '?') + '天' + (t.location ? ' ' + t.location : '') + '：' + (t.event || '')
+    ).join('\n');
+    if (tl) out.timeline = tl;
+    if ((settings.entities || []).length) out.characters = npcText();
+    if ((settings.relationshipLines || []).length) out.relationships = relationshipCurrentText();
+    const world = (settings.worldState || []).length ? worldStateLines(worldStateByCat()) : '';
+    if (world) out.worldState = world;
+    const openFores = (settings.foreshadows || []).filter(f => f && f.status !== '已回收' && f.title && f.title.trim()).slice(-5);
+    if (openFores.length) out.foreshadows = openFores.map(f => '[' + f.status + '] ' + f.title).join('；');
+    const checks = (settings.checks || []).filter(c => c && c.text && c.text.trim());
+    if (checks.length) out.consistency = checks.slice(0, 5).map(c => '- ' + (CHECK_TYPE_LABELS[c.type] || '其他') + '：' + c.text).join('\n');
+    return out;
+}
+
+// 超出预算时按行截断（保留靠前的行）；一行都放不下则整段丢弃
+function fitToBudget(text, tokens) {
+    if (estimateTokens(text) <= tokens) return text;
+    const lines = text.split('\n');
+    const kept = [];
+    let used = 0;
+    for (const ln of lines) {
+        const t = estimateTokens(ln + '\n');
+        if (used + t > tokens) break;
+        kept.push(ln);
+        used += t;
+    }
+    return kept.join('\n');
+}
+
+window.Serendipity = window.Serendipity || {};
+window.Serendipity.getDirectorContext = function (opts) {
+    if (!settings) return (opts && typeof opts === 'object') ? null : '';
+    const all = buildDirectorSections();
+
+    // 旧用法：无参数，整段文本，不裁剪（顺序与格式保持不变）
+    if (!opts || typeof opts !== 'object') {
+        const legacy = [
+            ['storyTime', '剧情时间：', ''],
+            ['timeline', '时间线（最近）：\n', ''],
+            ['characters', '人物档案：\n', ''],
+            ['relationships', '关系：\n', ''],
+            ['worldState', '世界状态：\n', ''],
+            ['foreshadows', '未完成伏笔：', ''],
+            ['recentMemory', '近期记忆：\n', ''],
+        ];
+        return legacy.filter(([k]) => all[k]).map(([k, head]) => head + all[k]).join('\n\n');
+    }
+
+    const include = Array.isArray(opts.include) && opts.include.length
+        ? DIRECTOR_SECTIONS.filter(k => opts.include.includes(k))
+        : DIRECTOR_SECTIONS.filter(k => k !== 'consistency');
+    const budget = Math.max(200, parseInt(opts.tokenBudget, 10) || DIRECTOR_DEFAULT_BUDGET);
+    let remaining = budget;
+    let truncated = false;
+    const sections = {};
+    const textParts = [];
+    for (const k of include) {
+        const raw = all[k];
+        if (!raw) continue;
+        const title = DIRECTOR_SECTION_TITLES[k];
+        const head = title + '：\n';
+        const room = remaining - estimateTokens(head);
+        if (room <= 0) { truncated = true; continue; }
+        const fitted = fitToBudget(raw, room);
+        if (!fitted) { truncated = true; continue; }
+        if (fitted.length < raw.length) truncated = true;
+        sections[k] = fitted;
+        textParts.push(head + fitted);
+        remaining -= estimateTokens(head + fitted + '\n\n');
+    }
+    const text = textParts.join('\n\n');
+    return {
+        schema: 1,
+        purpose: typeof opts.purpose === 'string' ? opts.purpose : '',
+        // 事实内容变化时 revision 随之变化；调用方对比前后两次的值即可知道要不要重新读取
+        revision: String(getStringHash(JSON.stringify(all))),
+        tokenBudget: budget,
+        estimatedTokens: estimateTokens(text),
+        truncated,
+        sections,
+        text,
+    };
 };
 
 
