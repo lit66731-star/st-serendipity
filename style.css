@@ -388,7 +388,8 @@
 .st-sd__npc-world, .st-sd__npc-timeline, .st-sd__npc-identity,
 .st-sd__recall-input, .st-sd__recall-world,
 .st-sd__recall-threshold, .st-sd__recall-topk,
-.st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk {
+.st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk,
+.st-sd__recall-inject-budget, .st-sd__recall-world-search {
     border: 1px solid var(--sd-border-2);
     border-radius: var(--sd-r);
     height: 34px;
@@ -410,7 +411,8 @@
 .st-sd__npc-world:focus, .st-sd__npc-timeline:focus, .st-sd__npc-identity:focus,
 .st-sd__recall-input:focus, .st-sd__recall-world:focus,
 .st-sd__recall-threshold:focus, .st-sd__recall-topk:focus,
-.st-sd__recall-inject-topk:focus, .st-sd__recall-inject-threshold:focus, .st-sd__recall-inject-querytopk:focus {
+.st-sd__recall-inject-topk:focus, .st-sd__recall-inject-threshold:focus, .st-sd__recall-inject-querytopk:focus,
+.st-sd__recall-inject-budget:focus, .st-sd__recall-world-search:focus {
     border-color: var(--sd-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--sd-accent) 25%, transparent);
 }
@@ -480,9 +482,36 @@
 .st-sd__recall-search { display: flex; gap: 8px; margin-bottom: 12px; }
 .st-sd__recall-input { flex: 1; min-width: 0; }
 .st-sd__recall-run { flex: 0 0 auto; }
-.st-sd__recall-tune { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
-.st-sd__recall-tune-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--sd-text-2); }
-.st-sd__recall-threshold, .st-sd__recall-topk { width: 62px; flex: 0 0 auto; text-align: center; }
+.st-sd__recall-world-search { width: 100%; margin-bottom: 10px; }
+/* 调参：卡片内网格，名称在上、输入框居中、一行小字说明 */
+.st-sd__tune {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    padding: 12px;
+    margin-bottom: 12px;
+    border: 1px solid var(--sd-border);
+    border-radius: var(--sd-r-lg);
+    background: var(--sd-surface);
+}
+.st-sd__tune--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.st-sd__tune-cell { display: flex; flex-direction: column; gap: 5px; min-width: 0; margin: 0; }
+.st-sd__tune-name { font-size: 12px; color: var(--sd-text); font-weight: 500; }
+.st-sd__tune-cell input { width: 100%; text-align: center; }
+.st-sd__tune-sub { font-size: 10.5px; color: var(--sd-text-3); line-height: 1.4; }
+@media (max-width: 640px) { .st-sd__tune { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* 折叠说明：默认只露一个小小的「说明」，需要时再展开 */
+.st-sd__note { margin: 10px 0 6px; font-size: 11px; color: var(--sd-text-3); line-height: 1.7; }
+.st-sd__note > summary {
+    display: inline-flex; align-items: center; gap: 4px;
+    cursor: pointer; list-style: none; user-select: none;
+    color: var(--sd-text-3); font-size: 11px;
+}
+.st-sd__note > summary::-webkit-details-marker { display: none; }
+.st-sd__note > summary::before { content: '▸'; font-size: 9px; transition: transform 0.15s; }
+.st-sd__note[open] > summary::before { transform: rotate(90deg); }
+.st-sd__note > summary:hover { color: var(--sd-text-2); }
+.st-sd__note p { margin: 6px 0 0; padding-left: 13px; }
 .st-sd__recall-list {
     flex: 1;
     min-height: 0;
@@ -537,7 +566,6 @@
 .st-sd__recall-inject { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
 .st-sd__recall-inject .st-sd__switch { flex: 0 0 auto; margin-top: 1px; }
 .st-sd__recall-inject .st-sd__label { flex: 1; min-width: 0; line-height: 1.5; font-weight: 400; }
-.st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk { width: 62px; flex: 0 0 auto; text-align: center; }
 .st-sd__recall-rebuild-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .st-sd__recall-rebuild { flex: 0 0 auto; }
 .st-sd__recall-index-state { flex: 1; min-width: 0; font-size: 12px; color: var(--sd-text-2); line-height: 1.5; }

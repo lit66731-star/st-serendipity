@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.4'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.5'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2479,6 +2479,33 @@ function vectorsRequestBody(args = {}) {
     return body;
 }
 
+function recallScopeNames() {
+    const names = Array.isArray(world_names) ? [...world_names] : [];
+    const archived = settings.archivedWorldBook || settings.worldBook || '';
+    if (archived && !names.includes(archived)) names.unshift(archived);
+    return names;
+}
+
+// 预览范围下拉：可按搜索框过滤；已选中的范围即使不匹配也保留，避免搜索时悄悄换掉
+function renderRecallScope() {
+    const panel = $('#st-serendipity');
+    const worldSelect = panel.find('.st-sd__recall-world');
+    if (!worldSelect.length) return;
+    const prevScope = String(worldSelect.val() || '');
+    const names = recallScopeNames();
+    const query = String(panel.find('.st-sd__recall-world-search').val() || '').trim();
+    const hits = filterWorldNames(names, query);
+    const shown = hits.slice();
+    if (prevScope.startsWith('world:') && names.includes(prevScope.slice(6)) && !shown.includes(prevScope.slice(6))) shown.unshift(prevScope.slice(6));
+    let html = '<option value="own">Serendipity 当前聊天的索引（实际召回用的）</option>'
+        + shown.map(n => `<option value="world:${escapeHtml(n)}">世界书：${escapeHtml(n)}</option>`).join('');
+    if (query && !hits.length) html += '<option value="" disabled>没有匹配的世界书</option>';
+    worldSelect.html(html);
+    const keep = prevScope && worldSelect.find('option').filter(function () { return this.value === prevScope; }).length;
+    worldSelect.val(keep ? prevScope : 'own');
+    panel.find('.st-sd__recall-world-search').attr('title', query ? ('匹配 ' + hits.length + ' / ' + names.length + ' 本') : ('共 ' + names.length + ' 本世界书'));
+}
+
 function renderRecall() {
     const panel = $('#st-serendipity');
     const statusEl = panel.find('.st-sd__recall-status');
@@ -2508,14 +2535,7 @@ function renderRecall() {
     }
 
     // 预览范围：默认是 Serendipity 自己的索引；也可以选一本世界书看酒馆向量存储里的归档向量
-    const prevScope = String(worldSelect.val() || '');
-    const names = Array.isArray(world_names) ? [...world_names] : [];
-    const archived = settings.archivedWorldBook || settings.worldBook || '';
-    if (archived && !names.includes(archived)) names.unshift(archived);
-    worldSelect.html('<option value="own">Serendipity 当前聊天的索引（实际召回用的）</option>'
-        + names.map(n => `<option value="world:${escapeHtml(n)}">世界书：${escapeHtml(n)}</option>`).join(''));
-    const keep = prevScope && worldSelect.find('option').filter(function () { return this.value === prevScope; }).length;
-    worldSelect.val(keep ? prevScope : 'own');
+    renderRecallScope();
 
     // 注入正文控件回填（只在首次/切角色时覆盖，避免用户正在输入时被刷新打断）
     const sr = settings.semanticRecall || {};
@@ -4001,36 +4021,41 @@ function buildPanel() {
         <div class="st-sd__section-title">注入正文（自动语义召回）</div>
         <div class="st-sd__recall-inject">
           <label class="st-sd__switch"><input type="checkbox" class="st-sd__recall-inject-toggle"><span class="st-sd__switch-slider"></span></label>
-          <span class="st-sd__label">每次生成前，按当前对话语义自动召回 Serendipity 里最相关的记忆/时间线/人物/关系/伏笔/世界状态，注入正文</span>
+          <span class="st-sd__label">生成前自动召回相关资料，注入正文</span>
         </div>
-        <div class="st-sd__recall-tune">
-          <span class="st-sd__label">注入调参</span>
-          <label class="st-sd__recall-tune-item">召回条数 <input type="number" class="st-sd__recall-inject-topk" min="1" max="20" step="1" title="注入正文的条目条数上限（去重后）"></label>
-          <label class="st-sd__recall-tune-item">候选阈值 <input type="number" class="st-sd__recall-inject-threshold" min="0" max="1" step="0.05" title="向量查询的相似度阈值，越低召回越多（候选池越大越可能命中相关条目）"></label>
-          <label class="st-sd__recall-tune-item">字数预算 <input type="number" class="st-sd__recall-inject-budget" min="0" max="20000" step="100" title="每轮注入资料的总字数上限，0 = 不限。条数和字数先到哪个就停：条目都很长时少放几条，都很短时可以多放（条数上限仍是「召回条数」）"></label>
-          <label class="st-sd__recall-tune-item">候选条数 <input type="number" class="st-sd__recall-inject-querytopk" min="1" max="100" step="1" title="先取回这么多候选，再按重要性/时间/角色加权后挑最相关的几条"></label>
+        <div class="st-sd__tune">
+          <label class="st-sd__tune-cell"><span class="st-sd__tune-name">召回条数</span><input type="number" class="st-sd__recall-inject-topk" min="1" max="20" step="1"><span class="st-sd__tune-sub">最多注入几条</span></label>
+          <label class="st-sd__tune-cell"><span class="st-sd__tune-name">字数预算</span><input type="number" class="st-sd__recall-inject-budget" min="0" max="20000" step="100"><span class="st-sd__tune-sub">总字数上限，0 不限</span></label>
+          <label class="st-sd__tune-cell"><span class="st-sd__tune-name">候选阈值</span><input type="number" class="st-sd__recall-inject-threshold" min="0" max="1" step="0.05"><span class="st-sd__tune-sub">越低候选越多</span></label>
+          <label class="st-sd__tune-cell"><span class="st-sd__tune-name">候选条数</span><input type="number" class="st-sd__recall-inject-querytopk" min="1" max="100" step="1"><span class="st-sd__tune-sub">先取多少再加权挑选</span></label>
         </div>
         <div class="st-sd__recall-rebuild-row">
           <button type="button" class="st-sd__recall-rebuild">清空并重建</button>
           <span class="st-sd__recall-index-state"></span>
         </div>
-        <div class="st-sd__hint">把本角色当前的数据（记忆/长期记忆/时间线/人物/关系/未回收伏笔/世界状态）写进酒馆向量库的独立集合，数据变化后自动增量同步（只处理新增/改动的条目），每次生成前按最新消息语义召回。需要：酒馆「扩展 → 向量存储」里配好 embedding 源（WebLLM、KoboldCpp 不支持）。每个条目首次建索引会调用一次 embedding；用 API 源会产生用量，本地源（Transformers/Ollama 等）免费。换源/换模型后会自动在新模型下补建索引，旧模型的向量留在原处。</div>
+        <details class="st-sd__note"><summary>说明</summary>
+          <p>把本角色当前的数据（记忆/长期记忆/时间线/人物/关系/未回收伏笔/世界状态）写进酒馆向量库的独立集合，数据变化后自动增量同步（只处理新增/改动的条目），每次生成前按最新消息语义召回。</p>
+          <p>需要酒馆「扩展 → 向量存储」里配好 embedding 源（WebLLM、KoboldCpp 不支持）。每个条目首次建索引会调用一次 embedding：API 源会产生用量，本地源（Transformers/Ollama 等）免费。换源/换模型后会自动在新模型下补建索引，旧模型的向量留在原处。</p>
+        </details>
 
         <div class="st-sd__section-title">手动预览</div>
         <div class="st-sd__recall-world-row">
           <span class="st-sd__label">范围</span>
           <select class="st-sd__recall-world" title="默认查 Serendipity 自己的索引（和实际召回用的是同一份）；也可选一本世界书，查酒馆向量存储里归档的向量"></select>
         </div>
+        <input type="text" class="st-sd__recall-world-search" placeholder="搜索世界书（空格分隔多个关键词，回车选中第一个）" autocomplete="off">
         <div class="st-sd__recall-search">
           <input type="text" class="st-sd__recall-input" placeholder="输入一句话，看语义召回会带回哪几条，如「上次约定的地点」" autocomplete="off">
           <button type="button" class="st-sd__recall-run">语义搜索</button>
         </div>
-        <div class="st-sd__recall-tune">
-          <span class="st-sd__label">预览调参</span>
-          <label class="st-sd__recall-tune-item">阈值 <input type="number" class="st-sd__recall-threshold" min="0" max="1" step="0.05" title="相似度阈值：只显示分数≥此值的条目。没召回时把它调低（如 0）看向量库里到底有什么；只影响这里预览，不改实际召回"></label>
-          <label class="st-sd__recall-tune-item">条数 <input type="number" class="st-sd__recall-topk" min="1" max="20" step="1" title="最多显示几条（只影响这里预览，不改实际召回）"></label>
+        <div class="st-sd__tune st-sd__tune--2">
+          <label class="st-sd__tune-cell"><span class="st-sd__tune-name">阈值</span><input type="number" class="st-sd__recall-threshold" min="0" max="1" step="0.05"><span class="st-sd__tune-sub">没结果就调到 0</span></label>
+          <label class="st-sd__tune-cell"><span class="st-sd__tune-name">条数</span><input type="number" class="st-sd__recall-topk" min="1" max="20" step="1"><span class="st-sd__tune-sub">最多显示几条</span></label>
         </div>
-        <div class="st-sd__hint">默认查 Serendipity 自己的索引（和实际召回是同一个集合），按语义相似度从高到低列出；这里只看向量相似度，不含实际注入时的重要性/时间/人物加权和去重。已被删改但索引还没同步的条目会标灰。选一本世界书则改查酒馆向量存储里归档的向量，需要酒馆「世界书向量化」已启用且开过至少一轮生成。没结果时把「阈值」调低到 0 试试。</div>
+        <details class="st-sd__note"><summary>说明</summary>
+          <p>预览的调参只影响这里，不改实际召回。默认查 Serendipity 自己的索引（和实际召回是同一个集合），按语义相似度从高到低列出；只看向量相似度，不含实际注入时的重要性/时间/人物加权、关键词补充和去重。已被删改但索引还没同步的条目会标灰。</p>
+          <p>选一本世界书则改查酒馆向量存储里归档的向量，需要酒馆「世界书向量化」已启用且开过至少一轮生成。没结果时把「阈值」调低到 0 试试。</p>
+        </details>
         <div class="st-sd__recall-list"></div>
       </div>
 
@@ -4091,7 +4116,7 @@ function buildPanel() {
           <input type="text" class="st-sd__npc-note" placeholder="简介（可空，如「北境斥候队长」）">
           <button type="button" class="st-sd__npc-add">添加</button>
         </div>
-        <div class="st-sd__hint">身份域（世界·时间线·身份）用来区分同名角色：前世「沈昭·将军」与今生「沈昭·医生」是两个独立实体。身体/心理/目标/秘密/承诺是人物当前状态（总结时快照更新，其中目标/秘密/承诺会注入正文让 AI 牢记，身体/心理只在面板显示）。好感与关系在下方「关系」里按 A→B 配对维护，两者不重复。</div>
+        <details class="st-sd__note"><summary>说明</summary><p>身份域（世界·时间线·身份）用来区分同名角色：前世「沈昭·将军」与今生「沈昭·医生」是两个独立实体。身体/心理/目标/秘密/承诺是人物当前状态（总结时快照更新，其中目标/秘密/承诺会注入正文让 AI 牢记，身体/心理只在面板显示）。好感与关系在下方「关系」里按 A→B 配对维护，两者不重复。</p></details>
         <div class="st-sd__pending"></div>
         <div class="st-sd__npc-list"></div>
 
@@ -4102,7 +4127,7 @@ function buildPanel() {
           <input type="text" class="st-sd__rel-relation" placeholder="当前关系（如「暧昧」，可空）">
           <button type="button" class="st-sd__rel-add">建立关系线</button>
         </div>
-        <div class="st-sd__hint">关系回答「现在是什么」，情感线回答「怎么变成现在这样」。人物从下拉里选（可区分同名角色，如「沈昭（现代·医生）」与「沈昭（前世·将军）」）。总结发现关系变化时自动追加到轨迹（历史只追加、不覆盖），可手动补记、删除。</div>
+        <details class="st-sd__note"><summary>说明</summary><p>关系回答「现在是什么」，情感线回答「怎么变成现在这样」。人物从下拉里选（可区分同名角色，如「沈昭（现代·医生）」与「沈昭（前世·将军）」）。总结发现关系变化时自动追加到轨迹（历史只追加、不覆盖），可手动补记、删除。</p></details>
         <div class="st-sd__rel-list"></div>
 
         <div class="st-sd__section-title">物品 · 日程</div>
@@ -4113,7 +4138,7 @@ function buildPanel() {
           <input type="text" class="st-sd__world-input" placeholder="如：一把生锈的匕首 / 三天后在城门口见面">
           <button type="button" class="st-sd__world-add">添加</button>
         </div>
-        <div class="st-sd__hint">世界状态现在只放非人物信息（物品/日程），按类别分组，总结时自动快照更新。可手动添加/编辑/删除。</div>
+        <details class="st-sd__note"><summary>说明</summary><p>世界状态现在只放非人物信息（物品/日程），按类别分组，总结时自动快照更新。可手动添加/编辑/删除。</p></details>
         <div class="st-sd__world-list"></div>
       </div>
 
@@ -4256,6 +4281,16 @@ function bindPanelEvents() {
     panel.on('click', '.st-sd__inject-world', injectToWorldBook);
     // 搜索世界书：边输入边过滤下拉；回车选中第一个匹配项
     panel.on('input', '.st-sd__world-search', () => renderWorldSelect());
+    panel.on('input', '.st-sd__recall-world-search', () => renderRecallScope());
+    panel.on('keydown', '.st-sd__recall-world-search', function (e) {
+        if (e.key !== 'Enter') return;
+        const hit = filterWorldNames(recallScopeNames(), this.value)[0];
+        if (!hit) return;
+        this.value = '';
+        renderRecallScope();
+        panel.find('.st-sd__recall-world').val('world:' + hit);
+        toastr.success('预览范围已选「' + hit + '」');
+    });
     panel.on('keydown', '.st-sd__world-search', function (e) {
         if (e.key !== 'Enter') return;
         const hit = filterWorldNames(Array.isArray(world_names) ? world_names : [], this.value)[0];
