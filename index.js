@@ -18,7 +18,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.1.5'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.1.6'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -416,6 +416,7 @@ function normalizeCharSettings(cs) {
                 affection: typeof cur.affection === 'string' ? cur.affection : (cur.affection == null ? '' : String(cur.affection)),
                 relationship: typeof cur.relationship === 'string' ? cur.relationship : '',
                 attitude: typeof cur.attitude === 'string' ? cur.attitude : '',
+                score: (typeof cur.score === 'number' && isFinite(cur.score)) ? cur.score : null, // 好感累计值（总结只给增减量，这里累加）
             },
             history: (Array.isArray(e.history) ? e.history : []).filter(h => h && h.id).map(h => ({
                 id: h.id,
@@ -425,6 +426,7 @@ function normalizeCharSettings(cs) {
                 change: typeof h.change === 'string' ? h.change : '',
                 reason: typeof h.reason === 'string' ? h.reason : '',
                 event: typeof h.event === 'string' ? h.event : '',
+                affection: typeof h.affection === 'string' ? h.affection : '',
             })),
         };
     });
@@ -709,7 +711,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
         : '请根据本段内容提取当前世界状态（物品/日程），没有的类别写「无」。';
     // 关系线锚点：把当前已知关系线回传，让模型增量追加历史（没有新变化写「无」），不覆盖已有轨迹
     const relationshipAnchor = settings.relationshipLines.length
-        ? '当前已知的人物关系线（请在此基础上增量追加；本轮没有明确的关系变化就写「无」；发生冲突时追加新变化，不要改写已有历史）：\n' + relationshipCurrentText()
+        ? '当前已知的人物关系线（请在此基础上增量追加；本轮没有明确的关系变化就写「无」；发生冲突时追加新变化，不要改写已有历史；这里的好感是累计总值，【关系变化】里的好感变化只写本轮的增减量）：\n' + relationshipCurrentText()
         : '请关注本段剧情中人物之间关系、好感、态度或情绪是否发生明确变化；没有变化写「无」，不要为了填充而虚构变化。';
     return {
         systemPrompt: [
@@ -949,7 +951,21 @@ function applyRelationshipChange(ch) {
     if (!ch || !ch.a || !ch.b) return;
     const line = findRelationshipLine(nameToRef(ch.a), nameToRef(ch.b));
     if (ch.to) line.current.relationship = ch.to;
-    if (ch.affection) line.current.affection = ch.affection;
+    // 好感：总结给的是本轮增减量（如 +10 / -5），累加成总好感；写不成数字的文字描述则直接作为当前好感
+    if (ch.affection) {
+        const dm = String(ch.affection).replace(/[＋]/g, '+').replace(/[－−–]/g, '-').match(/^\s*([+-]?\d+)\s*(?:点|分)?\s*$/);
+        if (dm) {
+            if (line.current.score == null) {
+                const base = parseInt(String(line.current.affection).replace(/[＋]/g, '+').replace(/[－−–]/g, '-'), 10);
+                line.current.score = isNaN(base) ? 0 : base;
+            }
+            line.current.score = Math.max(-100, Math.min(100, line.current.score + parseInt(dm[1], 10)));
+            line.current.affection = (line.current.score > 0 ? '+' : '') + line.current.score;
+        } else {
+            line.current.affection = ch.affection;
+            line.current.score = null;
+        }
+    }
     if (ch.attitude) line.current.attitude = ch.attitude;
     line.history.push({
         id: uid(),
@@ -959,6 +975,7 @@ function applyRelationshipChange(ch) {
         change: ch.change,
         reason: ch.reason,
         event: ch.event,
+        affection: ch.affection || '',
     });
 }
 
@@ -2564,26 +2581,36 @@ function renderRelationship() {
         list.html('<div class="st-sd__empty">暂无关系线。总结时若发现人物关系变化会自动建立，或在上方手动建立。</div>');
         return;
     }
+    const affClass = v => {
+        const n = parseInt(String(v).replace(/[＋]/g, '+').replace(/[－−–]/g, '-'), 10);
+        return isNaN(n) || n === 0 ? '' : (n > 0 ? ' st-sd__rel-chip--pos' : ' st-sd__rel-chip--neg');
+    };
     let html = '';
     for (const l of settings.relationshipLines) {
         const hist = l.history.slice().sort((a, b) => (a.day == null ? 1 : 0) - (b.day == null ? 1 : 0) || (a.day || 0) - (b.day || 0));
         html += '<div class="st-sd__rel-item" data-id="' + l.id + '">';
         html += '<div class="st-sd__rel-head">'
             + '<span class="st-sd__rel-pair">' + escapeHtml(resolveEntityRef(l.a).display) + ' <span class="st-sd__rel-arrow">→</span> ' + escapeHtml(resolveEntityRef(l.b).display) + '</span>'
-            + '<span class="st-sd__rel-current">' + escapeHtml(l.current.relationship || '未知')
-                + (l.current.affection ? ' · 好感 ' + escapeHtml(l.current.affection) : '')
-                + (l.current.attitude ? ' · ' + escapeHtml(l.current.attitude) : '') + '</span>'
-            + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__rel-del" data-id="' + l.id + '">删除</button></span>'
+            + '<button type="button" class="st-sd__rel-del" data-id="' + l.id + '">删除</button>'
+            + '</div>';
+        html += '<div class="st-sd__rel-chips">'
+            + '<span class="st-sd__rel-chip"><em>关系</em>' + escapeHtml(l.current.relationship || '未知') + '</span>'
+            + (l.current.affection ? '<span class="st-sd__rel-chip' + affClass(l.current.affection) + '"><em>好感</em>' + escapeHtml(l.current.affection) + '</span>' : '')
+            + (l.current.attitude ? '<span class="st-sd__rel-chip"><em>态度</em>' + escapeHtml(l.current.attitude) + '</span>' : '')
             + '</div>';
         if (hist.length) {
             html += '<div class="st-sd__rel-hist">';
             for (const h of hist) {
                 const day = h.day != null ? '第' + h.day + '天' : '—';
+                const reason = h.reason + (h.event ? (h.reason ? ' · ' : '') + '「' + h.event + '」' : '');
                 html += '<div class="st-sd__rel-row">'
+                    + '<div class="st-sd__rel-row-top">'
                     + '<span class="st-sd__rel-day">' + day + '</span>'
                     + '<span class="st-sd__rel-to">' + escapeHtml(h.to || h.change || '变化') + '</span>'
-                    + '<span class="st-sd__rel-reason">' + escapeHtml(h.reason + (h.event ? (h.reason ? ' · ' : '') + '「' + h.event + '」' : '')) + '</span>'
-                    + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__rel-row-del" data-id="' + h.id + '">删除</button></span>'
+                    + (h.affection ? '<span class="st-sd__rel-delta' + affClass(h.affection) + '">' + escapeHtml(h.affection) + '</span>' : '')
+                    + '<button type="button" class="st-sd__rel-row-del" data-id="' + h.id + '">删除</button>'
+                    + '</div>'
+                    + (reason ? '<div class="st-sd__rel-reason">' + escapeHtml(reason) + '</div>' : '')
                     + '</div>';
             }
             html += '</div>';
