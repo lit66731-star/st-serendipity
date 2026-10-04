@@ -18,7 +18,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.1.6'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.2.0'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -344,6 +344,8 @@ function freshCharSettings() {
         relationshipLines: [],  // 情感线/关系轨迹 [{ id, a, b, current:{affection,relationship,attitude}, history:[{id,day,from,to,change,reason,event}] }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
+        timeFixLog: [],         // 时间数据修复记录 [{ time, text }]（只记录对结构化时间数据做过的修正，不改模型生成的文本）
+        autoFixTime: false,     // 每轮总结后是否自动修复时间数据（默认关：只检测提醒）
         summaryJournal: [],     // 总结回滚日志 [{ idx, sig, snap }]：每次总结前的状态快照，用户重新生成/滑动/删除对应消息时据此回滚
         foreshadows: [],        // 伏笔/未完成事项 [{ id, title, status, note, day }]
         injectForeshadows: false, // 是否把未完成伏笔注入正文提醒模型（默认关，以本地管理为主）
@@ -365,7 +367,7 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows', 'summaryJournal']) {
+    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows', 'summaryJournal', 'timeFixLog']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
     // 记忆重要度：非 S/A/B 一律归为 ''（未评级，注入时按 B 处理）
@@ -392,7 +394,10 @@ function normalizeCharSettings(cs) {
         time: typeof e.time === 'string' ? e.time : '',
         location: typeof e.location === 'string' ? e.location : '',
         event: typeof e.event === 'string' ? e.event : '',
+        period: typeof e.period === 'string' ? e.period : '',
+        origDay: (e.origDay == null || isNaN(e.origDay)) ? null : Number(e.origDay), // 被自动修复前的原始天数
     }));
+    cs.timeFixLog = cs.timeFixLog.filter(e => e && typeof e.text === 'string').slice(-30);
     cs.checks = cs.checks.filter(e => e && e.id && typeof e.text === 'string' && e.text.trim()).map(e => ({
         id: e.id,
         type: ['time', 'state', 'other'].includes(e.type) ? e.type : 'other',
@@ -477,6 +482,7 @@ function normalizeCharSettings(cs) {
     }
     if (cs.injectForeshadows === undefined) cs.injectForeshadows = false;
     if (cs.injectChecks === undefined) cs.injectChecks = true;
+    if (cs.autoFixTime === undefined) cs.autoFixTime = false;
     if (cs.autoRegisterEntities === undefined) cs.autoRegisterEntities = true;
     // 待确认同名角色归属：规范化 + 清理失效项（候选实体已删光、或姓名空的丢弃）
     if (!Array.isArray(cs.pendingEntityAssignments)) cs.pendingEntityAssignments = [];
@@ -759,7 +765,27 @@ function extractStoryTime(text) {
     return '';
 }
 
-// 从总结结果里解析【时间轴】行 → { day, period, location, event }（解析不出返回 null）
+// 「第X天」里的 X：支持阿拉伯数字 / 全角数字 / 中文数字（三、十二、二十三、一百零五）；解析不出返回 null
+function parseDayNumber(str) {
+    let t = String(str == null ? '' : str).trim().replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    if (!t) return null;
+    if (/^\d+$/.test(t)) { const n = parseInt(t, 10); return n <= 36500 ? n : null; }
+    const D = { '零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+    if (!/^[零〇一二两三四五六七八九十百]+$/.test(t)) return null;
+    let total = 0, cur = 0;
+    for (const ch of t) {
+        if (ch in D) cur = D[ch];
+        else if (ch === '十') { total += (cur || 1) * 10; cur = 0; }
+        else if (ch === '百') { total += (cur || 1) * 100; cur = 0; }
+    }
+    total += cur;
+    return total <= 36500 ? total : null;
+}
+
+// 事件描述是不是「回忆/追述」而不是现在发生的场景
+const RECOLLECTION_RE = /回忆|回想|想起|忆起|忆及|追忆|闪回|梦见|梦到|梦境/;
+
+// 从总结结果里解析【时间轴】行 → { day, period, location, event, recollection, raw }（解析不出返回 null）
 // 时间轴格式已改为「第X天|地点|重要事情」三段；旧版「第X天|时段|地点|重要事情」四段也兼容解析。
 function extractTimeAxis(text) {
     const m = String(text).match(/【时间轴】\s*([^\n]+)/);
@@ -767,8 +793,8 @@ function extractTimeAxis(text) {
     const raw = m[1].trim();
     if (!raw || raw === '无') return null;
     const parts = raw.split(/[|｜]/).map(s => s.trim()).filter(Boolean);
-    const dayM = parts[0] && parts[0].match(/第\s*(\d+)\s*天/);
-    const day = dayM ? parseInt(dayM[1], 10) : null;
+    const dayM = parts[0] && (parts[0].match(/第\s*([0-9０-９零〇一二两三四五六七八九十百]+)\s*天/) || parts[0].match(/\bDay\s*(\d+)/i));
+    const day = dayM ? parseDayNumber(dayM[1]) : null;
     let period = '';
     let location = '';
     let event = '';
@@ -782,15 +808,31 @@ function extractTimeAxis(text) {
         event = (parts[2] && parts[2] !== '无') ? parts[2] : '';
     }
     if (day == null && !location && !event) return null;
-    return { day, period, location, event, raw };
+    return { day, period, location, event, recollection: RECOLLECTION_RE.test(event), raw };
 }
 
-// 时间线列表：叠加新场景（第X天/年月日几时几分/地点/重要事情）；连续完全重复的场景不重复叠加
-function pushTimelineEntry(day, time, location, event) {
-    if (day == null && !time && !location && !event) return;
-    const last = settings.timeline[settings.timeline.length - 1];
-    if (last && last.day === day && last.time === time && last.location === location && last.event === event) return;
-    settings.timeline.push({ id: uid(), day, time, location, event });
+// 判断新进度天数相对当前天数的走向：backward=倒退 / jump=一次跳过太多天 / ok
+function checkTimeAdvance(day) {
+    const prev = settings.storyDay;
+    if (day == null || prev == null) return { kind: 'ok', prev };
+    if (day < prev) return { kind: 'backward', prev };
+    if (day - prev > TIMELINE_JUMP_WARN) return { kind: 'jump', prev };
+    return { kind: 'ok', prev };
+}
+
+// 时间线列表：叠加新场景（第X天/年月日几时几分/地点/重要事情）
+// 去重：同一天里描述相同的事件只记一次（不只比对最后一条，避免重新总结/回滚重做后出现重复）；返回新增的条目，重复返回 null
+function pushTimelineEntry(day, time, location, event, period) {
+    if (day == null && !time && !location && !event) return null;
+    const norm = t => String(t || '').replace(/\s+/g, '');
+    const ev = norm(event);
+    const dup = settings.timeline.some(e => e.day === day && (ev
+        ? norm(e.event) === ev
+        : (e.time === time && e.location === location && !e.event)));
+    if (dup) return null;
+    const entry = { id: uid(), day, time, location, event, period: period || '', origDay: null };
+    settings.timeline.push(entry);
+    return entry;
 }
 
 // 把世界状态按类别分组（供注入与展示复用）
@@ -1134,6 +1176,24 @@ function localConsistencyCheck() {
             if (!seen.has(text)) { seen.add(text); items.push({ type: 'time', text }); }
         }
     }
+    // 最新一条 AI 回复里的相对时间（昨天/前天/N天前）→ 换算成第几天 → 对照时间轴有没有那天的记录
+    const lastMsg = Array.isArray(chat) ? chat[chat.length - 1] : null;
+    if (lastMsg && !lastMsg.is_user && !lastMsg.is_system && typeof lastMsg.mes === 'string' && settings.timeline.length) {
+        const firstDay = Math.min(...settings.timeline.filter(e => e.day != null).map(e => e.day), cur);
+        for (const r of parseRelativeDayRefs(lastMsg.mes)) {
+            const target = cur + r.offset;
+            if (target < 0 || target < firstDay) {
+                const text = '文中提到「' + r.word + '」（对应第' + target + '天），早于时间轴记录的起点（第' + firstDay + '天），请确认';
+                if (!seen.has(text)) { seen.add(text); items.push({ type: 'time', text }); }
+                continue;
+            }
+            const { facts, memCount } = dayFacts(target);
+            if (!facts.length && !memCount) {
+                const text = '文中提到「' + r.word + '」（对应第' + target + '天），但时间轴和记忆里没有那天的记录，请确认是否真有此事';
+                if (!seen.has(text)) { seen.add(text); items.push({ type: 'time', text }); }
+            }
+        }
+    }
     for (const arr of [settings.memories, settings.longMemories]) {
         for (const m of arr) {
             if (m.storyDay != null && m.storyDay > cur) {
@@ -1143,6 +1203,68 @@ function localConsistencyCheck() {
         }
     }
     return items;
+}
+
+// ---------------- 时间数据修复（只修结构化时间数据，绝不改写模型生成的文本；每次修正都留记录） ----------------
+function logTimeFix(text) {
+    settings.timeFixLog.push({ time: Date.now(), text });
+    if (settings.timeFixLog.length > 30) settings.timeFixLog.splice(0, settings.timeFixLog.length - 30);
+}
+
+// 修复规则：① 同一天里重复的时间线事件只留一条；② 超过当前天数的时间线/记忆天数压回当前天数（保留原始值）；
+// ③ 记忆缺天数时，按剧情时间和时间线对上号补回。返回修复条数
+function repairTimeData() {
+    const cur = settings.storyDay;
+    let n = 0;
+    const norm = t => String(t || '').replace(/\s+/g, '');
+    const keys = new Set();
+    const kept = [];
+    for (const e of settings.timeline) {
+        const k = e.day + '|' + (norm(e.event) || (e.time + '|' + e.location));
+        if (keys.has(k)) { n++; logTimeFix('删除重复的时间线条目：' + (e.day != null ? '第' + e.day + '天 ' : '') + (e.event || e.time || e.location)); continue; }
+        keys.add(k);
+        kept.push(e);
+    }
+    settings.timeline = kept;
+    if (cur != null) {
+        for (const e of settings.timeline) {
+            if (e.day != null && e.day > cur) {
+                logTimeFix('时间线条目「' + (e.event || e.time || '') + '」从第' + e.day + '天压回当前第' + cur + '天');
+                e.origDay = e.day; e.day = cur; n++;
+            }
+        }
+        for (const arr of [settings.memories, settings.longMemories]) {
+            for (const m of arr) {
+                if (m.storyDay != null && m.storyDay > cur) {
+                    logTimeFix('一条记忆的天数从第' + m.storyDay + '天压回当前第' + cur + '天');
+                    m.storyDay = cur; if (m.dayTo != null && m.dayTo > cur) m.dayTo = cur; if (m.dayFrom != null && m.dayFrom > cur) m.dayFrom = cur; n++;
+                }
+            }
+        }
+    }
+    for (const arr of [settings.memories, settings.longMemories]) {
+        for (const m of arr) {
+            if (m.storyDay != null || !m.storyTime) continue;
+            const hit = settings.timeline.find(e => e.day != null && e.time === m.storyTime);
+            if (hit) { m.storyDay = hit.day; logTimeFix('按剧情时间「' + m.storyTime + '」给一条记忆补上第' + hit.day + '天'); n++; }
+        }
+    }
+    return n;
+}
+
+function runTimeRepair(manual) {
+    const n = repairTimeData();
+    if (n) {
+        saveSettings();
+        refreshLocalChecks();
+        updatePromptInjection();
+        renderMemories();
+        renderTimeAxis();
+        if (manual) toastr.success('已修复 ' + n + ' 处时间数据（详情见控制台 / 修复记录）');
+    } else if (manual) {
+        toastr.info('时间数据没有发现需要修复的地方');
+    }
+    return n;
 }
 
 // 解析模型一致性检查输出 → [{ type, text }]
@@ -1244,6 +1366,19 @@ function findMemory(id) {
     return null;
 }
 
+// 记忆覆盖的天数范围 [起, 止]：短期记忆是单个时刻（起=止），长期记忆是合并来的区间
+function memDayRange(m) {
+    if (!m) return [null, null];
+    const to = (m.dayTo != null) ? m.dayTo : (m.storyDay != null ? m.storyDay : null);
+    const from = (m.dayFrom != null) ? m.dayFrom : to;
+    return [from, to];
+}
+function memDayLabel(m) {
+    const [f, t] = memDayRange(m);
+    if (f == null && t == null) return '';
+    return (f != null && t != null && f !== t) ? '第' + f + '–' + t + '天' : '第' + (t != null ? t : f) + '天';
+}
+
 // 记忆晋级：短期满 10 → 合并入长期并清空短期（长期不再自动晋级，满 10 时提醒归档到世界书）
 // 返回本次是否触发了晋级，供总结弹窗提示
 function promoteMemories() {
@@ -1256,7 +1391,7 @@ function promoteMemories() {
         // 合并条目：只有当这一批短期记忆全部挂靠同一个角色时才带上该关联，混合多角色则留空（归「剧情整体」）
         const refs = [...new Set(settings.memories.map(m => m.entityRef || '').filter(Boolean))];
         const entityRef = refs.length === 1 ? refs[0] : '';
-        settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, importance: imp, entityRef: entityRef, text: mergeEntries(settings.memories) });
+        settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, dayFrom: memDayRange(settings.memories[0])[0], dayTo: memDayRange(last)[1], storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, importance: imp, entityRef: entityRef, text: mergeEntries(settings.memories) });
         settings.memories = [];
         saveSettings();
         toLong = true;
@@ -1361,13 +1496,15 @@ async function summarizeLastRound() {
             // 解析结构化时间轴（第X天/地点/重要事情），解析失败则沿用上一次，保证时间轴不倒退
             const axis = extractTimeAxis(result);
             // 写入保护：天数比当前小 = 模型把「回忆过去」写成了当前进度，不回退时间轴、不记成当前条目
-            const prevDay = settings.storyDay;
-            const backward = !!axis && axis.day != null && prevDay != null && axis.day < prevDay;
+            const adv = axis ? checkTimeAdvance(axis.day) : { kind: 'ok' };
+            const backward = adv.kind === 'backward';
+            // 回忆类事件：只是在追述过去，不是现在发生的场景，不记成当前日期的时间线条目
+            const recollection = !!axis && axis.recollection && !backward;
             if (backward) {
                 newStoryTime = settings.storyTime;
-                toastr.warning('总结把当前进度写成了第' + axis.day + '天（当前第' + prevDay + '天），疑似只是回忆过去，已保持时间轴不变', undefined, { timeOut: 8000 });
-            } else if (axis && axis.day != null && prevDay != null && axis.day - prevDay > TIMELINE_JUMP_WARN) {
-                toastr.warning('时间轴从第' + prevDay + '天一次跳到第' + axis.day + '天，请确认剧情是否真的过了这么久', undefined, { timeOut: 8000 });
+                toastr.warning('总结把当前进度写成了第' + axis.day + '天（当前第' + adv.prev + '天），疑似只是回忆过去，已保持时间轴不变', undefined, { timeOut: 8000 });
+            } else if (adv.kind === 'jump') {
+                toastr.warning('时间轴从第' + adv.prev + '天一次跳到第' + axis.day + '天，请确认剧情是否真的过了这么久', undefined, { timeOut: 8000 });
             }
             settings.storyTime = newStoryTime;
             if (axis && !backward) {
@@ -1375,7 +1512,8 @@ async function summarizeLastRound() {
                 if (axis.period) settings.storyPeriod = axis.period;
                 if (axis.location) settings.storyLocation = axis.location;
                 // 时间轴列表：叠加本段场景（第X天/年月日几时几分/地点/重要事情）；时间取【时间】里的具体时间
-                pushTimelineEntry(axis.day, newStoryTime, axis.location, axis.event);
+                if (recollection) logTimeFix('时间轴事件「' + axis.event + '」看起来是回忆，没有记成第' + settings.storyDay + '天的当前场景');
+                else pushTimelineEntry(axis.day, newStoryTime, axis.location, axis.event, axis.period);
             }
             // 世界状态：解析并按类别快照合并（「无」保留、「空」清空、有新内容替换）
             applyWorldState(extractWorldState(result));
@@ -1393,6 +1531,7 @@ async function summarizeLastRound() {
             settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
             settings.lastSummaryIndex = chat.length - 1; // 记录已总结到的消息下标，下次只总结新增部分
             const promoted = promoteMemories();
+            if (settings.autoFixTime) repairTimeData();
             saveSettings();
             refreshLocalChecks(); // 先重算本地时间冲突，再注入正文，保证本轮就提醒模型
             updatePromptInjection();
@@ -1631,17 +1770,19 @@ function memoryKeywords(m) {
 
 // 条目内容 = 原文 + 时间前缀，召回后模型能知道这是哪天的事
 function memoryEntryContent(m) {
-    const day = m.storyDay != null ? ('第' + m.storyDay + '天') : '';
+    const day = memDayLabel(m);
     const time = m.storyTime || '';
-    const when = (day || time) ? (day + (time ? ' · ' + time : '')) : '';
-    return (when ? when + '：' : '') + m.text;
+    const when = [day, time, m.storyLocation || ''].filter(Boolean).join(' · ');
+    if (!when) return m.text;
+    return '【历史记录 · ' + when + '】（以下事件发生在这个时间，属于过去，不是当前正在发生；除非剧情明确说再次发生）\n' + m.text;
 }
 
 // 条目标题：重要度 + 短摘要，便于在世界书里一眼辨认
 function memoryEntryComment(m) {
     const snippet = String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, 30);
     const imp = (m.importance === 'S' || m.importance === 'A') ? ('[' + m.importance + '] ') : '';
-    return '[Serendipity] ' + imp + snippet;
+    const d = memDayLabel(m);
+    return '[Serendipity] ' + imp + (d ? d + ' ' : '') + snippet;
 }
 
 // 把长期记忆归档到用户选择的世界书：每条长期记忆单独写成一条带关键词的条目，
@@ -2131,14 +2272,81 @@ function recallItem(type, id, text, importance, day, entityRef, extra) {
         body: x.body != null ? String(x.body) : text,
         time: x.time || '',
         location: x.location || '',
+        dayLabel: x.dayLabel || '',
     };
+}
+
+// ---------------- 相对时间 → 时间轴（语义负责找「发生过什么」，时间轴负责决定「什么时候发生」） ----------------
+// 从文本里找出相对时间词并换算成相对今天的天数偏移（只处理能精确到「天」的：昨天/昨晚/前天/大前天/N天前）；
+// 以前/之前/那时候这类模糊说法不处理（只需要事件存在，不查日期）
+function parseRelativeDayRefs(text) {
+    const t = String(text || '');
+    const refs = [];
+    const seen = new Set();
+    const add = (word, offset) => { if (!seen.has(word)) { seen.add(word); refs.push({ word, offset }); } };
+    let rest = t;
+    for (const m of t.matchAll(/大前天/g)) add(m[0], -3);
+    rest = rest.replace(/大前天/g, '');
+    for (const m of rest.matchAll(/前天|前晚|前夜/g)) add(m[0], -2);
+    for (const m of rest.matchAll(/昨天|昨日|昨晚|昨夜|昨早|昨晨/g)) add(m[0], -1);
+    for (const m of rest.matchAll(/([0-9０-９一二两三四五六七八九十]+)\s*天(?:之)?前/g)) {
+        const n = parseDayNumber(m[1]);
+        if (n != null && n >= 1 && n <= 60) add(m[0].replace(/\s+/g, ''), -n);
+    }
+    return refs;
+}
+
+// 某一天在时间轴/记忆里的已知事实（时间线事件为主）
+function dayFacts(day) {
+    const facts = [];
+    for (const e of settings.timeline) {
+        if (e.day !== day) continue;
+        const bits = [e.time, e.location, e.event].filter(Boolean).join(' · ');
+        if (bits) facts.push(bits);
+    }
+    let memCount = 0;
+    for (const arr of [settings.memories, settings.longMemories]) {
+        for (const m of arr) {
+            const [f, t] = memDayRange(m);
+            if (f != null && t != null && day >= f && day <= t) memCount++;
+        }
+    }
+    return { facts, memCount };
+}
+
+// 把对话里的相对时间换算成第几天，并附上时间轴里该天的记录：返回 { text, days }（没有相对时间返回 null）
+function buildRelativeTimeBridge(queryText) {
+    const cur = settings.storyDay;
+    if (cur == null) return null;
+    const lines = [];
+    const days = new Set();
+    const seenDay = new Set();
+    const refs = parseRelativeDayRefs(queryText).map(r => ({ word: r.word, day: cur + r.offset }));
+    for (const m of String(queryText || '').matchAll(/第\s*([0-9０-９零〇一二两三四五六七八九十百]+)\s*天/g)) {
+        const d = parseDayNumber(m[1]);
+        if (d != null && d !== cur) refs.push({ word: m[0].replace(/\s+/g, ''), day: d });
+    }
+    for (const r of refs) {
+        if (r.day === cur || seenDay.has(r.word)) continue;
+        seenDay.add(r.word);
+        if (r.day < 0) { lines.push('- 「' + r.word + '」会早于故事开始，当前才第' + cur + '天，不要据此编造事件。'); continue; }
+        if (r.day > cur) { lines.push('- 「' + r.word + '」指向第' + r.day + '天，但当前才第' + cur + '天，那是还没发生的未来。'); continue; }
+        days.add(r.day);
+        const { facts, memCount } = dayFacts(r.day);
+        if (facts.length) lines.push('- 「' + r.word + '」= 第' + r.day + '天。时间线记录：' + facts.slice(0, 3).join('；'));
+        else if (memCount) lines.push('- 「' + r.word + '」= 第' + r.day + '天。时间线没有具体事件，但那天有 ' + memCount + ' 段记忆，以资料里标注为第' + r.day + '天的内容为准。');
+        else lines.push('- 「' + r.word + '」= 第' + r.day + '天。时间轴和记忆里没有那天的记录，不要编造那天发生了什么具体事件。');
+    }
+    if (!lines.length) return null;
+    return { text: '时间对照（对话里出现了相对时间，已按当前第' + cur + '天换算，以此为准）：\n' + lines.join('\n'), days };
 }
 
 // 历史事实标签：【第N天 · 具体时间 · 地点】；没有发生时间的（人物/关系/世界状态）标为当前状态快照
 function recallTimeLabel(it) {
     if (it.day == null && !it.time) return '【当前状态】';
     const parts = [];
-    if (it.day != null) parts.push('第' + it.day + '天');
+    if (it.dayLabel) parts.push(it.dayLabel);
+    else if (it.day != null) parts.push('第' + it.day + '天');
     if (it.time) parts.push(it.time);
     if (it.location) parts.push(it.location);
     return '【' + parts.join(' · ') + '】';
@@ -2153,7 +2361,7 @@ function buildRecallItems() {
         const when = (day || time) ? (day + (time ? ' · ' + time : '') + '：') : '';
         return '[' + tier + '] ' + when + m.text;
     };
-    const memExtra = (m, tag) => ({ tag, body: m.text, time: m.storyTime || '', location: m.storyLocation || '' });
+    const memExtra = (m, tag) => ({ tag, body: m.text, time: m.storyTime || '', location: m.storyLocation || '', dayLabel: memDayLabel(m) });
     for (const m of settings.memories) if (m && m.text) items.push(recallItem('memory', m.id, memText(m, '短期记忆'), m.importance, m.storyDay, m.entityRef, memExtra(m, '短期记忆')));
     for (const m of settings.longMemories) if (m && m.text) items.push(recallItem('long', m.id, memText(m, '长期记忆'), m.importance, m.storyDay, m.entityRef, memExtra(m, '长期记忆')));
     for (const t of settings.timeline) if (t && t.id) {
@@ -2298,7 +2506,8 @@ async function runSemanticRecallInjection() {
         if (!resp.ok) return;
         const data = await resp.json();
         const meta = Array.isArray(data.metadata) ? data.metadata : [];
-        if (!meta.length) {
+        const bridge = buildRelativeTimeBridge(queryText);
+        if (!meta.length && !bridge) {
             setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
             return;
         }
@@ -2318,6 +2527,7 @@ async function runSemanticRecallInjection() {
                 else if (diff > 2 && diff <= 6) score += 1;
             }
             if (it.entityRef && recentEnts.includes(it.entityRef)) score += 2;
+            if (bridge && it.day != null && bridge.days.has(it.day)) score += 4; // 对话里提到的那一天的资料优先召回
             // 保留结构化时间元数据；索引里没有该条（已被删改）就退回向量库里的原文
             return { text: String(m.text || '').trim(), score, item: it.id ? it : null };
         }).filter(x => x.text);
@@ -2333,7 +2543,7 @@ async function runSemanticRecallInjection() {
             if (picked.length >= (Number(sr.topK) || 4)) break;
         }
 
-        if (!picked.length) {
+        if (!picked.length && !bridge) {
             setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
             return;
         }
@@ -2357,8 +2567,8 @@ async function runSemanticRecallInjection() {
             + '5. 若当前剧情没有明确说明某件事再次发生，不得认为它在当前时间重新发生。\n'
             + '6. 标注为【当前状态】的是现状快照，不是某个具体时间发生的事件。\n'
             + '7. 若无法确认某个相对时间（如“昨天”“前天”）对应的具体事件，避免主动补充具体的历史事件。\n'
-            + '资料：\n'
-            + lines.join('\n');
+            + (bridge ? bridge.text + '\n' : '')
+            + (lines.length ? '资料：\n' + lines.join('\n') : '');
         setExtensionPrompt('serendipity_semantic_recall', block, extension_prompt_types.IN_PROMPT, 0);
     } catch (e) {
         console.error('[Serendipity] 语义召回注入失败：', e);
@@ -2900,6 +3110,7 @@ function renderChecks() {
     updateCheckBadge();
     const toggle = $('#st-serendipity .st-sd__check-toggle');
     if (toggle.length) toggle.prop('checked', !!settings.injectChecks);
+    $('#st-serendipity .st-sd__fix-toggle').prop('checked', !!settings.autoFixTime);
     if (!settings.checks.length) {
         list.html('<div class="st-sd__empty">暂无冲突。点上方「立即检查」让模型对照时间线/世界状态/记忆排查矛盾（每次只调用一次模型）。</div>');
         return;
@@ -3202,6 +3413,7 @@ function buildPanel() {
         <div class="st-sd__toolbar">
           <span class="st-sd__label">剧情一致性</span>
           <button type="button" class="st-sd__check-run">立即检查</button>
+          <button type="button" class="st-sd__check-fix" title="删除重复时间线、压回超出当前天数的数据、补全记忆缺失的天数；不改模型生成的文本">修复时间数据</button>
           <button type="button" class="st-sd__check-clear">清空</button>
         </div>
         <div class="st-sd__toolbar">
@@ -3209,6 +3421,12 @@ function buildPanel() {
             <input type="checkbox" class="st-sd__check-toggle"><span class="st-sd__switch-slider"></span>
           </label>
           <span class="st-sd__label">把冲突注入正文提醒模型</span>
+        </div>
+        <div class="st-sd__toolbar">
+          <label class="st-sd__switch st-sd__fix-switch" title="开启后每轮总结完自动修复时间数据（默认关，只检测提醒）">
+            <input type="checkbox" class="st-sd__fix-toggle"><span class="st-sd__switch-slider"></span>
+          </label>
+          <span class="st-sd__label">每轮总结后自动修复时间数据</span>
         </div>
         <div class="st-sd__hint">让模型对照「当前时间轴 + 已有时间线/世界状态/记忆」排查矛盾（如：记忆里第12天发生的事、当前才第10天；某人已离开却仍出场）。只在点按钮时调用一次模型；开启上方开关后，已发现的冲突会注入每轮正文提醒模型避免重犯。</div>
         <div class="st-sd__check-list"></div>
@@ -3807,6 +4025,11 @@ function bindPanelEvents() {
         updatePromptInjection();
     });
     panel.find('.st-sd__check-run').on('click', runConsistencyCheck);
+    panel.find('.st-sd__check-fix').on('click', () => runTimeRepair(true));
+    panel.find('.st-sd__fix-toggle').prop('checked', !!settings.autoFixTime).on('change', function () {
+        settings.autoFixTime = this.checked;
+        saveSettings();
+    });
     panel.find('.st-sd__check-clear').on('click', function () {
         settings.checks = [];
         saveSettings();
