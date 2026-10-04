@@ -19,7 +19,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.2.1'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.2.2'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1378,6 +1378,12 @@ async function runConsistencyCheck() {
 }
 
 // 把一组记忆合并成一段文本（带序号），用于晋级时“清空并总结”
+const LONG_MEMORY_TARGET = 900; // 压缩后长期记忆的目标字数
+const MEMORY_INJECT_MAX = 6000; // 记忆注入正文的字数预算
+// 去掉对长期保存没意义的行（天气/衣着/重要度）；短期记忆原样注入，衣着在近期还有连续性价值
+function stripMemoryNoise(text) {
+    return String(text || '').replace(/^【(?:天气|角色衣着|用户衣着|重要度)】[^\n]*\n?/gm, '').trim();
+}
 function mergeEntries(arr) {
     return arr.map((m, i) => `(${i + 1}) ${m.text}`).join('\n\n');
 }
@@ -1416,12 +1422,46 @@ function promoteMemories() {
         // 合并条目：只有当这一批短期记忆全部挂靠同一个角色时才带上该关联，混合多角色则留空（归「剧情整体」）
         const refs = [...new Set(settings.memories.map(m => m.entityRef || '').filter(Boolean))];
         const entityRef = refs.length === 1 ? refs[0] : '';
-        settings.longMemories.push({ id: uid(), time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, dayFrom: memDayRange(settings.memories[0])[0], dayTo: memDayRange(last)[1], storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, importance: imp, entityRef: entityRef, text: mergeEntries(settings.memories) });
+        const longId = uid();
+        const sources = settings.memories.slice();
+        settings.longMemories.push({ id: longId, time: Date.now(), storyTime: lastStoryTime, storyDay: last.storyDay, dayFrom: memDayRange(settings.memories[0])[0], dayTo: memDayRange(last)[1], storyPeriod: last.storyPeriod, storyLocation: last.storyLocation, importance: imp, entityRef: entityRef, text: mergeEntries(settings.memories) });
         settings.memories = [];
         saveSettings();
-        toLong = true;
+        return { toLong: true, longId, sources };
     }
-    return { toLong };
+    return { toLong: false };
+}
+
+// 长期记忆压缩：晋级时只是把 10 条原文拼接，这里让模型合并成一段精炼文本，避免长期记忆越攒越长。
+// 失败/结果不合格就保留拼接原文；压缩前的原文留在 rawText 里
+async function compressLongMemory(longId, sources, key, st) {
+    if (!longId || !Array.isArray(sources) || sources.length < 2) return;
+    const input = sources.map((m, i) => '(' + (i + 1) + ') 【' + [memDayLabel(m), m.storyTime, m.storyLocation].filter(Boolean).join(' · ') + '】\n' + stripMemoryNoise(m.text)).join('\n\n');
+    const orig = mergeEntries(sources);
+    try {
+        const out = await callLLM({
+            prompt: input,
+            systemPrompt: [
+                '你是剧情记忆压缩助手。下面是按时间顺序排列的若干段剧情记忆，请合并成一段连贯、精炼的「长期记忆」。',
+                '必须保留：每件事发生在第几天/什么时间/什么地点、人物之间的关系与好感变化、约定与承诺（含是否完成）、重要物品的得失、重大转折与秘密。',
+                '可以删去：天气、衣着等琐碎描写，以及重复表述。按时间顺序写，事件不要合并成含糊的「期间」。',
+                '只输出压缩后的正文，不要标题、解释、序号。控制在 ' + LONG_MEMORY_TARGET + ' 字以内。',
+            ].join('\n'),
+        });
+        const text = String(out || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
+        if (currentDataKey() !== key || settings !== st) return;
+        const m = settings.longMemories.find(x => x.id === longId);
+        if (!m || m.rawText) return;
+        if (text.length < 80 || text.length > orig.length * 0.9) return; // 太短像拒答、没变短就没意义
+        m.rawText = m.text;
+        m.text = text;
+        saveSettings();
+        updatePromptInjection();
+        renderMemories();
+        scheduleSemanticSync();
+    } catch (e) {
+        console.warn('[Serendipity] 长期记忆压缩失败，保留原文：', e);
+    }
 }
 
 // ---------------- 重新生成/滑动/删除 → 记忆回滚 ----------------
@@ -1477,6 +1517,18 @@ function hasUnsummarizedChat() {
     return false;
 }
 
+const SUMMARY_TRANSCRIPT_MAX = 16000; // 单次总结发给模型的对话字数上限
+const SUMMARY_FAIL_LIMIT = 3;         // 同一聊天连续失败这么多次后跳过这段对话，避免永远卡在同一段
+const summaryFailStreak = {};
+function noteSummaryFailure(st, key, lastIdx) {
+    summaryFailStreak[key] = (summaryFailStreak[key] || 0) + 1;
+    if (summaryFailStreak[key] < SUMMARY_FAIL_LIMIT) return;
+    summaryFailStreak[key] = 0;
+    st.lastSummaryIndex = lastIdx;
+    saveSettings();
+    toastr.warning('连续 ' + SUMMARY_FAIL_LIMIT + ' 次总结失败，已跳过这段对话以免一直卡住；请检查总结 API（见「API」页）', undefined, { timeOut: 10000 });
+}
+
 async function summarizeLastRound() {
     activateCharacter(); // 每次总结前重新绑定到当前角色，避免切换角色后总结写错档
     reconcileWithChat();
@@ -1508,7 +1560,20 @@ async function summarizeLastRound() {
     const lastUserMsg = ([...sel].reverse().find(x => x.m.is_user) || {}).m;
     if (!lastCharMsg || !lastUserMsg) return;
 
-    const transcript = sel.map(x => (x.m.name || (x.m.is_user ? '用户' : '角色')) + '：' + x.m.mes).join('\n\n');
+    // 总结窗口上限：从最新往前取，总长超过预算就丢掉更早的（至少保留最后两条）。首次启用的老聊天、
+    // 以及连续失败后越积越长的窗口，都不会再整段发给模型
+    const lines = [];
+    let used = 0;
+    for (let k = sel.length - 1; k >= 0; k--) {
+        const x = sel[k];
+        let line = (x.m.name || (x.m.is_user ? '用户' : '角色')) + '：' + x.m.mes;
+        if (line.length > SUMMARY_TRANSCRIPT_MAX) line = line.slice(0, SUMMARY_TRANSCRIPT_MAX);
+        if (lines.length >= 2 && used + line.length > SUMMARY_TRANSCRIPT_MAX) break;
+        lines.unshift(line);
+        used += line.length;
+    }
+    const transcript = lines.join('\n\n');
+    if (lines.length < sel.length) toastr.info('这段对话较长，本次只总结最近 ' + lines.length + ' 条（更早的 ' + (sel.length - lines.length) + ' 条未纳入记忆）', undefined, { timeOut: 6000 });
 
     // await 之前先记下「写给谁」和「总结的是哪条消息」，回来后核对，避免切换聊天串档、滑动后签名记错
     const keyBefore = currentDataKey();
@@ -1572,6 +1637,7 @@ async function summarizeLastRound() {
             // 只追加，绝不覆盖或删除已有记忆
             settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
             settings.lastSummaryIndex = lastIdx; // 记录已总结到的消息下标，下次只总结新增部分（用总结时的位置，期间新到的消息留给下一次）
+            summaryFailStreak[keyBefore] = 0;
             const promoted = promoteMemories();
             if (settings.autoFixTime) repairTimeData();
             saveSettings();
@@ -1587,6 +1653,7 @@ async function summarizeLastRound() {
             if (promoted.toLong) parts.push('短期已满十轮，自动放入长期记忆');
             if (parts.length) msg += '；' + parts.join('；');
             toastr.success(msg);
+            if (promoted.toLong) compressLongMemory(promoted.longId, promoted.sources, keyBefore, stBefore);
 
             // 长期记忆满 10 条：提醒归档到世界书（只提醒一次，归档后重置）
             if (settings.longMemories.length >= TIER_LIMIT && !settings.worldReminderShown) {
@@ -1598,10 +1665,12 @@ async function summarizeLastRound() {
         } else {
             // 模型偶发返回空内容：明确提示，避免无声跳过
             toastr.warning('本轮总结返回空内容，已跳过（未写入记忆）');
+            noteSummaryFailure(stBefore, keyBefore, lastIdx);
         }
     } catch (e) {
         console.error('[Serendipity] 记忆总结失败：', e);
         toastr.error('本轮记忆总结失败');
+        noteSummaryFailure(stBefore, keyBefore, lastIdx);
     } finally {
         isSummarizing = false;
         // 总结期间若有重新生成/滑动，isSummarizing 会让对账被跳过，这里补一次
@@ -1613,15 +1682,33 @@ async function summarizeLastRound() {
 // S 级记忆排最前并加醒目标记，A 级次之，B/未评级正常排后；让「不能忘」的内容始终压在最前面
 function buildMemoryBlock() {
     const rank = v => (v === 'S' ? 0 : v === 'A' ? 1 : 2);
-    const join = arr => [...arr].sort((a, b) => rank(a.importance) - rank(b.importance))
-        .map(m => (m.importance === 'S' ? '⚠ 绝对不能忘：' + m.text : m.text)).join('\n\n');
+    const fmt = (m, isLong) => {
+        const t = isLong ? stripMemoryNoise(m.text) : m.text;
+        return m.importance === 'S' ? '⚠ 绝对不能忘：' + t : t;
+    };
+    // 字数预算：S > A > 短期 B(新→旧) > 长期 B(新→旧) 依次占用，放不下的较早记忆不注入（仍可通过语义召回找回）
+    const cands = [
+        ...settings.longMemories.map((m, i) => ({ m, isLong: true, i, text: fmt(m, true) })),
+        ...settings.memories.map((m, i) => ({ m, isLong: false, i, text: fmt(m, false) })),
+    ];
+    const prio = c => rank(c.m.importance) * 2 + (c.isLong ? 1 : 0);
+    const order = [...cands].sort((a, b) => prio(a) - prio(b) || b.m.time - a.m.time);
+    const keep = new Set();
+    let used = 0;
+    for (const c of order) {
+        if (used + c.text.length > MEMORY_INJECT_MAX && keep.size) continue;
+        keep.add(c);
+        used += c.text.length;
+    }
+    const join = isLong => cands.filter(c => c.isLong === isLong && keep.has(c))
+        .sort((a, b) => rank(a.m.importance) - rank(b.m.importance) || a.i - b.i).map(c => c.text).join('\n\n');
     const parts = [];
-    if (settings.longMemories.length) {
-        parts.push('【长期记忆】\n' + join(settings.longMemories));
-    }
-    if (settings.memories.length) {
-        parts.push('【短期记忆】\n' + join(settings.memories));
-    }
+    const longTxt = join(true);
+    const shortTxt = join(false);
+    if (longTxt) parts.push('【长期记忆】\n' + longTxt);
+    if (shortTxt) parts.push('【短期记忆】\n' + shortTxt);
+    const dropped = cands.length - keep.size;
+    if (dropped > 0) parts.push('（另有 ' + dropped + ' 条较早的记忆因篇幅限制未注入）');
     return parts.join('\n\n');
 }
 
