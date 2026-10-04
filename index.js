@@ -1,4 +1,5 @@
 import { extension_settings } from '../../../extensions.js';
+import * as stExt from '../../../extensions.js';
 import {
     chat,
     chat_metadata,
@@ -20,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.2.4'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.2.5'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -310,7 +311,9 @@ Serendipity 中可能同时存在：
 同名 ≠ 同一世界。`;
 
 const defaultSettings = {
-    chars: {},       // { [角色名]: 该角色的记忆/屏蔽词/指令等数据 }
+    chars: {},       // { [角色+聊天键]: 该聊天的记忆/时间轴/人物等数据 }
+    shared: {},      // 全局：屏蔽词 + 屏蔽开关（所有角色、所有聊天共用）
+    charPrefs: {},   // { [角色键]: { instructions } }：同一张角色卡的所有聊天共用的指令
 };
 
 let globalSettings = null;   // 顶层设置（按角色唯一键分组）
@@ -319,6 +322,7 @@ let activeChar = '';         // 当前绑定角色的显示名
 let activeCharKey = '';      // 当前绑定角色的唯一键（avatar，同名卡也唯一）
 let isSummarizing = false;
 let noCharSettings = null; // 无角色/群组时的临时数据（不入库）
+const noCharPrefs = { instructions: [] }; // 无角色/群组时的临时指令（不入库）
 let pendingMigration = null; // 旧版扁平数据迁移挂起（角色卡尚未加载完成时暂存）
 let editingId = null;        // 当前处于编辑态的记忆条目 id（null 表示无）
 let isInjecting = false;     // 世界书注入进行中标记（防连点/并发注入）
@@ -333,9 +337,6 @@ function freshCharSettings() {
         summarizeEvery: 1,      // 每 N 轮总结一次（1=每轮都总结）
         roundsSinceSummary: 0,  // 距上次总结已过的轮数
         lastSummaryIndex: -1,   // 上次总结到的聊天消息下标（-1=尚未总结），用于跨轮总结窗口不丢剧情
-        blockedWords: [],       // 屏蔽词列表
-        censorEnabled: true,    // 屏蔽开关
-        instructions: [],       // 指令列表（每轮生成都注入）
         storyTime: '',          // 当前剧情时间（AI 接力维护，每次总结时更新）
         storyDay: null,         // 结构化时间轴：第X天（null=尚未建立）
         storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
@@ -370,7 +371,7 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows', 'summaryJournal', 'timeFixLog']) {
+    for (const key of ['memories', 'longMemories', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows', 'summaryJournal', 'timeFixLog']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
     // 记忆重要度：非 S/A/B 一律归为 ''（未评级，注入时按 B 处理）
@@ -505,7 +506,6 @@ function normalizeCharSettings(cs) {
         candidates: Array.isArray(p.candidates) ? p.candidates.filter(c => typeof c === 'string') : [],
     })).filter(p => p.candidates.some(cid => cs.entities.some(e => e.id === cid)));
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
-    if (cs.censorEnabled === undefined) cs.censorEnabled = true;
     if (!(cs.summarizeEvery >= 1)) cs.summarizeEvery = 1;
     else cs.summarizeEvery = Math.floor(cs.summarizeEvery);
     cs.roundsSinceSummary = Number(cs.roundsSinceSummary) || 0;
@@ -529,14 +529,96 @@ function normalizeCharSettings(cs) {
             ? { model: typeof cs.semanticRecall.index.model === 'string' ? cs.semanticRecall.index.model : '', items: (cs.semanticRecall.index.items && typeof cs.semanticRecall.index.items === 'object') ? cs.semanticRecall.index.items : {} }
             : { model: '', items: {} },
     };
-    cs.instructions = cs.instructions.map(it => {
-        if (typeof it === 'string') return { id: uid(), text: it, enabled: true };
-        if (it && typeof it === 'object' && typeof it.text === 'string') {
-            return { id: it.id || uid(), text: it.text, enabled: it.enabled !== false };
+    return cs;
+}
+
+// 指令列表规范化（兼容旧版纯字符串条目）
+function normalizeInstructions(list) {
+    if (!Array.isArray(list)) return [];
+    return list.map(it => {
+        if (typeof it === 'string') return it.trim() ? { id: uid(), text: it, enabled: true } : null;
+        if (it && typeof it === 'object' && typeof it.text === 'string' && it.text.trim()) {
+            return { id: typeof it.id === 'string' && it.id ? it.id : uid(), text: it.text, enabled: it.enabled !== false };
         }
         return null;
     }).filter(Boolean);
-    return cs;
+}
+
+function normalizeWordList(list) {
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (const w of list) {
+        if (typeof w !== 'string') continue;
+        const v = w.trim();
+        if (v && !out.includes(v)) out.push(v);
+    }
+    return out;
+}
+
+// 全局设置补全：屏蔽词/屏蔽开关（全局共用），指令按角色卡存放
+function ensureGlobalPrefs(g) {
+    if (!g.chars || typeof g.chars !== 'object' || Array.isArray(g.chars)) g.chars = {};
+    if (!g.shared || typeof g.shared !== 'object' || Array.isArray(g.shared)) g.shared = {};
+    g.shared.blockedWords = normalizeWordList(g.shared.blockedWords);
+    g.shared.censorEnabled = g.shared.censorEnabled !== false;
+    if (!g.charPrefs || typeof g.charPrefs !== 'object' || Array.isArray(g.charPrefs)) g.charPrefs = {};
+    return g;
+}
+
+function sharedPrefs() { return globalSettings.shared; }
+function blockedWordList() { return globalSettings && globalSettings.shared ? globalSettings.shared.blockedWords : []; }
+function censorOn() { return !!(globalSettings && globalSettings.shared && globalSettings.shared.censorEnabled); }
+
+// 当前角色卡的指令（读：不存在返回空数组，不产生空条目；写：用 writableInstructions）
+function instructionList() {
+    if (!activeCharKey) return noCharPrefs.instructions;
+    const p = globalSettings.charPrefs[activeCharKey];
+    return p && Array.isArray(p.instructions) ? p.instructions : [];
+}
+function writableInstructions() {
+    if (!activeCharKey) return noCharPrefs.instructions;
+    let p = globalSettings.charPrefs[activeCharKey];
+    if (!p || typeof p !== 'object') p = globalSettings.charPrefs[activeCharKey] = { instructions: [] };
+    if (!Array.isArray(p.instructions)) p.instructions = [];
+    return p.instructions;
+}
+
+// 旧版把屏蔽词/指令/屏蔽开关存在「每个聊天」里，新聊天会重置。这里一次性并入全局/角色级存储（取各聊天的并集），然后删掉旧字段。
+// 只处理形如 avatar::/name::/group:: 的键；仍是旧版裸角色名的键留待 activateCharacter 转成唯一键后再迁。
+function migrateLegacyPrefs(g) {
+    let changed = false;
+    let onCount = 0, offCount = 0;
+    for (const [key, cs] of Object.entries(g.chars)) {
+        if (!cs || typeof cs !== 'object') continue;
+        if (!/^(avatar|name|group)::/.test(key)) continue;
+        const hasWords = Array.isArray(cs.blockedWords);
+        const hasInstr = Array.isArray(cs.instructions);
+        const hasFlag = cs.censorEnabled !== undefined;
+        if (!hasWords && !hasInstr && !hasFlag) continue;
+        if (hasWords) {
+            const words = normalizeWordList(cs.blockedWords);
+            for (const w of words) if (!g.shared.blockedWords.includes(w)) g.shared.blockedWords.push(w);
+            if (words.length) { if (cs.censorEnabled === false) offCount++; else onCount++; }
+        }
+        if (hasInstr) {
+            const charKey = key.replace(/::(chat|integrity)::[\s\S]*$/, '');
+            const mine = normalizeInstructions(cs.instructions);
+            if (mine.length) {
+                let p = g.charPrefs[charKey];
+                if (!p || typeof p !== 'object') p = g.charPrefs[charKey] = { instructions: [] };
+                p.instructions = normalizeInstructions(p.instructions);
+                for (const it of mine) if (!p.instructions.some(x => x.text === it.text)) p.instructions.push(it);
+            }
+        }
+        delete cs.blockedWords;
+        delete cs.instructions;
+        delete cs.censorEnabled;
+        changed = true;
+    }
+    // 所有带屏蔽词的旧聊天都曾手动关闭屏蔽 → 保持关闭；否则按默认开启
+    if (changed && offCount > 0 && onCount === 0 && !g.shared._migrated) g.shared.censorEnabled = false;
+    if (changed) g.shared._migrated = true;
+    return changed;
 }
 
 // 当前选中角色卡的名字（未选中返回空字符串）
@@ -607,6 +689,7 @@ function activateCharacter() {
             saveSettings();
         }
     }
+    if (migrateLegacyPrefs(globalSettings)) saveSettings();
     // 没有任何可用的角色/群组时用一份不入库的临时数据，避免往 chars[''] 写脏条目
     settings = dataKey ? charData(dataKey) : (noCharSettings || (noCharSettings = normalizeCharSettings(freshCharSettings())));
 }
@@ -639,7 +722,7 @@ function loadSettings() {
             delete s[k];
         }
     }
-    if (!s.chars || typeof s.chars !== 'object' || Array.isArray(s.chars)) s.chars = {};
+    ensureGlobalPrefs(s);
     return s;
 }
 function saveSettings() { saveSettingsDebounced(); }
@@ -667,6 +750,23 @@ function apiEndpoint(url) {
     if (/\/chat\/completions$/i.test(url)) return url;
     return url + '/chat/completions';
 }
+// 把可能出现在报错里的密钥抹掉（报错会弹 toast / 进控制台，可能被截图或转发）
+function redactSecrets(text, key) {
+    let t = String(text == null ? '' : text);
+    const k = String(key || '').trim();
+    if (k.length >= 6) t = t.split(k).join('***');
+    return t
+        .replace(/Bearer\s+[A-Za-z0-9._~+\/=-]{6,}/gi, 'Bearer ***')
+        .replace(/\b(sk|rk|pk|ak|key)-[A-Za-z0-9_*-]{6,}/gi, '$1-***')
+        .replace(/([?&](?:key|api[_-]?key|token|access_token)=)[^&\s"']+/gi, '$1***')
+        .replace(/("?(?:api[_-]?key|authorization|token)"?\s*[:=]\s*"?)[A-Za-z0-9._~+\/=-]{8,}/gi, '$1***');
+}
+// 错误文本 → 可安全展示的一小段（去 HTML 标签、折叠空白、抹密钥、截断）
+function safeErrorText(e, key, max = 120) {
+    const raw = (e && e.message) ? e.message : e;
+    const t = redactSecrets(raw, key).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    return t.length > max ? t.slice(0, max) + '…' : t;
+}
 const LLM_TIMEOUT_MS = 120000; // 单次模型调用上限，防止请求挂起导致并发锁永远不释放
 function withTimeout(p, ms) {
     let t;
@@ -692,13 +792,14 @@ async function callCustomApi({ prompt, systemPrompt }) {
         });
     } catch (e) {
         if (e && e.name === 'AbortError') throw new Error('请求超时（' + Math.round(LLM_TIMEOUT_MS / 1000) + ' 秒）');
-        throw e;
+        throw new Error(safeErrorText(e, c.key) || '网络请求失败');
     } finally {
         clearTimeout(timer);
     }
     if (!res.ok) {
         const t = await res.text().catch(() => '');
-        throw new Error('HTTP ' + res.status + (t ? ' ' + t.slice(0, 120) : ''));
+        const detail = safeErrorText(t, c.key);
+        throw new Error('HTTP ' + res.status + (detail ? ' ' + detail : ''));
     }
     const d = await res.json();
     const out = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
@@ -710,8 +811,9 @@ async function callLLM({ prompt, systemPrompt }) {
         try {
             return await callCustomApi({ prompt, systemPrompt });
         } catch (e) {
-            console.warn('[Serendipity] 自定义 API 调用失败，改用酒馆默认 API：', e);
-            toastr.warning('自定义总结 API 调用失败（' + (e.message || e) + '），已改用酒馆默认 API');
+            const detail = safeErrorText(e, getApiCfg().key);
+            console.warn('[Serendipity] 自定义 API 调用失败，改用酒馆默认 API：', detail);
+            toastr.warning('自定义总结 API 调用失败（' + detail + '），已改用酒馆默认 API');
         }
     }
     return withTimeout(Promise.resolve(generateRaw({ prompt, systemPrompt })), LLM_TIMEOUT_MS + 60000);
@@ -1834,10 +1936,10 @@ function updatePromptInjection() {
     );
 
     // 禁止词注入（同样放最顶端，确保模型生成时绝不输出这些词）
-    const censorActive = settings.censorEnabled && settings.blockedWords.length > 0;
+    const censorActive = censorOn() && blockedWordList().length > 0;
     setExtensionPrompt(
         'serendipity_censor',
-        censorActive ? '[Serendipity 禁止词（绝对不得出现）]\n以下词眼在任何情况下都绝对不要出现在你的回复中：' + settings.blockedWords.join('、') : '',
+        censorActive ? '[Serendipity 禁止词（绝对不得出现）]\n以下词眼在任何情况下都绝对不要出现在你的回复中：' + blockedWordList().join('、') : '',
         extension_prompt_types.BEFORE_PROMPT,
         0,
     );
@@ -1845,7 +1947,7 @@ function updatePromptInjection() {
     // 指令注入（无数量限制，只注入已开启的指令，每轮生成都读取）
     // 放在 BEFORE_PROMPT（prompt 最顶端、角色描述之前），确保模型把指令当作最高优先级指令严格遵守，
     // 而不是像 IN_PROMPT 那样被埋在剧情里被角色设定/聊天记录盖过去。
-    const enabledInstr = settings.instructions.filter(it => it && it.enabled && typeof it.text === 'string' && it.text.trim());
+    const enabledInstr = instructionList().filter(it => it && it.enabled && typeof it.text === 'string' && it.text.trim());
     setExtensionPrompt(
         'serendipity_instructions',
         enabledInstr.length ? '[Serendipity 指令（必须严格遵守）]\n以下是你必须严格遵守的用户指令，优先级高于一切剧情、角色设定与历史对话，每轮回复都必须逐条执行：\n' + enabledInstr.map((it, i) => (i + 1) + '. ' + it.text).join('\n') : '',
@@ -3320,7 +3422,7 @@ function addManualNote() {
 function resetCurrentChar() {
     activateCharacter();
     const name = activeChar || '当前角色';
-    if (!confirm('确定清空「' + name + '」的全部 Serendipity 数据吗？记忆、时间轴、人物、世界状态、屏蔽词、指令都会被清空，且不可撤销。')) return;
+    if (!confirm('确定清空「' + name + '」的全部 Serendipity 数据吗？这个聊天的记忆、时间轴、人物、世界状态等都会被清空，且不可撤销（屏蔽词和指令是全局/角色级设置，不受影响）。')) return;
     const keepWorldBook = settings.worldBook;
     const hadIndex = !!(settings.semanticRecall && (settings.semanticRecall.enabled || Object.keys(settings.semanticRecall.index.items).length));
     const collectionId = semanticCollectionId();
@@ -3344,9 +3446,10 @@ function resetCurrentChar() {
 const CENSOR_EXCLUDE = 'script, style, textarea, input, select, option, #st-serendipity, .st-sd, [contenteditable]';
 
 function censorText(text) {
-    if (!settings.censorEnabled || !settings.blockedWords.length) return text;
+    const words = blockedWordList();
+    if (!censorOn() || !words.length) return text;
     let out = text;
-    for (const w of settings.blockedWords) {
+    for (const w of words) {
         if (!w) continue;
         const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         out = out.replace(new RegExp(esc, 'g'), '');
@@ -3355,7 +3458,8 @@ function censorText(text) {
 }
 
 function censorTextInNode(node) {
-    if (!settings.censorEnabled || !settings.blockedWords.length) return;
+    const words = blockedWordList();
+    if (!censorOn() || !words.length) return;
     if (node.nodeType === 3) { // 文本节点
         const v = node.nodeValue;
         if (!v) return;
@@ -3370,7 +3474,7 @@ function censorTextInNode(node) {
             const p = n.parentElement;
             if (!p || (p.closest && p.closest(CENSOR_EXCLUDE))) return NodeFilter.FILTER_REJECT;
             if (!n.nodeValue) return NodeFilter.FILTER_REJECT;
-            for (const w of settings.blockedWords) {
+            for (const w of words) {
                 if (w && n.nodeValue.includes(w)) return NodeFilter.FILTER_ACCEPT;
             }
             return NodeFilter.FILTER_REJECT;
@@ -3383,7 +3487,7 @@ function censorTextInNode(node) {
 }
 
 function applyCensorAll() {
-    if (!settings.censorEnabled || !settings.blockedWords.length) return;
+    if (!censorOn() || !blockedWordList().length) return;
     censorTextInNode(document.body);
 }
 
@@ -3408,11 +3512,12 @@ function initCensorObserver() {
 function renderBlockedWords() {
     const list = $('#st-serendipity .st-sd__word-list');
     if (!list.length) return;
-    if (!settings.blockedWords.length) {
+    const words = blockedWordList();
+    if (!words.length) {
         list.html('<div class="st-sd__empty">还没有屏蔽词，输入后点击「添加」</div>');
         return;
     }
-    const items = settings.blockedWords.map(w =>
+    const items = words.map(w =>
         `<span class="st-sd__word"><span class="st-sd__word-text">${escapeHtml(w)}</span><button type="button" class="st-sd__word-del" data-word="${escapeHtml(w)}">×</button></span>`
     ).join('');
     list.html(items);
@@ -3421,11 +3526,12 @@ function renderBlockedWords() {
 function renderInstructions() {
     const list = $('#st-serendipity .st-sd__instr-list');
     if (!list.length) return;
-    if (!settings.instructions.length) {
+    const instrs = instructionList();
+    if (!instrs.length) {
         list.html('<div class="st-sd__empty">还没有指令，输入后点击「添加」</div>');
         return;
     }
-    const items = settings.instructions.map(it => {
+    const items = instrs.map(it => {
         const checked = it.enabled ? ' checked' : '';
         return `<div class="st-sd__instr" data-id="${it.id}">
             <label class="st-sd__switch st-sd__instr-switch" title="开启/关闭此指令">
@@ -3552,10 +3658,17 @@ function buildPanel() {
           <div class="st-sd__brand">
             <span class="st-sd__title">Serendipity</span>
             <span class="st-sd__version">v${VERSION}</span>
+            <button type="button" class="st-sd__chk-update" title="检查插件是否有新版本">检查更新</button>
           </div>
           <span class="st-sd__char"></span>
         </div>
         <button type="button" class="st-sd__close" title="关闭">${ICONS.close}</button>
+      </div>
+      <div class="st-sd__update" style="display:none">
+        <span class="st-sd__update-text"></span>
+        <button type="button" class="st-sd__update-go">立即更新</button>
+        <button type="button" class="st-sd__update-reload" style="display:none">立即刷新</button>
+        <button type="button" class="st-sd__update-later">稍后</button>
       </div>
       <div class="st-sd__tabs">
         <button type="button" class="st-sd__tab is-active" data-tab="memory">记忆</button>
@@ -3580,14 +3693,14 @@ function buildPanel() {
           <button type="button" class="st-sd__api-toggle">总结 API 设置</button><span class="st-sd__api-state"></span>
           <div class="st-sd__api-form">
             <input type="text" class="st-sd__api-input st-sd__api-url" placeholder="API 地址，如 https://api.openai.com/v1" autocomplete="off">
-            <input type="password" class="st-sd__api-input st-sd__api-key" placeholder="API Key" autocomplete="off">
+            <input type="password" class="st-sd__api-input st-sd__api-key" placeholder="API Key" autocomplete="new-password" spellcheck="false">
             <input type="text" class="st-sd__api-input st-sd__api-model" placeholder="模型名，如 gpt-4o-mini" autocomplete="off">
             <div class="st-sd__api-btns">
               <button type="button" class="st-sd__api-save">保存</button>
               <button type="button" class="st-sd__api-test">测试</button>
               <button type="button" class="st-sd__api-clear">清除（改用酒馆默认）</button>
             </div>
-            <div class="st-sd__hint">填 OpenAI 兼容接口（地址到 /v1 即可）。设置后，总结和一致性检查都走这个 API；留空或调用失败则自动用酒馆当前的默认 API。Key 保存在酒馆设置里，所有角色共用。</div>
+            <div class="st-sd__hint">填 OpenAI 兼容接口（地址到 /v1 即可）。设置后，总结和一致性检查都走这个 API；留空或调用失败则自动用酒馆当前的默认 API。Key 以明文保存在酒馆的设置文件里（所有角色共用），不会写进备份文件；共用/公开的酒馆实例请不要填你自己的 Key。</div>
           </div>
         </div>
         <div class="st-sd__every-row">
@@ -3613,8 +3726,12 @@ function buildPanel() {
         <div class="st-sd__memory-list"></div>
         <div class="st-sd__hint">短期满 ${TIER_LIMIT} 条自动合并入长期；长期满 ${TIER_LIMIT} 条会提醒你「注入世界书」归档并清空。记忆会注入正文，防止模型失忆。</div>
         <div class="st-sd__reset-row">
-          <button type="button" class="st-sd__reset">清空本角色数据</button>
+          <button type="button" class="st-sd__backup-export">导出备份</button>
+          <button type="button" class="st-sd__backup-import">导入备份</button>
+          <input type="file" class="st-sd__backup-file" accept=".json,application/json" style="display:none">
+          <button type="button" class="st-sd__reset">清空本聊天数据</button>
         </div>
+        <div class="st-sd__hint">备份是一个 JSON 文件，包含全部聊天的记忆、时间轴、人物等数据以及屏蔽词、指令，不含 API Key；换设备或重装前可先导出。</div>
       </div>
 
       <div class="st-sd__pane" data-pane="recall" style="display:none">
@@ -3665,7 +3782,7 @@ function buildPanel() {
           <button type="button" class="st-sd__add-word">添加</button>
         </div>
         <div class="st-sd__word-list"></div>
-        <div class="st-sd__hint">添加后立即删除剧情与状态栏中的该词眼，并注入正文提示，禁止模型再输出这些词。</div>
+        <div class="st-sd__hint">添加后立即删除剧情与状态栏中的该词眼，并注入正文提示，禁止模型再输出这些词。屏蔽词和开关是全局的，所有角色、所有聊天共用，新开聊天不会重置。</div>
       </div>
 
       <div class="st-sd__pane" data-pane="instruct" style="display:none">
@@ -3674,7 +3791,7 @@ function buildPanel() {
           <button type="button" class="st-sd__add-instr">添加</button>
         </div>
         <div class="st-sd__instr-list"></div>
-        <div class="st-sd__hint">指令不限制数量，每轮生成都会读取并遵守；可用每条前面的开关单独开启/关闭，删除则彻底移除。</div>
+        <div class="st-sd__hint">指令不限制数量，每轮生成都会读取并遵守；可用每条前面的开关单独开启/关闭，删除则彻底移除。指令跟着角色卡走：同一张角色卡的所有聊天共用，新开聊天不会重置。</div>
       </div>
 
       <div class="st-sd__pane" data-pane="time" style="display:none">
@@ -3707,7 +3824,7 @@ function buildPanel() {
           <input type="text" class="st-sd__npc-identity" placeholder="身份/职业（可空）">
         </div>
         <div class="st-sd__add-row">
-          <input type="text" class="st-sd__npc-name" placeholder="姓名（如「沈砚」）">
+          <input type="text" class="st-sd__npc-name" placeholder="姓名">
           <input type="text" class="st-sd__npc-age" placeholder="年龄（可空，如「24」）">
           <input type="text" class="st-sd__npc-note" placeholder="简介（可空，如「北境斥候队长」）">
           <button type="button" class="st-sd__npc-add">添加</button>
@@ -3740,7 +3857,7 @@ function buildPanel() {
 
       <div class="st-sd__pane" data-pane="fore" style="display:none">
         <div class="st-sd__add-row">
-          <input type="text" class="st-sd__fore-input" placeholder="伏笔/未完成事项，如「沈砚身上的旧伤」">
+          <input type="text" class="st-sd__fore-input" placeholder="伏笔/未完成事项，如「那封没拆的信」">
           <button type="button" class="st-sd__fore-add">添加</button>
         </div>
         <div class="st-sd__toolbar">
@@ -3789,8 +3906,8 @@ function bindPanelEvents() {
         saveSettings();
         updatePromptInjection();
     });
-    panel.find('.st-sd__censor-toggle').prop('checked', !!settings.censorEnabled).on('change', function () {
-        settings.censorEnabled = this.checked;
+    panel.find('.st-sd__censor-toggle').prop('checked', censorOn()).on('change', function () {
+        sharedPrefs().censorEnabled = this.checked;
         saveSettings();
         updatePromptInjection();
         if (this.checked) applyCensorAll();
@@ -3856,7 +3973,7 @@ function bindPanelEvents() {
             const out = await callCustomApi({ prompt: '请回复"OK"两个字母。' });
             toastr.success('连接成功：' + String(out).trim().slice(0, 30));
         } catch (e) {
-            toastr.error('连接失败：' + (e.message || e) + '（若是跨域/CORS 报错，换一个允许浏览器直连的中转地址）');
+            toastr.error('连接失败：' + safeErrorText(e, root.api && root.api.key) + '（若是跨域/CORS 报错，换一个允许浏览器直连的中转地址）');
         } finally {
             if (backup) root.api = backup; else delete root.api;
         }
@@ -3929,14 +4046,28 @@ function bindPanelEvents() {
     });
     // 一键清空当前角色数据
     panel.find('.st-sd__reset').on('click', resetCurrentChar);
+    // 备份 / 恢复
+    panel.find('.st-sd__backup-export').on('click', exportBackup);
+    panel.find('.st-sd__backup-import').on('click', () => panel.find('.st-sd__backup-file').trigger('click'));
+    panel.find('.st-sd__backup-file').on('change', async function () {
+        const f = this.files && this.files[0];
+        this.value = '';
+        await importBackupFile(f);
+    });
+    // 插件更新
+    panel.find('.st-sd__chk-update').on('click', () => checkPluginUpdate({ manual: true }));
+    panel.find('.st-sd__update-go').on('click', performPluginUpdate);
+    panel.find('.st-sd__update-reload').on('click', () => location.reload());
+    panel.find('.st-sd__update-later').on('click', () => { updateCache().notifiedAt = Date.now(); saveSettings(); panel.find('.st-sd__update').hide(); });
+    renderUpdateState();
 
     // 添加屏蔽词
     const addWord = () => {
         const input = panel.find('.st-sd__word-input');
         const w = input.val().trim();
         if (!w) return;
-        if (!settings.blockedWords.includes(w)) {
-            settings.blockedWords.push(w);
+        if (!blockedWordList().includes(w)) {
+            blockedWordList().push(w);
             saveSettings();
             renderBlockedWords();
             applyCensorAll();
@@ -3995,7 +4126,7 @@ function bindPanelEvents() {
     });
     panel.on('click', '.st-sd__word-del', function () {
         const w = String($(this).data('word'));
-        settings.blockedWords = settings.blockedWords.filter(x => x !== w);
+        sharedPrefs().blockedWords = blockedWordList().filter(x => x !== w);
         saveSettings();
         renderBlockedWords();
         updatePromptInjection();
@@ -4006,8 +4137,8 @@ function bindPanelEvents() {
         const input = panel.find('.st-sd__instr-input');
         const v = input.val().trim();
         if (!v) return;
-        if (!settings.instructions.some(it => it.text === v)) {
-            settings.instructions.push({ id: uid(), text: v, enabled: true });
+        if (!instructionList().some(it => it.text === v)) {
+            writableInstructions().push({ id: uid(), text: v, enabled: true });
             saveSettings();
             renderInstructions();
             updatePromptInjection();
@@ -4020,7 +4151,7 @@ function bindPanelEvents() {
     // 单个指令开关
     panel.on('change', '.st-sd__instr-toggle', function () {
         const id = $(this).data('id');
-        const it = settings.instructions.find(x => x.id === id);
+        const it = instructionList().find(x => x.id === id);
         if (it) {
             it.enabled = this.checked;
             saveSettings();
@@ -4031,7 +4162,8 @@ function bindPanelEvents() {
     // 删除指令
     panel.on('click', '.st-sd__instr-del', function () {
         const id = $(this).data('id');
-        settings.instructions = settings.instructions.filter(x => x.id !== id);
+        if (activeCharKey && globalSettings.charPrefs[activeCharKey]) globalSettings.charPrefs[activeCharKey].instructions = instructionList().filter(x => x.id !== id);
+        else noCharPrefs.instructions = noCharPrefs.instructions.filter(x => x.id !== id);
         saveSettings();
         renderInstructions();
         updatePromptInjection();
@@ -4448,6 +4580,266 @@ window.Serendipity.getDirectorContext = function () {
     return parts.join('\n\n');
 };
 
+
+// ---------------- 备份 / 恢复（JSON） ----------------
+const BACKUP_APP = 'serendipity-backup';
+const BACKUP_MAX_BYTES = 50 * 1024 * 1024;
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+function downloadText(filename, text, mime) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// 备份只含剧情数据 + 屏蔽词/指令；不含 API 地址和 Key；语义索引快照不导出（换环境后需重新同步）
+function buildBackup() {
+    const chars = JSON.parse(JSON.stringify(globalSettings.chars));
+    for (const cs of Object.values(chars)) {
+        if (cs && cs.semanticRecall) cs.semanticRecall.index = { model: '', items: {} };
+    }
+    return {
+        app: BACKUP_APP,
+        schema: 1,
+        version: VERSION,
+        exportedAt: Date.now(),
+        chars,
+        shared: JSON.parse(JSON.stringify(globalSettings.shared)),
+        charPrefs: JSON.parse(JSON.stringify(globalSettings.charPrefs)),
+    };
+}
+
+function exportBackup() {
+    if (!globalSettings) return;
+    const d = new Date();
+    const stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes());
+    downloadText('serendipity-backup-' + stamp + '.json', JSON.stringify(buildBackup()), 'application/json;charset=utf-8');
+    toastr.success('备份已导出（共 ' + Object.keys(globalSettings.chars).length + ' 个聊天的数据，不含 API Key）');
+}
+
+function applyBackup(data) {
+    const g = globalSettings;
+    let imported = 0, skipped = 0;
+    for (const [key, raw] of Object.entries(data.chars)) {
+        if (UNSAFE_KEYS.has(key) || !/^(avatar|name|group)::/.test(key) || !isPlainObject(raw)) { skipped++; continue; }
+        const cs = normalizeCharSettings(JSON.parse(JSON.stringify(raw)));
+        delete cs.blockedWords; delete cs.instructions; delete cs.censorEnabled; // 老版本备份里的旧字段，不再属于单个聊天
+        cs.semanticRecall.index = { model: '', items: {} };
+        g.chars[key] = cs;
+        imported++;
+    }
+    if (isPlainObject(data.shared)) {
+        for (const w of normalizeWordList(data.shared.blockedWords)) if (!g.shared.blockedWords.includes(w)) g.shared.blockedWords.push(w);
+        if (data.shared.censorEnabled === false) g.shared.censorEnabled = false;
+    }
+    if (isPlainObject(data.charPrefs)) {
+        for (const [ck, p] of Object.entries(data.charPrefs)) {
+            if (UNSAFE_KEYS.has(ck) || !/^(avatar|name|group)::/.test(ck) || !isPlainObject(p)) continue;
+            const mine = normalizeInstructions(p.instructions);
+            if (!mine.length) continue;
+            let cur = g.charPrefs[ck];
+            if (!isPlainObject(cur)) cur = g.charPrefs[ck] = { instructions: [] };
+            cur.instructions = normalizeInstructions(cur.instructions);
+            for (const it of mine) if (!cur.instructions.some(x => x.text === it.text)) cur.instructions.push(it);
+        }
+    }
+    return { imported, skipped };
+}
+
+async function importBackupFile(file) {
+    if (!file) return;
+    if (file.size > BACKUP_MAX_BYTES) { toastr.error('备份文件过大（超过 50 MB），已取消导入'); return; }
+    let data;
+    try {
+        data = JSON.parse(await file.text());
+    } catch {
+        toastr.error('这不是有效的备份文件（不是合法 JSON）');
+        return;
+    }
+    if (!isPlainObject(data) || data.app !== BACKUP_APP || !isPlainObject(data.chars)) {
+        toastr.error('这不是 Serendipity 的备份文件');
+        return;
+    }
+    const total = Object.keys(data.chars).length;
+    const when = data.exportedAt ? fmtTime(data.exportedAt) : '未知时间';
+    if (!confirm('备份导出于 ' + when + (data.version ? '（v' + data.version + '）' : '') + '，含 ' + total + ' 个聊天的数据。\n\n导入会覆盖同一聊天的现有数据，其它聊天的数据保留；屏蔽词、指令与现有的合并。确定导入吗？')) return;
+
+    const { imported, skipped } = applyBackup(data);
+    saveSettings();
+    activateCharacter();
+    updatePromptInjection();
+    applyCensorAll();
+    renderMemories();
+    renderTimeAxis();
+    renderPeople();
+    renderBlockedWords();
+    renderInstructions();
+    renderForeshadows();
+    renderChecks();
+    renderCharBinding();
+    $('#st-serendipity .st-sd__censor-toggle').prop('checked', censorOn());
+    if (settings.semanticRecall && settings.semanticRecall.enabled) scheduleSemanticSync();
+    toastr.success('已导入 ' + imported + ' 个聊天的数据' + (skipped ? '（跳过 ' + skipped + ' 项无法识别的条目）' : ''));
+}
+
+// ---------------- 插件更新提醒 ----------------
+const UPDATE_CHECK_INTERVAL = 6 * 3600 * 1000;   // 自动检查间隔
+const UPDATE_NOTIFY_INTERVAL = 24 * 3600 * 1000; // 弹窗提醒间隔（点了「稍后」不会反复弹）
+const updateState = { phase: 'idle', available: false, updated: false, commit: '', error: '' }; // phase: idle | checking | updating
+
+function pluginFolderName() {
+    try {
+        const m = new URL(import.meta.url).pathname.match(/\/extensions\/third-party\/([^/]+)\/[^/]*$/);
+        return m ? decodeURIComponent(m[1]) : '';
+    } catch { return ''; }
+}
+function pluginIsGlobal(folder) {
+    try { return stExt.extensionTypes?.['third-party/' + folder] === 'global'; } catch { return false; }
+}
+function updateCache() {
+    const root = extension_settings[extensionName];
+    if (!isPlainObject(root.update)) root.update = {};
+    return root.update;
+}
+
+async function extensionApi(path, folder, timeoutMs) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        const res = await fetch(path, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ extensionName: folder, global: pluginIsGlobal(folder) }),
+            signal: ctrl.signal,
+        });
+        if (!res.ok) {
+            if (res.status === 403) throw new Error('没有权限：这个插件装在酒馆的全局目录，需要用管理员账号更新');
+            const t = safeErrorText(await res.text().catch(() => ''), '', 80);
+            throw new Error('HTTP ' + res.status + (t ? ' ' + t : ''));
+        }
+        return await res.json();
+    } catch (e) {
+        if (e && e.name === 'AbortError') throw new Error('请求超时');
+        throw e;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function renderUpdateState() {
+    const banner = $('#st-serendipity .st-sd__update');
+    const link = $('#st-serendipity .st-sd__chk-update');
+    if (!banner.length) return;
+    const busy = updateState.phase !== 'idle';
+    link.text(updateState.phase === 'checking' ? '检查中…' : '检查更新').prop('disabled', busy);
+    banner.toggle(updateState.available || updateState.updated || updateState.phase === 'updating');
+    banner.find('.st-sd__update-go').toggle(updateState.available && !updateState.updated).prop('disabled', busy)
+        .text(updateState.phase === 'updating' ? '更新中…' : '立即更新');
+    banner.find('.st-sd__update-reload').toggle(updateState.updated);
+    banner.find('.st-sd__update-later').toggle(updateState.available && !updateState.updated && !busy);
+    banner.find('.st-sd__update-text').text(
+        updateState.updated ? 'Serendipity 已更新' + (updateState.commit ? '（' + updateState.commit + '）' : '') + '，刷新页面后生效。'
+            : updateState.phase === 'updating' ? '正在更新，请稍候（需要服务器能访问 GitHub）…'
+                : '发现新版本，当前 v' + VERSION + '。'
+    );
+}
+
+function showUpdateToast() {
+    const html = '<div>Serendipity 有新版本可用（当前 v' + VERSION + '）</div>'
+        + '<div class="st-sd-toast-actions">'
+        + '<button type="button" class="st-sd-toast-btn st-sd-toast-update">立即更新</button>'
+        + '<button type="button" class="st-sd-toast-btn st-sd-toast-open">打开面板</button>'
+        + '</div>';
+    const t = toastr.info(html, 'Serendipity 插件更新', { timeOut: 0, extendedTimeOut: 0, closeButton: true, tapToDismiss: false, escapeHtml: false });
+    if (!t) return;
+    t.find('.st-sd-toast-update').on('click', () => { toastr.clear(t); performPluginUpdate(); });
+    t.find('.st-sd-toast-open').on('click', () => { toastr.clear(t); togglePanel(true); });
+}
+
+function maybeNotifyUpdate() {
+    if (!updateState.available || updateState.updated) return;
+    const c = updateCache();
+    if (Date.now() - (c.notifiedAt || 0) < UPDATE_NOTIFY_INTERVAL) return;
+    c.notifiedAt = Date.now();
+    saveSettings();
+    showUpdateToast();
+}
+
+async function checkPluginUpdate({ manual = false } = {}) {
+    if (updateState.phase !== 'idle') return;
+    const folder = pluginFolderName();
+    if (!folder) {
+        if (manual) toastr.warning('无法确定插件的安装目录，请到「扩展 → 管理扩展」里更新');
+        return;
+    }
+    updateState.phase = 'checking';
+    updateState.error = '';
+    renderUpdateState();
+    try {
+        const data = await extensionApi('/api/extensions/version', folder, 30000);
+        updateState.available = !!data && data.isUpToDate === false;
+        Object.assign(updateCache(), { at: Date.now(), available: updateState.available, ver: VERSION });
+        saveSettings();
+    } catch (e) {
+        updateState.error = safeErrorText(e);
+        console.warn('[Serendipity] 检查更新失败：', updateState.error);
+        if (manual) toastr.warning('检查更新失败：' + updateState.error);
+    } finally {
+        updateState.phase = 'idle';
+        renderUpdateState();
+    }
+    if (updateState.error) return;
+    if (updateState.available) {
+        if (manual) { updateCache().notifiedAt = Date.now(); showUpdateToast(); } else maybeNotifyUpdate();
+    } else if (manual) {
+        toastr.success('Serendipity 已是最新版本（v' + VERSION + '）');
+    }
+}
+
+async function performPluginUpdate() {
+    if (updateState.phase !== 'idle') return;
+    const folder = pluginFolderName();
+    if (!folder) { toastr.warning('无法确定插件的安装目录，请到「扩展 → 管理扩展」里更新'); return; }
+    updateState.phase = 'updating';
+    updateState.error = '';
+    renderUpdateState();
+    try {
+        const data = await extensionApi('/api/extensions/update', folder, 120000);
+        updateState.available = false;
+        updateState.updated = true;
+        updateState.commit = (data && data.shortCommitHash) || '';
+        Object.assign(updateCache(), { at: Date.now(), available: false, ver: VERSION });
+        saveSettings();
+        const t = toastr.success('<div>Serendipity 已更新' + (updateState.commit ? '（' + escapeHtml(updateState.commit) + '）' : '') + '，刷新页面后生效。</div>'
+            + '<div class="st-sd-toast-actions"><button type="button" class="st-sd-toast-btn st-sd-toast-reload">立即刷新</button></div>',
+            'Serendipity 插件更新', { timeOut: 0, extendedTimeOut: 0, closeButton: true, tapToDismiss: false, escapeHtml: false });
+        if (t) t.find('.st-sd-toast-reload').on('click', () => location.reload());
+    } catch (e) {
+        updateState.error = safeErrorText(e);
+        toastr.error('更新失败：' + updateState.error + '。可以到「扩展 → 管理扩展」里手动更新。');
+    } finally {
+        updateState.phase = 'idle';
+        renderUpdateState();
+    }
+}
+
+// 启动时：先用上次的检查结果（只在版本没变时有效），再按间隔联网检查
+function initUpdateReminder() {
+    const c = updateCache();
+    if (c.ver === VERSION && c.available) updateState.available = true;
+    renderUpdateState();
+    maybeNotifyUpdate();
+    const stale = !c.at || c.ver !== VERSION || Date.now() - c.at > UPDATE_CHECK_INTERVAL;
+    if (stale) setTimeout(() => checkPluginUpdate(), 10000);
+}
+
 // ---------------- 初始化 ----------------
 jQuery(async () => {
     globalSettings = loadSettings();
@@ -4521,6 +4913,7 @@ jQuery(async () => {
     renderForeshadows();
     renderChecks();
     renderCharBinding();
+    initUpdateReminder();
 });
 
 // ST 自动更新扩展后会调用 manifest.hooks.update 指向的这个函数（此时新代码已 git pull 到磁盘），

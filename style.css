@@ -551,7 +551,8 @@
     color: var(--sd-text-3);
     line-height: 1.7;
 }
-.st-sd__reset-row { margin-top: 14px; }
+.st-sd__reset-row { margin-top: 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.st-sd__reset-row .st-sd__reset { margin-left: auto; }
 .st-sd__empty {
     padding: 28px 12px;
     text-align: center;
@@ -1339,6 +1340,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 /* ============ 移动端（≤1000px） ============ */
 @media screen and (max-width: 1000px) {
     .st-sd__head { padding: 20px 20px 16px; }
+    .st-sd__update { padding: 9px 20px; }
     .st-sd__tabs { padding: 0 8px; overflow-x: auto; }
     .st-sd__tab { flex: 1 0 auto; padding: 12px 8px 11px; font-size: 12px; }
     .st-sd__pane { padding: 20px 20px 28px; }
@@ -1369,3 +1371,38 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 }
 .st-sd__recall-meta { font-size: 11px; color: var(--sd-text-2); margin-bottom: 3px; }
 .st-sd__recall-item--stale { opacity: 0.55; }
+
+/* 备份 / 恢复 */
+.st-sd__backup-export, .st-sd__backup-import {
+    border: none; background: transparent; padding: 2px 0; font-size: 12px; cursor: pointer;
+    color: var(--sd-accent-deep); text-decoration: underline; text-underline-offset: 3px;
+}
+.st-sd__backup-export:hover, .st-sd__backup-import:hover { opacity: 0.75; }
+
+/* 插件更新提醒 */
+.st-sd__chk-update {
+    border: none; background: transparent; padding: 0; font-size: 11px; cursor: pointer;
+    color: var(--sd-text-3); text-decoration: underline; text-underline-offset: 3px;
+}
+.st-sd__chk-update:hover { color: var(--sd-accent-deep); }
+.st-sd__chk-update:disabled { opacity: 0.6; cursor: default; }
+.st-sd__update {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
+    margin: 0; padding: 9px 40px; font-size: 12px;
+    background: var(--sd-accent-bg); color: var(--sd-text);
+    border-bottom: 1px solid var(--sd-border);
+}
+.st-sd__update-text { flex: 1 1 auto; min-width: 0; }
+.st-sd__update-go, .st-sd__update-reload, .st-sd__update-later {
+    border: 1px solid var(--sd-border-2); background: var(--sd-surface); color: var(--sd-text);
+    border-radius: 6px; padding: 3px 11px; font-size: 12px; cursor: pointer;
+}
+.st-sd__update-go, .st-sd__update-reload { border-color: var(--sd-accent-deep); }
+.st-sd__update-go:hover, .st-sd__update-reload:hover, .st-sd__update-later:hover { background: var(--sd-surface-2); }
+.st-sd__update-go:disabled { opacity: 0.6; cursor: default; }
+.st-sd-toast-actions { display: flex; gap: 8px; margin-top: 8px; }
+.st-sd-toast-btn {
+    border: 1px solid rgba(255, 255, 255, 0.6); background: rgba(255, 255, 255, 0.15); color: inherit;
+    border-radius: 5px; padding: 3px 12px; font-size: 12px; cursor: pointer;
+}
+.st-sd-toast-btn:hover { background: rgba(255, 255, 255, 0.3); }
