@@ -153,7 +153,7 @@ serendipity
 | `entities` | 角色实体列表 `{ id, name, age, note, world, timeline, identity, body, mind, goal, secret, promise }`（姓名/年龄/简介 + 身份域：世界/时间线/身份 + 人物状态：身体/心理/目标/秘密/承诺） |
 | `relationshipLines` | 情感线列表 `{ id, a, b, current:{affection,relationship,attitude}, history:[{id,day,from,to,change,reason,event}] }`（谁→谁 + 当前关系 + 变化轨迹） |
 | `shared.blockedWords` / `shared.censorEnabled`（全局） | 屏蔽词列表 / 开关，不在聊天数据里 |
-| `shared.theme`（全局） | 面板主题偏好（静谧/蜜桃牛奶/薄荷汽水/薰衣草/奶油布丁/夜航），只影响本机显示 |
+| `shared.theme`（全局） | 面板主题偏好（静谧/蜜桃牛奶/薄荷汽水/薰衣草/奶油布丁/云朵蓝），只影响本机显示 |
 | `charPrefs[charKey].instructions`（角色卡级） | 指令列表 `{ id, text, enabled }`，不在聊天数据里 |
 | `foreshadows` / `injectForeshadows` | 伏笔列表 `{ id, title, status, note, day }` / 是否注入正文 |
 | `checks` / `ignoredChecks` | 一致性检查结果 `{ id, type, text, day }` / 已忽略的本地时间检查文本 |
