@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.6'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.7'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -5019,6 +5019,17 @@ window.Serendipity.getDirectorContext = function (opts) {
         truncated,
         sections,
         text,
+    };
+};
+
+// 只读：完整的伏笔列表（含 id / 状态 / 备注 / 埋下日），供 Amor 等插件按条规划铺垫与回收；不改任何数据
+window.Serendipity.getForeshadows = function () {
+    if (!settings) return null;
+    return {
+        storyDay: settings.storyDay != null ? settings.storyDay : null,
+        items: (settings.foreshadows || [])
+            .filter(f => f && f.id && typeof f.title === 'string' && f.title.trim())
+            .map(f => ({ id: f.id, title: f.title.trim(), status: f.status, note: f.note || '', day: f.day == null ? null : f.day })),
     };
 };
 
