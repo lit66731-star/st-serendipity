@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.2.6'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.2.7'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -341,6 +341,7 @@ function freshCharSettings() {
         storyDay: null,         // 结构化时间轴：第X天（null=尚未建立）
         storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
         storyLocation: '',      // 当前地点
+        pendingJump: null,      // 待确认的大跨度时间跳跃 { day, period, location, storyTime, event, recollection, from, memIds }（null=无）
         worldState: [],         // 世界状态列表（非人物信息）[{ id, cat: '物品'|'日程', text }]
         entities: [],           // 角色实体 [{ id, name, age, note, world, timeline, identity, body, mind, goal, secret, promise }]（姓名/年龄/简介 + 身份域 + 人物状态）
         autoRegisterEntities: true, // 总结时是否自动把「在场人物」登记进角色实体（默认开）
@@ -515,6 +516,21 @@ function normalizeCharSettings(cs) {
     else cs.storyDay = Number(cs.storyDay);
     if (typeof cs.storyPeriod !== 'string') cs.storyPeriod = '';
     if (typeof cs.storyLocation !== 'string') cs.storyLocation = '';
+    {
+        const pj = cs.pendingJump;
+        if (pj && typeof pj === 'object' && Number.isFinite(Number(pj.day)) && cs.storyDay != null) {
+            cs.pendingJump = {
+                day: Number(pj.day),
+                period: typeof pj.period === 'string' ? pj.period : '',
+                location: typeof pj.location === 'string' ? pj.location : '',
+                storyTime: typeof pj.storyTime === 'string' ? pj.storyTime : '',
+                event: typeof pj.event === 'string' ? pj.event : '',
+                recollection: !!pj.recollection,
+                from: Number.isFinite(Number(pj.from)) ? Number(pj.from) : cs.storyDay,
+                memIds: Array.isArray(pj.memIds) ? pj.memIds.filter(x => typeof x === 'string') : [],
+            };
+        } else cs.pendingJump = null;
+    }
     if (cs.worldReminderShown === undefined) cs.worldReminderShown = false;
     if (typeof cs.worldBook !== 'string') cs.worldBook = '';
     if (typeof cs.archivedWorldBook !== 'string') cs.archivedWorldBook = '';
@@ -943,6 +959,25 @@ function checkTimeAdvance(day) {
     if (day < prev) return { kind: 'backward', prev };
     if (day - prev > TIMELINE_JUMP_WARN) return { kind: 'jump', prev };
     return { kind: 'ok', prev };
+}
+
+// 采用待确认的大跨度跳跃：时间轴推进到该天，补记当时的时间线条目，并把挂起期间写下的记忆改标到新日期
+function applyPendingJump() {
+    const p = settings.pendingJump;
+    if (!p) return;
+    settings.pendingJump = null;
+    settings.storyDay = p.day;
+    if (p.period) settings.storyPeriod = p.period;
+    if (p.location) settings.storyLocation = p.location;
+    if (p.storyTime) settings.storyTime = p.storyTime;
+    if (!p.recollection) pushTimelineEntry(p.day, settings.storyTime, p.location, p.event, p.period);
+    for (const m of settings.memories) {
+        if (!p.memIds.includes(m.id)) continue;
+        m.storyDay = p.day;
+        if (p.period) m.storyPeriod = p.period;
+        if (p.location) m.storyLocation = p.location;
+        if (p.storyTime) m.storyTime = p.storyTime;
+    }
 }
 
 // 时间线列表：叠加新场景（第X天/年月日几时几分/地点/重要事情）
@@ -1571,7 +1606,7 @@ async function compressLongMemory(longId, sources, key, st) {
 // 每次总结前给「会被总结改动的状态」拍快照，连同被总结的那条 AI 消息的签名存进日志；
 // 之后若那条消息被重新生成 / 滑动换版本 / 删除，就回滚到快照，让下一次总结按新内容重做
 const JOURNAL_MAX = 3;
-const JOURNAL_KEYS = ['storyTime', 'storyDay', 'storyPeriod', 'storyLocation', 'memories', 'longMemories', 'timeline', 'worldState', 'entities', 'pendingEntityAssignments', 'relationshipLines', 'lastSummaryIndex'];
+const JOURNAL_KEYS = ['storyTime', 'storyDay', 'storyPeriod', 'storyLocation', 'pendingJump', 'memories', 'longMemories', 'timeline', 'worldState', 'entities', 'pendingEntityAssignments', 'relationshipLines', 'lastSummaryIndex'];
 
 function messageSig(m) {
     if (!m) return '';
@@ -1706,15 +1741,30 @@ async function summarizeLastRound() {
             // 解析结构化时间轴（第X天/地点/重要事情），解析失败则沿用上一次，保证时间轴不倒退
             const axis = extractTimeAxis(result);
             // 写入保护：天数比当前小 = 模型把「回忆过去」写成了当前进度，不回退时间轴、不记成当前条目
-            const adv = axis ? checkTimeAdvance(axis.day) : { kind: 'ok' };
-            const backward = adv.kind === 'backward';
+            let adv = axis ? checkTimeAdvance(axis.day) : { kind: 'ok' };
+            // 已有待确认的大跨度：新总结回到原进度附近 = 上次误判，丢弃；与待确认天数吻合 = 采用
+            if (axis && axis.day != null && settings.pendingJump && adv.prev != null) {
+                const pj = settings.pendingJump;
+                if (adv.kind === 'ok') {
+                    settings.pendingJump = null;
+                    toastr.info('上次挂起的「跳到第' + pj.day + '天」没有被这次总结印证，已丢弃，时间轴仍按第' + adv.prev + '天推进');
+                } else if (axis.day > adv.prev && Math.abs(axis.day - pj.day) <= TIMELINE_JUMP_WARN) {
+                    applyPendingJump();
+                    adv = { kind: 'ok', prev: settings.storyDay };
+                    toastr.info('连续两次总结都指向第' + axis.day + '天附近，已采用这次时间跳跃');
+                }
+            }
+            const jump = adv.kind === 'jump';
+            const backward = adv.kind === 'backward' || jump; // 倒退或大跨度：都先不改动时间轴
             // 回忆类事件：只是在追述过去，不是现在发生的场景，不记成当前日期的时间线条目
             const recollection = !!axis && axis.recollection && !backward;
-            if (backward) {
+            if (jump) {
+                settings.pendingJump = { day: axis.day, period: axis.period || '', location: axis.location || '', storyTime: newStoryTime || '', event: axis.event || '', recollection: !!axis.recollection, from: adv.prev, memIds: [] };
+                newStoryTime = settings.storyTime;
+                toastr.warning('时间轴想从第' + adv.prev + '天一次跳到第' + axis.day + '天，已先挂起、暂不生效。到面板的时间轴区确认，或下一轮总结仍指向这附近时会自动采用', undefined, { timeOut: 10000 });
+            } else if (backward) {
                 newStoryTime = settings.storyTime;
                 toastr.warning('总结把当前进度写成了第' + axis.day + '天（当前第' + adv.prev + '天），疑似只是回忆过去，已保持时间轴不变', undefined, { timeOut: 8000 });
-            } else if (adv.kind === 'jump') {
-                toastr.warning('时间轴从第' + adv.prev + '天一次跳到第' + axis.day + '天，请确认剧情是否真的过了这么久', undefined, { timeOut: 8000 });
             }
             settings.storyTime = newStoryTime;
             if (axis && !backward) {
@@ -1738,7 +1788,9 @@ async function summarizeLastRound() {
             // 记忆正文去掉【时间轴】【世界状态】【关系变化】【人物档案】行（结构化数据已单独存，正文保持干净）
             const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
-            settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
+            const newMemId = uid();
+            settings.memories.push({ id: newMemId, time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
+            if (jump && settings.pendingJump) settings.pendingJump.memIds.push(newMemId);
             settings.lastSummaryIndex = lastIdx; // 记录已总结到的消息下标，下次只总结新增部分（用总结时的位置，期间新到的消息留给下一次）
             summaryFailStreak[keyBefore] = 0;
             const promoted = promoteMemories();
@@ -2220,8 +2272,13 @@ function renderStoryTime() {
     const metaHtml = metaParts.length
         ? '<div class="st-sd__story-meta">' + metaParts.map(s => `<span>${escapeHtml(s)}</span>`).join('<span class="st-sd__story-dot">·</span>') + '</div>'
         : '';
+    const pj = settings.pendingJump;
+    const jumpHtml = pj
+        ? `<div class="st-sd__jump"><div class="st-sd__jump-text">待确认：时间想从第 ${pj.from} 天跳到第 ${pj.day} 天${pj.location ? '（' + escapeHtml(pj.location) + '）' : ''}，尚未生效</div>
+            <div class="st-sd__jump-btns"><button class="st-sd__jump-ok">采用</button><button class="st-sd__jump-no">忽略</button></div></div>`
+        : '';
     el.html(`<div class="st-sd__story-eyebrow">STORY TIME</div>
-        <div class="st-sd__story-hero">${hero}</div>${metaHtml}`);
+        <div class="st-sd__story-hero">${hero}</div>${metaHtml}${jumpHtml}`);
 }
 
 function renderMemories() {
@@ -4173,13 +4230,31 @@ function bindPanelEvents() {
         updatePromptInjection();
     });
 
+    // 待确认的大跨度时间跳跃：采用 / 忽略
+    panel.on('click', '.st-sd__jump-ok', function () {
+        if (!settings.pendingJump) return;
+        applyPendingJump();
+        saveSettings();
+        updatePromptInjection();
+        refreshLocalChecks();
+        renderMemories();
+        renderTimeAxis();
+        toastr.success('已采用时间跳跃');
+    });
+    panel.on('click', '.st-sd__jump-no', function () {
+        settings.pendingJump = null;
+        saveSettings();
+        renderMemories();
+        renderTimeAxis();
+    });
+
     // 时间轴：手动设定锚点
     const saveAxis = () => {
         const dayVal = parseInt(panel.find('.st-sd__axis-day').val(), 10);
         const storyTime = panel.find('.st-sd__axis-time').val().trim();
         const location = panel.find('.st-sd__axis-loc').val().trim();
         if (isNaN(dayVal) && !storyTime && !location) { toastr.warning('请至少填一项（天数/年月日几时几分/地点）'); return; }
-        if (!isNaN(dayVal) && dayVal >= 0) settings.storyDay = dayVal;
+        if (!isNaN(dayVal) && dayVal >= 0) { settings.storyDay = dayVal; settings.pendingJump = null; }
         if (storyTime) settings.storyTime = storyTime;
         if (location) settings.storyLocation = location;
         saveSettings();

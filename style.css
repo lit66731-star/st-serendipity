@@ -1409,3 +1409,9 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 
 /* 酒馆提示（toastr）要盖在面板之上，否则面板打开时看不到提示/更新提醒 */
 #toast-container { z-index: 2147483600 !important; }
+
+.st-sd__jump { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: rgba(255, 170, 0, 0.14); border: 1px solid rgba(255, 170, 0, 0.45); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; }
+.st-sd__jump-text { font-size: 12px; line-height: 1.5; flex: 1 1 160px; }
+.st-sd__jump-btns { display: flex; gap: 6px; }
+.st-sd__jump-btns button { padding: 3px 12px; border-radius: 6px; border: 1px solid rgba(128, 128, 128, 0.5); background: transparent; color: inherit; cursor: pointer; font-size: 12px; }
+.st-sd__jump-btns .st-sd__jump-ok { background: rgba(255, 170, 0, 0.3); }
