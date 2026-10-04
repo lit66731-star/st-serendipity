@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.2'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.3'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2992,6 +2992,71 @@ function recentChatTexts(n, genType) {
         .trim()).filter(Boolean);
 }
 
+// 最新一条用户消息（关键词通道的查询词；没有用户消息时退回最新一条）
+function latestUserText(genType) {
+    if (!Array.isArray(chat)) return '';
+    let msgs = chat.filter(m => m && typeof m.mes === 'string' && m.mes.trim() && !m.is_system);
+    if ((genType === 'regenerate' || genType === 'swipe') && msgs.length && !msgs[msgs.length - 1].is_user) msgs = msgs.slice(0, -1);
+    const last = msgs.slice(-2).reverse().find(m => m.is_user) || msgs[msgs.length - 1];
+    if (!last) return '';
+    const t = last.mes.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    return t.length > 300 ? t.slice(-300) : t;
+}
+
+// ---------------- 关键词通道（与向量并行，纯本地计算，不调接口、不耗 token） ----------------
+// 中文取相邻两字、英文/数字取整词；用「稀有度」加权，太常见的词（的、我们、今天…）自动不计分。
+// 向量擅长「意思相近」，关键词擅长「人名/地名/物品名」这类字面线索，两路用 RRF 合并。
+function lexGrams(text) {
+    const grams = new Set();
+    const t = String(text || '').toLowerCase();
+    for (const run of t.match(/[\u3400-\u9fff]+/g) || []) {
+        for (let i = 0; i + 1 < run.length; i++) grams.add(run.slice(i, i + 2));
+    }
+    for (const w of t.match(/[a-z0-9]{2,}/g) || []) grams.add(w);
+    return grams;
+}
+
+const lexItemCache = new Map();
+function lexItemGrams(it) {
+    const hit = lexItemCache.get(it.id);
+    if (hit && hit.text === it.text) return hit.grams;
+    if (lexItemCache.size > 5000) lexItemCache.clear();
+    const grams = lexGrams(it.text);
+    lexItemCache.set(it.id, { text: it.text, grams });
+    return grams;
+}
+
+// 返回 [{ item, conf }]，按关键词相关度从高到低；conf∈(0,1] 表示这次字面命中有多可信
+function lexicalRank(queryText, items, limit) {
+    const q = lexGrams(queryText);
+    const N = items.length;
+    if (!q.size || N < 8) return [];
+    const docs = items.map(it => ({ it, grams: lexItemGrams(it) }));
+    const idf = new Map();
+    const maxDf = Math.max(3, N * 0.15);
+    for (const g of q) {
+        let df = 0;
+        for (const d of docs) if (d.grams.has(g)) df++;
+        if (df > 0 && df <= maxDf) idf.set(g, Math.log(1 + N / df));
+    }
+    if (!idf.size) return [];
+    const minScore = Math.log(1 + N / Math.max(2, N * 0.05)); // 至少要有「一个足够稀有的词」的分量
+    const out = [];
+    for (const d of docs) {
+        let score = 0;
+        for (const [g, w] of idf) if (d.grams.has(g)) score += w;
+        if (score < minScore) continue;
+        // 查询很短（比如只说了个名字）时，命中即可信；查询长时，要多个线索一起命中才给满分
+        const conf = q.size <= 4 ? 1 : Math.min(1, score / (2 * minScore));
+        out.push({ item: d.it, score, conf });
+    }
+    out.sort((a, b) => b.score - a.score);
+    return out.slice(0, limit);
+}
+
+// RRF：排名越靠前分越高。名次 1 = 20 分（和原先「相似度排序」的量纲一致，后面的重要度/时间加分不用改）
+function rrfPoints(rank1) { return 20 * 11 / (10 + rank1); }
+
 // 语义查询词：最近 3 条，总长超限时保留最新的那部分（本地 embedding 模型通常只吃前几百个 token）
 function semanticQueryText(genType) {
     const text = recentChatTexts(3, genType).join('\n');
@@ -3045,18 +3110,28 @@ async function runSemanticRecallInjection(genType) {
         if (currentDataKey() !== keyBefore || settings !== st || seq !== semanticRecallSeq) return;
         const meta = Array.isArray(data.metadata) ? data.metadata : [];
         const bridge = buildRelativeTimeBridge(recentChatTexts(2, genType).join('\n'));
-        if (!meta.length && !bridge) { setBlock(''); return; }
+        const allItems = buildRecallItems();
+        const lex = lexicalRank(latestUserText(genType), allItems, Math.max(1, Number(sr.queryTopK) || 20));
+        if (!meta.length && !bridge && !lex.length) { setBlock(''); return; }
         const itemMap = {};
-        for (const it of buildRecallItems()) itemMap[it.id] = it;
+        for (const it of allItems) itemMap[it.id] = it;
         const recentEnts = recentEntityIds();
         const curDay = settings.storyDay;
-        const total = meta.length;
-        const scored = [];
+        const base = new Map(); // id -> { item, pts }
         meta.forEach((m, i) => {
             const it = itemMap[m.index];
             // 条目已被删改（向量库还没同步到）→ 丢弃，绝不把已删除/已改写的旧内容注入
             if (!it || Number(m.hash) !== recallHash(it)) return;
-            let score = (total - i); // 相似度排序：越靠前越高
+            base.set(it.id, { item: it, pts: rrfPoints(i + 1) });
+        });
+        lex.forEach((x, i) => {
+            const cur = base.get(x.item.id);
+            const pts = rrfPoints(i + 1) * x.conf;
+            if (cur) cur.pts += pts; else base.set(x.item.id, { item: x.item, pts });
+        });
+        const scored = [];
+        for (const { item: it, pts } of base.values()) {
+            let score = pts;
             if (it.importance === 'S') score += 4;
             else if (it.importance === 'A') score += 2;
             if (it.day != null && curDay != null) {
@@ -3067,7 +3142,7 @@ async function runSemanticRecallInjection(genType) {
             if (it.entityRef && recentEnts.includes(it.entityRef)) score += 2;
             if (bridge && it.day != null && bridge.days.has(it.day)) score += 4; // 对话里提到的那一天的资料优先召回
             scored.push({ score, item: it });
-        });
+        }
 
         // 去重（同一条 id、正文归一化后一致）+ 取前 topK
         const picked = [];
