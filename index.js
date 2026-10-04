@@ -18,7 +18,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.1.4'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.1.5'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1288,6 +1288,18 @@ function reconcileWithChat() {
     return true;
 }
 
+// 水位线之后是否出现了新的 AI 回复（越界视为有，交给总结去修正水位线）
+function hasUnsummarizedChat() {
+    if (!Array.isArray(chat) || chat.length < 2) return false;
+    const w = settings.lastSummaryIndex;
+    if (w == null || w < 0 || w >= chat.length) return true;
+    for (let i = chat.length - 1; i > w; i--) {
+        const m = chat[i];
+        if (m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim()) return true;
+    }
+    return false;
+}
+
 async function summarizeLastRound() {
     activateCharacter(); // 每次总结前重新绑定到当前角色，避免切换角色后总结写错档
     reconcileWithChat();
@@ -1300,6 +1312,8 @@ async function summarizeLastRound() {
     const start = (settings.lastSummaryIndex != null && settings.lastSummaryIndex >= 0) ? settings.lastSummaryIndex + 1 : 0;
     let sel = indexed.filter(x => x.i >= start);
     if (sel.length < 2) {
+        // 水位线之后没有新对话（重新进入聊天、其他扩展的后台生成等也会触发生成结束事件）：不重复总结
+        if (start <= chat.length - 1) return;
         // 水位线越界（消息被删除/回滚等）：退化为最近一轮，避免从此再也不总结
         let lastCharIdx = -1;
         for (let i = indexed.length - 1; i >= 0; i--) { if (!indexed[i].m.is_user) { lastCharIdx = i; break; } }
@@ -3864,6 +3878,7 @@ jQuery(async () => {
             // 语义召回：每轮生成结束后基于本轮对话做语义召回，为下一轮准备（与酒馆向量化索引同节奏）
             runSemanticRecallInjection();
             if (!settings.memoryEnabled) return;
+            if (!hasUnsummarizedChat()) return; // 没有新对话（重新进入聊天等触发的生成结束事件）不计轮、不总结
             settings.roundsSinceSummary = (settings.roundsSinceSummary || 0) + 1;
             const every = settings.summarizeEvery || 1;
             if (settings.roundsSinceSummary >= every) {
