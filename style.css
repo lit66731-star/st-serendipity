@@ -1367,3 +1367,5 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     background: transparent; border: 1px solid var(--sd-border, rgba(0,0,0,0.15));
     color: var(--sd-text); border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px;
 }
+.st-sd__recall-meta { font-size: 11px; color: var(--sd-text-2); margin-bottom: 3px; }
+.st-sd__recall-item--stale { opacity: 0.55; }

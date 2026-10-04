@@ -20,7 +20,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.2.3'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.2.4'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2291,8 +2291,8 @@ function renderRecall() {
         const model = vectorSourceModel(vs);
         if (model) chips.push('<span class="st-sd__recall-chip">模型：' + escapeHtml(model) + '</span>');
         chips.push(vs.enabled_world_info
-            ? '<span class="st-sd__recall-chip st-sd__recall-chip--ok">世界书向量化：已启用</span>'
-            : '<span class="st-sd__recall-chip st-sd__recall-chip--warn">世界书向量化：未启用</span>');
+            ? '<span class="st-sd__recall-chip st-sd__recall-chip--ok" title="仅「预览酒馆世界书向量」时需要；Serendipity 自己的索引不依赖它">酒馆世界书向量化：已启用</span>'
+            : '<span class="st-sd__recall-chip st-sd__recall-chip--warn" title="仅「预览酒馆世界书向量」时需要；Serendipity 自己的索引不依赖它">酒馆世界书向量化：未启用</span>');
         statusEl.html(chips.join(''));
     }
 
@@ -2304,14 +2304,15 @@ function renderRecall() {
         if (!topkInput.val()) topkInput.val(vs.max_entries != null ? vs.max_entries : 5);
     }
 
+    // 预览范围：默认是 Serendipity 自己的索引；也可以选一本世界书看酒馆向量存储里的归档向量
+    const prevScope = String(worldSelect.val() || '');
     const names = Array.isArray(world_names) ? [...world_names] : [];
-    const current = settings.archivedWorldBook || settings.worldBook || '';
-    if (current && !names.includes(current)) names.unshift(current);
-    if (!names.length) {
-        worldSelect.html('<option value="">（暂无世界书）</option>');
-    } else {
-        worldSelect.html(names.map(n => `<option value="${escapeHtml(n)}"${n === current ? ' selected' : ''}>${escapeHtml(n)}</option>`).join(''));
-    }
+    const archived = settings.archivedWorldBook || settings.worldBook || '';
+    if (archived && !names.includes(archived)) names.unshift(archived);
+    worldSelect.html('<option value="own">Serendipity 当前聊天的索引（实际召回用的）</option>'
+        + names.map(n => `<option value="world:${escapeHtml(n)}">世界书：${escapeHtml(n)}</option>`).join(''));
+    const keep = prevScope && worldSelect.find('option').filter(function () { return this.value === prevScope; }).length;
+    worldSelect.val(keep ? prevScope : 'own');
 
     // 注入正文控件回填（只在首次/切角色时覆盖，避免用户正在输入时被刷新打断）
     const sr = settings.semanticRecall || {};
@@ -2326,13 +2327,68 @@ function renderRecall() {
     renderRecallIndexState();
 }
 
+// 预览 Serendipity 自己的索引：和实际召回用同一个集合、同一套查询参数，只是不加权重排、不去重，直接看向量相似度排序
+async function runOwnSemanticSearch(query) {
+    const panel = $('#st-serendipity');
+    const list = panel.find('.st-sd__recall-list');
+    const vs = extension_settings.vectors;
+    const issue = semanticSourceIssue(vs);
+    if (issue) { list.html('<div class="st-sd__empty">' + escapeHtml(issue) + '。</div>'); return; }
+    const key = currentDataKey();
+    if (!key) { list.html('<div class="st-sd__empty">当前没有选中角色或群聊，没有可预览的索引。</div>'); return; }
+    const st = settings;
+    const thresholdRaw = parseFloat(panel.find('.st-sd__recall-threshold').val());
+    const topkRaw = parseInt(panel.find('.st-sd__recall-topk').val(), 10);
+    const threshold = (!isNaN(thresholdRaw) && thresholdRaw >= 0) ? thresholdRaw : 0;
+    const topK = (!isNaN(topkRaw) && topkRaw >= 1) ? topkRaw : 5;
+    list.html('<div class="st-sd__empty">正在语义搜索…</div>');
+    try {
+        const collectionId = semanticCollectionId();
+        const indexed = await semanticList(collectionId, vs);
+        if (currentDataKey() !== key || settings !== st) return;
+        if (!indexed.length) {
+            list.html('<div class="st-sd__empty">本聊天的索引还是空的（当前 embedding 源/模型下没有向量）。到上面开启「注入正文」让它自动建索引，或点「清空并重建」。</div>');
+            return;
+        }
+        const resp = await semanticVectorFetch('/api/vector/query', semanticBody(collectionId, vs, { searchText: query, topK, threshold }), 30000);
+        const data = await resp.json();
+        if (currentDataKey() !== key || settings !== st) return;
+        const meta = Array.isArray(data.metadata) ? data.metadata : [];
+        if (!meta.length) {
+            list.html('<div class="st-sd__empty">没有召回任何条目（索引里有 ' + indexed.length + ' 条向量，但相似度都低于阈值 ' + escapeHtml(String(threshold)) + '）。把「阈值」调低到 0 再试。</div>');
+            return;
+        }
+        const itemMap = {};
+        for (const it of buildRecallItems()) itemMap[it.id] = it;
+        let stale = 0;
+        list.html(meta.map((m, i) => {
+            const it = itemMap[m.index];
+            const ok = it && Number(m.hash) === recallHash(it);
+            if (!ok) stale++;
+            const head = ok ? (recallTimeLabel(it) + (it.tag ? ' [' + it.tag + ']' : '') + (it.importance ? ' ' + it.importance + '级' : '')) : '（该条已被删改，索引尚未同步，不会被注入）';
+            const body = ok ? it.body : String(m.text || '').trim();
+            return '<div class="st-sd__recall-item' + (ok ? '' : ' st-sd__recall-item--stale') + '">'
+                + '<div class="st-sd__recall-rank">#' + (i + 1) + '</div>'
+                + '<div class="st-sd__recall-body"><div class="st-sd__recall-meta">' + escapeHtml(head) + '</div>' + escapeHtml(body) + '</div>'
+                + '<button type="button" class="st-sd__recall-copy" title="复制这段记忆原文">复制</button>'
+                + '</div>';
+        }).join(''));
+        toastr.success('命中 ' + meta.length + ' 条（按相似度从高到低）' + (stale ? '，其中 ' + stale + ' 条已过期' : ''));
+    } catch (e) {
+        console.error('[Serendipity] 预览语义搜索失败：', e);
+        list.html('<div class="st-sd__empty">语义搜索失败：' + escapeHtml(e && e.message ? e.message : String(e)) + '</div>');
+    }
+}
+
 async function runSemanticSearch() {
     const panel = $('#st-serendipity');
-    const world = String(panel.find('.st-sd__recall-world').val() || '').trim();
+    const scope = String(panel.find('.st-sd__recall-world').val() || 'own');
     const query = String(panel.find('.st-sd__recall-input').val() || '').trim();
     const list = panel.find('.st-sd__recall-list');
-    if (!world) { toastr.warning('请先选择要查询的世界书'); return; }
     if (!query) { toastr.warning('请输入要搜索的一句话'); return; }
+    if (scope === 'own') { await runOwnSemanticSearch(query); return; }
+    const world = scope.replace(/^world:/, '').trim();
+    if (!world) { toastr.warning('请先选择要查询的范围'); return; }
     const vs = extension_settings.vectors;
     const issue = semanticSourceIssue(vs);
     if (issue) { list.html('<div class="st-sd__empty">' + escapeHtml(issue) + '。</div>'); return; }
@@ -3583,11 +3639,11 @@ function buildPanel() {
 
         <div class="st-sd__section-title">手动预览</div>
         <div class="st-sd__recall-world-row">
-          <span class="st-sd__label">世界书</span>
-          <select class="st-sd__recall-world" title="要查询哪本世界书的向量（对应归档时选择的世界书）"></select>
+          <span class="st-sd__label">范围</span>
+          <select class="st-sd__recall-world" title="默认查 Serendipity 自己的索引（和实际召回用的是同一份）；也可选一本世界书，查酒馆向量存储里归档的向量"></select>
         </div>
         <div class="st-sd__recall-search">
-          <input type="text" class="st-sd__recall-input" placeholder="输入一句话，看语义召回会带回哪几条记忆，如「沈砚身上的旧伤」" autocomplete="off">
+          <input type="text" class="st-sd__recall-input" placeholder="输入一句话，看语义召回会带回哪几条，如「上次约定的地点」" autocomplete="off">
           <button type="button" class="st-sd__recall-run">语义搜索</button>
         </div>
         <div class="st-sd__recall-tune">
@@ -3595,7 +3651,7 @@ function buildPanel() {
           <label class="st-sd__recall-tune-item">阈值 <input type="number" class="st-sd__recall-threshold" min="0" max="1" step="0.05" title="相似度阈值：只显示分数≥此值的条目。没召回时把它调低（如 0）看向量库里到底有什么；只影响这里预览，不改实际召回"></label>
           <label class="st-sd__recall-tune-item">条数 <input type="number" class="st-sd__recall-topk" min="1" max="20" step="1" title="最多显示几条（只影响这里预览，不改实际召回）"></label>
         </div>
-        <div class="st-sd__hint">这里直接调一次酒馆「向量存储」，列出按语义相似度从高到低排序、会被召回的记忆原文。前提：在酒馆「扩展 → 向量存储」里①启用「世界书向量化」②配好 embedding 源；且这本世界书已激活、开过至少一轮生成让向量库索引到这些条目。没召回时把「阈值」调低到 0 试试。</div>
+        <div class="st-sd__hint">默认查 Serendipity 自己的索引（和实际召回是同一个集合），按语义相似度从高到低列出；这里只看向量相似度，不含实际注入时的重要性/时间/人物加权和去重。已被删改但索引还没同步的条目会标灰。选一本世界书则改查酒馆向量存储里归档的向量，需要酒馆「世界书向量化」已启用且开过至少一轮生成。没结果时把「阈值」调低到 0 试试。</div>
         <div class="st-sd__recall-list"></div>
       </div>
 
