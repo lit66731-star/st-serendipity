@@ -13,12 +13,13 @@ import {
     extension_prompt_types,
 } from '../../../../script.js';
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info } from '../../../world-info.js';
+import { selected_group } from '../../../group-chats.js';
 import { getStringHash, copyText } from '../../../utils.js';
 import { textgen_types, textgenerationwebui_settings } from '../../../textgen-settings.js';
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.2.0'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.2.1'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -316,6 +317,7 @@ let settings = null;         // 当前角色的数据（便捷引用）
 let activeChar = '';         // 当前绑定角色的显示名
 let activeCharKey = '';      // 当前绑定角色的唯一键（avatar，同名卡也唯一）
 let isSummarizing = false;
+let noCharSettings = null; // 无角色/群组时的临时数据（不入库）
 let pendingMigration = null; // 旧版扁平数据迁移挂起（角色卡尚未加载完成时暂存）
 let editingId = null;        // 当前处于编辑态的记忆条目 id（null 表示无）
 let isInjecting = false;     // 世界书注入进行中标记（防连点/并发注入）
@@ -551,6 +553,8 @@ function currentCharKey() {
         if (c.avatar && c.avatar !== 'none') return 'avatar::' + c.avatar;
         if (c.name) return 'name::' + c.name;
     }
+    // 群聊时 this_chid 为空：用群组 id 作键，避免所有群聊/无角色状态共用同一份数据
+    if (this_chid === undefined && selected_group) return 'group::' + selected_group;
     return '';
 }
 
@@ -581,7 +585,7 @@ function activateCharacter() {
     activeChar = currentCharName();
     activeCharKey = currentCharKey();
     // 老版本按 name 存的数据 → 迁到唯一键下（每个角色一次）
-    if (activeCharKey && globalSettings.chars[activeChar] && !globalSettings.chars[activeCharKey]) {
+    if (activeChar && activeCharKey && globalSettings.chars[activeChar] && !globalSettings.chars[activeCharKey]) {
         globalSettings.chars[activeCharKey] = normalizeCharSettings(globalSettings.chars[activeChar]);
         delete globalSettings.chars[activeChar];
         saveSettings();
@@ -602,7 +606,8 @@ function activateCharacter() {
             saveSettings();
         }
     }
-    settings = charData(dataKey);
+    // 没有任何可用的角色/群组时用一份不入库的临时数据，避免往 chars[''] 写脏条目
+    settings = dataKey ? charData(dataKey) : (noCharSettings || (noCharSettings = normalizeCharSettings(freshCharSettings())));
 }
 
 function loadSettings() {
@@ -661,6 +666,12 @@ function apiEndpoint(url) {
     if (/\/chat\/completions$/i.test(url)) return url;
     return url + '/chat/completions';
 }
+const LLM_TIMEOUT_MS = 120000; // 单次模型调用上限，防止请求挂起导致并发锁永远不释放
+function withTimeout(p, ms) {
+    let t;
+    const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error('请求超时（' + Math.round(ms / 1000) + ' 秒）')), ms); });
+    return Promise.race([p, timeout]).finally(() => clearTimeout(t));
+}
 async function callCustomApi({ prompt, systemPrompt }) {
     const c = getApiCfg();
     const headers = { 'Content-Type': 'application/json' };
@@ -668,11 +679,22 @@ async function callCustomApi({ prompt, systemPrompt }) {
     const messages = [];
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
     messages.push({ role: 'user', content: prompt });
-    const res = await fetch(apiEndpoint(c.url), {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ model: c.model.trim(), messages, stream: false }),
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), LLM_TIMEOUT_MS);
+    let res;
+    try {
+        res = await fetch(apiEndpoint(c.url), {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ model: c.model.trim(), messages, stream: false }),
+            signal: ctrl.signal,
+        });
+    } catch (e) {
+        if (e && e.name === 'AbortError') throw new Error('请求超时（' + Math.round(LLM_TIMEOUT_MS / 1000) + ' 秒）');
+        throw e;
+    } finally {
+        clearTimeout(timer);
+    }
     if (!res.ok) {
         const t = await res.text().catch(() => '');
         throw new Error('HTTP ' + res.status + (t ? ' ' + t.slice(0, 120) : ''));
@@ -691,7 +713,7 @@ async function callLLM({ prompt, systemPrompt }) {
             toastr.warning('自定义总结 API 调用失败（' + (e.message || e) + '），已改用酒馆默认 API');
         }
     }
-    return generateRaw({ prompt, systemPrompt });
+    return withTimeout(Promise.resolve(generateRaw({ prompt, systemPrompt })), LLM_TIMEOUT_MS + 60000);
 }
 
 // ---------------- 记忆功能 ----------------
@@ -1306,6 +1328,8 @@ function refreshLocalChecks() {
 async function runConsistencyCheck() {
     if (isSummarizing) return; // 复用并发锁，防止连点/与总结抢跑
     activateCharacter();
+    const keyBefore = currentDataKey();
+    const stBefore = settings;
     isSummarizing = true;
     toastr.info('正在检查剧情一致性…', undefined, { timeOut: 1500 });
     try {
@@ -1332,6 +1356,7 @@ async function runConsistencyCheck() {
             '逐行输出发现的冲突，格式「类型：描述」，类型取「时间冲突」「状态冲突」「其他」。示例：「时间冲突：记忆里第12天发生的事，但当前才第10天」「状态冲突：林昭第8天已离开京城，第10天却仍在京城」。最多列 10 条，确实没有就只写「无」。',
         ].join('\n');
         const result = await callLLM({ prompt: '请给出剧情一致性检查结果。', systemPrompt });
+        if (currentDataKey() !== keyBefore || settings !== stBefore) { console.warn('[Serendipity] 检查期间切换了聊天，结果已丢弃'); return; }
         const merged = [];
         const seen = new Set();
         for (const it of [...parseChecks(result), ...localConsistencyCheck()]) {
@@ -1414,8 +1439,8 @@ function takeStateSnapshot() {
     for (const k of JOURNAL_KEYS) snap[k] = JSON.parse(JSON.stringify(settings[k] === undefined ? null : settings[k]));
     return snap;
 }
-function pushSummaryJournal(idx, snap) {
-    settings.summaryJournal.push({ idx, sig: messageSig(chat[idx]), snap });
+function pushSummaryJournal(idx, snap, sig) {
+    settings.summaryJournal.push({ idx, sig: sig != null ? sig : messageSig(chat[idx]), snap });
     if (settings.summaryJournal.length > JOURNAL_MAX) settings.summaryJournal.splice(0, settings.summaryJournal.length - JOURNAL_MAX);
 }
 // 对照当前聊天：日志里被总结过的消息不在了/被换了 → 回滚到最早失效条目的快照，返回是否发生回滚
@@ -1456,6 +1481,7 @@ async function summarizeLastRound() {
     activateCharacter(); // 每次总结前重新绑定到当前角色，避免切换角色后总结写错档
     reconcileWithChat();
     if (!settings.memoryEnabled || isSummarizing) return;
+    if (!currentDataKey()) return; // 没有选中角色/群组，没有可写入的档案
     if (!Array.isArray(chat) || chat.length < 2) return;
 
     // 取「上次总结以来」的新消息窗口：每 N 轮才总结时，把中间跳过的几轮一并带上，避免漏剧情
@@ -1478,20 +1504,36 @@ async function summarizeLastRound() {
     const lastMsg = sel[sel.length - 1].m;
     if (lastMsg.is_user) return; // 最后一条是用户消息（尚未回复），跳过
 
-    const lastCharMsg = [...sel].reverse().find(x => !x.m.is_user).m;
-    const lastUserMsg = [...sel].reverse().find(x => x.m.is_user).m;
+    const lastCharMsg = ([...sel].reverse().find(x => !x.m.is_user) || {}).m;
+    const lastUserMsg = ([...sel].reverse().find(x => x.m.is_user) || {}).m;
     if (!lastCharMsg || !lastUserMsg) return;
 
     const transcript = sel.map(x => (x.m.name || (x.m.is_user ? '用户' : '角色')) + '：' + x.m.mes).join('\n\n');
 
+    // await 之前先记下「写给谁」和「总结的是哪条消息」，回来后核对，避免切换聊天串档、滑动后签名记错
+    const keyBefore = currentDataKey();
+    const stBefore = settings;
+    const lastIdx = sel[sel.length - 1].i;
+    const sigBefore = messageSig(lastMsg);
     isSummarizing = true;
     try {
         const { systemPrompt, prompt } = buildSummaryPrompt(transcript, lastUserMsg.name || '用户', lastCharMsg.name || '角色', settings.storyTime);
-        const result = await callLLM({ prompt, systemPrompt });
+        const raw = await callLLM({ prompt, systemPrompt });
+        if (currentDataKey() !== keyBefore || settings !== stBefore) {
+            console.warn('[Serendipity] 总结期间切换了聊天/角色，本次结果已丢弃，不会写入当前聊天');
+            return;
+        }
+        if (!chat[lastIdx] || messageSig(chat[lastIdx]) !== sigBefore) {
+            settings.roundsSinceSummary = Math.max(0, (settings.summarizeEvery || 1) - 1);
+            toastr.info('总结期间那条消息被重新生成/删除，本次结果已丢弃，将按新内容重新总结');
+            return;
+        }
+        // 去掉思维链块，避免推理过程被当成记忆存进去
+        const result = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
         if (result && result.trim()) {
             // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
             // 总结前先拍快照入日志，供重新生成/滑动/删除时回滚
-            pushSummaryJournal(sel[sel.length - 1].i, takeStateSnapshot());
+            pushSummaryJournal(lastIdx, takeStateSnapshot(), sigBefore);
             let newStoryTime = extractStoryTime(result) || settings.storyTime;
             // 解析结构化时间轴（第X天/地点/重要事情），解析失败则沿用上一次，保证时间轴不倒退
             const axis = extractTimeAxis(result);
@@ -1529,7 +1571,7 @@ async function summarizeLastRound() {
             const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
             settings.memories.push({ id: uid(), time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
-            settings.lastSummaryIndex = chat.length - 1; // 记录已总结到的消息下标，下次只总结新增部分
+            settings.lastSummaryIndex = lastIdx; // 记录已总结到的消息下标，下次只总结新增部分（用总结时的位置，期间新到的消息留给下一次）
             const promoted = promoteMemories();
             if (settings.autoFixTime) repairTimeData();
             saveSettings();
@@ -1562,6 +1604,8 @@ async function summarizeLastRound() {
         toastr.error('本轮记忆总结失败');
     } finally {
         isSummarizing = false;
+        // 总结期间若有重新生成/滑动，isSummarizing 会让对账被跳过，这里补一次
+        setTimeout(() => { if (settings) { activateCharacter(); reconcileWithChat(); } }, 0);
     }
 }
 
@@ -2449,10 +2493,10 @@ async function syncSemanticIndex() {
     }
     if (toDelete.length) await semanticDelete(collectionId, vs, toDelete);
 
+    // idx 就是开始时捕获的那个聊天的索引对象，原地更新即可；不能再写 settings（同步期间可能已切到别的聊天）
     idx.items = cur;
-    settings.semanticRecall.index = idx;
     saveSettings();
-    renderRecallIndexState();
+    if (settings.semanticRecall === sr) renderRecallIndexState();
     return items.length;
 }
 
@@ -2495,6 +2539,7 @@ async function runSemanticRecallInjection() {
     if (!vs || vs.source === 'webllm') return;
     const queryText = semanticQueryText();
     if (!queryText) return;
+    const keyBefore = currentDataKey();
     try {
         const body = vectorsRequestBody({});
         body.collectionId = semanticCollectionId();
@@ -2505,6 +2550,7 @@ async function runSemanticRecallInjection() {
         const resp = await fetch('/api/vector/query', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
         if (!resp.ok) return;
         const data = await resp.json();
+        if (currentDataKey() !== keyBefore) return; // 查询期间切换了聊天，结果作废
         const meta = Array.isArray(data.metadata) ? data.metadata : [];
         const bridge = buildRelativeTimeBridge(queryText);
         if (!meta.length && !bridge) {
@@ -4143,8 +4189,11 @@ jQuery(async () => {
     eventSource.on(event_types.MESSAGE_SWIPED, onMessageChanged);
     // 切换聊天/角色后：切换到「该角色 + 该聊天」对应的数据（不同聊天界面各自独立）
     eventSource.on(event_types.CHAT_CHANGED, () => {
+        // 语义召回块是上个聊天的资料，立刻清掉，免得新聊天第一次生成带着旧剧情
+        setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
         setTimeout(() => {
             activateCharacter();
+            runSemanticRecallInjection();
             updatePromptInjection();
             applyCensorAll();
             renderMemories();
