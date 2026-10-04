@@ -18,7 +18,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.1.3'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.1.4'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -344,6 +344,7 @@ function freshCharSettings() {
         relationshipLines: [],  // 情感线/关系轨迹 [{ id, a, b, current:{affection,relationship,attitude}, history:[{id,day,from,to,change,reason,event}] }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
+        summaryJournal: [],     // 总结回滚日志 [{ idx, sig, snap }]：每次总结前的状态快照，用户重新生成/滑动/删除对应消息时据此回滚
         foreshadows: [],        // 伏笔/未完成事项 [{ id, title, status, note, day }]
         injectForeshadows: false, // 是否把未完成伏笔注入正文提醒模型（默认关，以本地管理为主）
         injectChecks: true,      // 是否把已发现的一致性冲突注入正文提醒模型避免重犯（默认开，验证层闭环）
@@ -364,7 +365,7 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows']) {
+    for (const key of ['memories', 'longMemories', 'blockedWords', 'instructions', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows', 'summaryJournal']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
     // 记忆重要度：非 S/A/B 一律归为 ''（未评级，注入时按 B 处理）
@@ -1246,8 +1247,50 @@ function promoteMemories() {
     return { toLong };
 }
 
+// ---------------- 重新生成/滑动/删除 → 记忆回滚 ----------------
+// 每次总结前给「会被总结改动的状态」拍快照，连同被总结的那条 AI 消息的签名存进日志；
+// 之后若那条消息被重新生成 / 滑动换版本 / 删除，就回滚到快照，让下一次总结按新内容重做
+const JOURNAL_MAX = 3;
+const JOURNAL_KEYS = ['storyTime', 'storyDay', 'storyPeriod', 'storyLocation', 'memories', 'longMemories', 'timeline', 'worldState', 'entities', 'pendingEntityAssignments', 'relationshipLines', 'lastSummaryIndex'];
+
+function messageSig(m) {
+    if (!m) return '';
+    return [m.gen_started || '', m.send_date || '', m.swipe_id == null ? 0 : m.swipe_id].join('|');
+}
+function takeStateSnapshot() {
+    const snap = {};
+    for (const k of JOURNAL_KEYS) snap[k] = JSON.parse(JSON.stringify(settings[k] === undefined ? null : settings[k]));
+    return snap;
+}
+function pushSummaryJournal(idx, snap) {
+    settings.summaryJournal.push({ idx, sig: messageSig(chat[idx]), snap });
+    if (settings.summaryJournal.length > JOURNAL_MAX) settings.summaryJournal.splice(0, settings.summaryJournal.length - JOURNAL_MAX);
+}
+// 对照当前聊天：日志里被总结过的消息不在了/被换了 → 回滚到最早失效条目的快照，返回是否发生回滚
+function reconcileWithChat() {
+    if (!settings || isSummarizing || !Array.isArray(chat) || !chat.length) return false;
+    const j = settings.summaryJournal;
+    if (!Array.isArray(j) || !j.length) return false;
+    const bad = j.findIndex(e => !chat[e.idx] || messageSig(chat[e.idx]) !== e.sig);
+    if (bad < 0) return false;
+    const snap = j[bad].snap;
+    for (const k of JOURNAL_KEYS) {
+        if (snap[k] !== undefined) settings[k] = JSON.parse(JSON.stringify(snap[k]));
+    }
+    settings.summaryJournal = j.slice(0, bad);
+    settings.roundsSinceSummary = Math.max(0, (settings.summarizeEvery || 1) - 1); // 下一次生成结束立即重新总结
+    refreshLocalChecks();
+    updatePromptInjection();
+    renderMemories();
+    renderTimeAxis();
+    renderPeople();
+    toastr.info('检测到消息被重新生成/删除，已回滚对应的记忆与时间轴，将按新内容重新总结');
+    return true;
+}
+
 async function summarizeLastRound() {
     activateCharacter(); // 每次总结前重新绑定到当前角色，避免切换角色后总结写错档
+    reconcileWithChat();
     if (!settings.memoryEnabled || isSummarizing) return;
     if (!Array.isArray(chat) || chat.length < 2) return;
 
@@ -1281,6 +1324,8 @@ async function summarizeLastRound() {
         const result = await callLLM({ prompt, systemPrompt });
         if (result && result.trim()) {
             // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
+            // 总结前先拍快照入日志，供重新生成/滑动/删除时回滚
+            pushSummaryJournal(sel[sel.length - 1].i, takeStateSnapshot());
             let newStoryTime = extractStoryTime(result) || settings.storyTime;
             // 解析结构化时间轴（第X天/地点/重要事情），解析失败则沿用上一次，保证时间轴不倒退
             const axis = extractTimeAxis(result);
@@ -1615,6 +1660,7 @@ async function injectToWorldBook() {
         await saveWorldInfo(worldName, data, true);
         settings.archivedWorldBook = worldName; // 记录归档目标，用于「未激活」常驻黄条提醒
         settings.longMemories = [];              // 归档后清空长期记忆（正文注入保持有界）
+        settings.summaryJournal = [];            // 归档改动了长期记忆，旧快照不能再回滚
         settings.worldReminderShown = false;
         saveSettings();
         updatePromptInjection();
@@ -3813,6 +3859,8 @@ jQuery(async () => {
     eventSource.on(event_types.GENERATION_ENDED, () => {
         setTimeout(() => {
             if (!settings) return;
+            activateCharacter();
+            reconcileWithChat(); // 重新生成/滑动后先回滚旧记忆，再按新内容总结
             // 语义召回：每轮生成结束后基于本轮对话做语义召回，为下一轮准备（与酒馆向量化索引同节奏）
             runSemanticRecallInjection();
             if (!settings.memoryEnabled) return;
@@ -3824,6 +3872,10 @@ jQuery(async () => {
             }
         }, 200);
     });
+    // 消息被删除 / 滑动换版本：对应的记忆立刻回滚（重新生成时酒馆也会先发删除事件）
+    const onMessageChanged = () => setTimeout(() => { if (settings) { activateCharacter(); reconcileWithChat(); } }, 100);
+    eventSource.on(event_types.MESSAGE_DELETED, onMessageChanged);
+    eventSource.on(event_types.MESSAGE_SWIPED, onMessageChanged);
     // 切换聊天/角色后：切换到「该角色 + 该聊天」对应的数据（不同聊天界面各自独立）
     eventSource.on(event_types.CHAT_CHANGED, () => {
         setTimeout(() => {
