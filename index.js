@@ -21,7 +21,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.2.7'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.2.8'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -349,6 +349,7 @@ function freshCharSettings() {
         relationshipLines: [],  // 情感线/关系轨迹 [{ id, a, b, current:{affection,relationship,attitude}, history:[{id,day,from,to,change,reason,event}] }]
         timeline: [],           // 时间线列表 [{ id, day, time, location, event }]，不断叠加
         checks: [],             // 剧情一致性检查结果 [{ id, type:'time'|'state'|'other', text, day }]
+        ignoredChecks: [],      // 用户忽略/删除过的本地时间检查文本（不再重复提示；情况消失后自动清除）
         timeFixLog: [],         // 时间数据修复记录 [{ time, text }]（只记录对结构化时间数据做过的修正，不改模型生成的文本）
         autoFixTime: false,     // 每轮总结后是否自动修复时间数据（默认关：只检测提醒）
         summaryJournal: [],     // 总结回滚日志 [{ idx, sig, snap }]：每次总结前的状态快照，用户重新生成/滑动/删除对应消息时据此回滚
@@ -372,9 +373,10 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows', 'summaryJournal', 'timeFixLog']) {
+    for (const key of ['memories', 'longMemories', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows', 'summaryJournal', 'timeFixLog', 'ignoredChecks']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
+    cs.ignoredChecks = cs.ignoredChecks.filter(t => typeof t === 'string').slice(-100);
     // 记忆重要度：非 S/A/B 一律归为 ''（未评级，注入时按 B 处理）
     for (const arr of [cs.memories, cs.longMemories]) {
         for (const m of arr) {
@@ -1313,6 +1315,14 @@ function queueEntityAssignment(info, matches) {
 
 // ---------------- 剧情一致性检查 ----------------
 // 本地（免费、不调模型）时间冲突启发式：时间线/记忆里出现「第N天」晚于当前天 → 时间倒退/超前冲突
+// 两条时间线之间的空档（prev 与 day 之间不含两端）里，有没有任何时间线事件或记忆覆盖
+function gapHasRecord(prev, day) {
+    for (let d = prev + 1; d < day; d++) {
+        const { facts, memCount } = dayFacts(d);
+        if (facts.length || memCount) return true;
+    }
+    return false;
+}
 function localConsistencyCheck() {
     const items = [];
     const cur = settings.storyDay;
@@ -1324,7 +1334,7 @@ function localConsistencyCheck() {
         if (prev != null && e.day < prev) {
             const text = '时间线出现倒退：「第' + e.day + '天」' + (e.event ? '（' + e.event + '）' : '') + '排在「第' + prev + '天」之后，可能是回忆被记成了当前进度';
             if (!seen.has(text)) { seen.add(text); items.push({ type: 'time', text }); }
-        } else if (prev != null && e.day - prev > TIMELINE_JUMP_WARN) {
+        } else if (prev != null && e.day - prev > TIMELINE_JUMP_WARN && !gapHasRecord(prev, e.day)) {
             const text = '时间线从「第' + prev + '天」直接跳到「第' + e.day + '天」' + (e.event ? '（' + e.event + '）' : '') + '，中间缺了' + (e.day - prev - 1) + '天';
             if (!seen.has(text)) { seen.add(text); items.push({ type: 'time', text }); }
         }
@@ -1448,11 +1458,25 @@ function parseChecks(text) {
 }
 
 // 每次总结后刷新本地（免费）时间冲突检查，合并进现有结果：本地项重算，AI 的状态冲突项保留
+// 本地检查结果去掉用户已忽略的；已忽略但当前不再出现的条目顺手清掉（情况消失后再出现时视为新问题）
+function activeLocalChecks() {
+    const all = localConsistencyCheck();
+    const texts = new Set(all.map(i => i.text));
+    settings.ignoredChecks = settings.ignoredChecks.filter(t => texts.has(t));
+    const ign = new Set(settings.ignoredChecks);
+    return all.filter(i => !ign.has(i.text));
+}
+function ignoreLocalChecks(items) {
+    for (const c of items) {
+        if (c.type === 'time' && !settings.ignoredChecks.includes(c.text)) settings.ignoredChecks.push(c.text);
+    }
+    if (settings.ignoredChecks.length > 100) settings.ignoredChecks.splice(0, settings.ignoredChecks.length - 100);
+}
 function refreshLocalChecks() {
     const aiItems = settings.checks.filter(c => c.type !== 'time');
     const merged = [];
     const seen = new Set();
-    for (const it of [...aiItems, ...localConsistencyCheck()]) {
+    for (const it of [...aiItems, ...activeLocalChecks()]) {
         if (seen.has(it.text)) continue;
         seen.add(it.text);
         merged.push(it);
@@ -1497,7 +1521,7 @@ async function runConsistencyCheck() {
         if (currentDataKey() !== keyBefore || settings !== stBefore) { console.warn('[Serendipity] 检查期间切换了聊天，结果已丢弃'); return; }
         const merged = [];
         const seen = new Set();
-        for (const it of [...parseChecks(result), ...localConsistencyCheck()]) {
+        for (const it of [...parseChecks(result), ...activeLocalChecks()]) {
             if (seen.has(it.text)) continue;
             seen.add(it.text);
             merged.push(it);
@@ -4604,6 +4628,7 @@ function bindPanelEvents() {
     panel.find('.st-sd__check-clear').on('click', function () {
         if (!settings.checks.length) return;
         if (!confirm('确定清空全部一致性检查结果吗？')) return;
+        ignoreLocalChecks(settings.checks);
         settings.checks = [];
         saveSettings();
         renderChecks();
@@ -4611,6 +4636,7 @@ function bindPanelEvents() {
     });
     panel.on('click', '.st-sd__check-del', function () {
         const id = String($(this).data('id'));
+        ignoreLocalChecks(settings.checks.filter(x => x.id === id));
         settings.checks = settings.checks.filter(x => x.id !== id);
         saveSettings();
         renderChecks();
