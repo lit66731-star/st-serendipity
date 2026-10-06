@@ -7,7 +7,6 @@ import {
     this_chid,
     event_types,
     eventSource,
-    generateRaw,
     getRequestHeaders,
     saveSettingsDebounced,
     setExtensionPrompt,
@@ -23,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.13'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.14'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -724,6 +723,12 @@ function loadSettings() {
     extension_settings[extensionName] = extension_settings[extensionName] || {};
     const s = extension_settings[extensionName];
 
+    // 摘要 API 与总结 API 合并为一份插件 API：老版本单独的 compressApi 若已配置、而 api 未配置，则并入 api
+    if (s.compressApi && s.compressApi.url && s.compressApi.model && !(s.api && s.api.url && s.api.model)) {
+        s.api = { ...(s.api || {}), ...s.compressApi };
+    }
+    delete s.compressApi;
+
     // 旧版扁平结构 → 新版按角色分组（迁移一次，挂到当前角色名下）
     if (s.chars === undefined) {
         const oldLong = Array.isArray(s.longMemories) ? s.longMemories : [];
@@ -762,22 +767,13 @@ function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// ---------------- 模型调用（自定义 API 优先，未设置/失败则用酒馆默认） ----------------
+// ---------------- 模型调用（只用插件自带 API，未设置就直接报错，绝不回退到聊天 API） ----------------
 function getApiCfg() {
     const r = extension_settings[extensionName] || {};
     return r.api || {};
 }
 function apiConfigured() {
     const c = getApiCfg();
-    return !!(c.url && c.model);
-}
-// 压缩聊天历史专用 API（与上面的「总结 API」完全独立，绝不回退到聊天 API）
-function getCompressApiCfg() {
-    const r = extension_settings[extensionName] || {};
-    return r.compressApi || {};
-}
-function compressApiConfigured() {
-    const c = getCompressApiCfg();
     return !!(c.url && c.model);
 }
 function apiEndpoint(url) {
@@ -803,11 +799,6 @@ function safeErrorText(e, key, max = 120) {
     return t.length > max ? t.slice(0, max) + '…' : t;
 }
 const LLM_TIMEOUT_MS = 120000; // 单次模型调用上限，防止请求挂起导致并发锁永远不释放
-function withTimeout(p, ms) {
-    let t;
-    const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error('请求超时（' + Math.round(ms / 1000) + ' 秒）')), ms); });
-    return Promise.race([p, timeout]).finally(() => clearTimeout(t));
-}
 async function callCustomApi({ prompt, systemPrompt, cfg }) {
     const c = cfg || getApiCfg();
     const headers = { 'Content-Type': 'application/json' };
@@ -842,16 +833,10 @@ async function callCustomApi({ prompt, systemPrompt, cfg }) {
     return out;
 }
 async function callLLM({ prompt, systemPrompt }) {
-    if (apiConfigured()) {
-        try {
-            return await callCustomApi({ prompt, systemPrompt });
-        } catch (e) {
-            const detail = safeErrorText(e, getApiCfg().key);
-            console.warn('[Serendipity] 自定义 API 调用失败，改用酒馆默认 API：', detail);
-            toastr.warning('自定义总结 API 调用失败（' + detail + '），已改用酒馆默认 API');
-        }
+    if (!apiConfigured()) {
+        throw new Error('未配置插件 API（不会回退到聊天 API）');
     }
-    return withTimeout(Promise.resolve(generateRaw({ prompt, systemPrompt })), LLM_TIMEOUT_MS + 60000);
+    return callCustomApi({ prompt, systemPrompt });
 }
 
 // ---------------- 记忆功能 ----------------
@@ -1509,6 +1494,7 @@ function refreshLocalChecks() {
 // 手动「立即检查」：调一次模型，对照时间轴/时间线/世界状态/记忆排查矛盾（不往每轮正文里塞）
 async function runConsistencyCheck() {
     if (isSummarizing) return; // 复用并发锁，防止连点/与总结抢跑
+    if (!apiConfigured()) { toastr.warning('请先在「记忆」页配置插件 API（一致性检查不回退聊天 API）'); return; }
     activateCharacter();
     const keyBefore = currentDataKey();
     const stBefore = settings;
@@ -1708,7 +1694,7 @@ function noteSummaryFailure(st, key, lastIdx) {
     summaryFailStreak[key] = 0;
     st.lastSummaryIndex = lastIdx;
     saveSettings();
-    toastr.warning('连续 ' + SUMMARY_FAIL_LIMIT + ' 次总结失败，已跳过这段对话以免一直卡住；请检查总结 API（见「API」页）', undefined, { timeOut: 10000 });
+    toastr.warning('连续 ' + SUMMARY_FAIL_LIMIT + ' 次总结失败，已跳过这段对话以免一直卡住；请检查插件 API（见「记忆」页）', undefined, { timeOut: 10000 });
 }
 
 async function summarizeLastRound() {
@@ -1717,6 +1703,7 @@ async function summarizeLastRound() {
     if (!settings.memoryEnabled || isSummarizing) return;
     if (!currentDataKey()) return; // 没有选中角色/群组，没有可写入的档案
     if (!Array.isArray(chat) || chat.length < 2) return;
+    if (!apiConfigured()) return; // 未配置插件 API：跳过本次总结，不回退聊天 API
 
     // 取「上次总结以来」的新消息窗口：每 N 轮才总结时，把中间跳过的几轮一并带上，避免漏剧情
     const indexed = chat.map((m, i) => ({ m, i })).filter(x => x.m && typeof x.m.mes === 'string' && x.m.mes.trim() && !x.m.is_system);
@@ -1912,7 +1899,7 @@ async function compressChunk(text) {
         '3. 压缩掉寒暄、日常琐事、重复内容。',
         '4. 用中文、第三人称叙述，按时间先后顺序；若输入本身是摘要，请合并成一段完整、不重复、时间线连贯的摘要。',
     ].join('\n');
-    const raw = await callCustomApi({ prompt: text, systemPrompt, cfg: getCompressApiCfg() });
+    const raw = await callCustomApi({ prompt: text, systemPrompt, cfg: getApiCfg() });
     const out = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
     if (!out) throw new Error('压缩总结返回空内容');
     return out;
@@ -1959,8 +1946,8 @@ async function compressChatHistory() {
     activateCharacter();
     if (isCompressing) { toastr.info('正在压缩中，请稍候…'); return; }
     if (selected_group) { toastr.warning('群聊暂不支持压缩聊天历史'); return; }
-    if (!compressApiConfigured()) {
-        toastr.warning('请先在「摘要」页配置独立的摘要 API（未配置不会回退到聊天 API）');
+    if (!apiConfigured()) {
+        toastr.warning('请先在「记忆」页配置插件 API（压缩不回退到聊天 API）');
         return;
     }
     if (!Array.isArray(chat) || chat.length < 3) { toastr.warning('聊天消息太少，无需压缩'); return; }
@@ -4172,7 +4159,7 @@ function buildPanel() {
           <button type="button" class="st-sd__export">导出</button>
         </div>
         <div class="st-sd__api-box">
-          <button type="button" class="st-sd__api-toggle">总结 API 设置</button><span class="st-sd__api-state"></span>
+          <button type="button" class="st-sd__api-toggle">插件 API 设置</button><span class="st-sd__api-state"></span>
           <div class="st-sd__api-form">
             <input type="text" class="st-sd__api-input st-sd__api-url" placeholder="API 地址，如 https://api.openai.com/v1" autocomplete="off">
             <input type="password" class="st-sd__api-input st-sd__api-key" placeholder="API Key" autocomplete="new-password" spellcheck="false">
@@ -4180,9 +4167,9 @@ function buildPanel() {
             <div class="st-sd__api-btns">
               <button type="button" class="st-sd__api-save">保存</button>
               <button type="button" class="st-sd__api-test">测试</button>
-              <button type="button" class="st-sd__api-clear">清除（改用酒馆默认）</button>
+              <button type="button" class="st-sd__api-clear">清除</button>
             </div>
-            <div class="st-sd__hint">填 OpenAI 兼容接口（地址到 /v1 即可）。设置后，总结和一致性检查都走这个 API；留空或调用失败则自动用酒馆当前的默认 API。Key 以明文保存在酒馆的设置文件里（所有角色共用），不会写进备份文件；共用/公开的酒馆实例请不要填你自己的 Key。</div>
+            <div class="st-sd__hint">填 OpenAI 兼容接口（地址到 /v1 即可）。设置后，自动总结、剧情一致性检查、长期记忆压缩、聊天历史压缩全都只走这个 API，不会再回退到酒馆的聊天 API。Key 以明文保存在酒馆的设置文件里（所有角色共用），不会写进备份文件；共用/公开的酒馆实例请不要填你自己的 Key。</div>
           </div>
         </div>
         <div class="st-sd__every-row">
@@ -4219,7 +4206,7 @@ function buildPanel() {
 
       <div class="st-sd__pane" data-pane="summary" style="display:none">
         <div class="st-sd__api-box">
-          <button type="button" class="st-sd__compress-api-toggle">摘要 API 设置</button><span class="st-sd__compress-api-state"></span>
+          <button type="button" class="st-sd__compress-api-toggle">插件 API 设置</button><span class="st-sd__compress-api-state"></span>
           <div class="st-sd__compress-api-form">
             <input type="text" class="st-sd__api-input st-sd__compress-api-url" placeholder="API 地址，如 https://api.openai.com/v1" autocomplete="off">
             <input type="password" class="st-sd__api-input st-sd__compress-api-key" placeholder="API Key（可选）" autocomplete="new-password" spellcheck="false">
@@ -4229,7 +4216,7 @@ function buildPanel() {
               <button type="button" class="st-sd__compress-api-test">测试</button>
               <button type="button" class="st-sd__compress-api-clear">清除</button>
             </div>
-            <div class="st-sd__hint">压缩聊天历史专用 API（OpenAI 兼容接口，地址到 /v1 即可）。建议填一个便宜模型，压缩不占聊天主模型额度。未配置时点「压缩历史」只会提示、不会回退到聊天 API。Key 明文存在酒馆设置里，共用酒馆实例请勿填自己的 Key。</div>
+            <div class="st-sd__hint">与「记忆」页的插件 API 是同一份配置（两处改的是同一个）。OpenAI 兼容接口，地址到 /v1 即可；建议填一个便宜模型。未配置时点「压缩历史」只会提示、不会回退到聊天 API。Key 明文存在酒馆设置里，共用酒馆实例请勿填自己的 Key。</div>
           </div>
         </div>
         <div class="st-sd__compress-row">
@@ -4238,7 +4225,7 @@ function buildPanel() {
           <span class="st-sd__label">条</span>
           <button type="button" class="st-sd__compress">压缩历史</button>
         </div>
-        <div class="st-sd__hint">聊天太长报错 / 卡顿时用：把前面旧消息分段总结成一段剧情摘要，只保留最近若干条，token 骤降、剧情不断。压缩前会自动下载旧消息备份；全程只走上面的「摘要 API」，不碰聊天 API。</div>
+        <div class="st-sd__hint">聊天太长报错 / 卡顿时用：把前面旧消息分段总结成一段剧情摘要，只保留最近若干条，token 骤降、剧情不断。压缩前会自动下载旧消息备份；全程只走上面的「插件 API」，不碰聊天 API。</div>
         <div class="st-sd__compress-result" style="display:none"></div>
       </div>
 
@@ -4443,13 +4430,16 @@ function bindPanelEvents() {
     });
 
     // 立即总结
-    panel.find('.st-sd__summarize').on('click', () => summarizeLastRound());
+    panel.find('.st-sd__summarize').on('click', () => {
+        if (!apiConfigured()) { toastr.warning('请先在「记忆」页配置插件 API（不会回退到聊天 API）'); return; }
+        summarizeLastRound();
+    });
     // 导出记忆
     panel.find('.st-sd__export').on('click', exportMemories);
-    // 总结 API 设置
+    // 插件 API 设置
     const refreshApiState = () => {
         const c = getApiCfg();
-        panel.find('.st-sd__api-state').text(apiConfigured() ? '已启用：' + c.model : '未设置（用酒馆默认）');
+        panel.find('.st-sd__api-state').text(apiConfigured() ? '已启用：' + c.model : '未设置（不会用聊天 API）');
     };
     {
         const c = getApiCfg();
@@ -4468,7 +4458,7 @@ function bindPanelEvents() {
         };
         saveSettings();
         refreshApiState();
-        toastr.success(apiConfigured() ? '总结 API 已保存' : '地址或模型为空，将继续使用酒馆默认 API');
+        toastr.success(apiConfigured() ? '插件 API 已保存' : '地址或模型为空，所有需要 API 的功能将跳过/提示');
     });
     panel.find('.st-sd__api-clear').on('click', () => {
         const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
@@ -4476,7 +4466,7 @@ function bindPanelEvents() {
         panel.find('.st-sd__api-url, .st-sd__api-key, .st-sd__api-model').val('');
         saveSettings();
         refreshApiState();
-        toastr.info('已清除，改用酒馆默认 API');
+        toastr.info('已清除插件 API');
     });
     panel.find('.st-sd__api-test').on('click', async () => {
         const url = String(panel.find('.st-sd__api-url').val() || '').trim();
@@ -4504,13 +4494,13 @@ function bindPanelEvents() {
         saveSettings();
         toastr.success('每 ' + v + ' 轮总结一次');
     });
-    // 摘要（压缩）API 设置：独立于「总结 API」，压缩绝不回退到聊天 API
+    // 摘要（压缩）API：与「插件 API」共用同一份配置（root.api），两个面板改的是同一个，压缩绝不回退到聊天 API
     const refreshCompressApiState = () => {
-        const c = getCompressApiCfg();
-        panel.find('.st-sd__compress-api-state').text(compressApiConfigured() ? '已启用：' + c.model : '未设置（不会用聊天 API）');
+        const c = getApiCfg();
+        panel.find('.st-sd__compress-api-state').text(apiConfigured() ? '已启用：' + c.model : '未设置（不会用聊天 API）');
     };
     {
-        const c = getCompressApiCfg();
+        const c = getApiCfg();
         panel.find('.st-sd__compress-api-url').val(c.url || '');
         panel.find('.st-sd__compress-api-key').val(c.key || '');
         panel.find('.st-sd__compress-api-model').val(c.model || '');
@@ -4521,37 +4511,39 @@ function bindPanelEvents() {
     panel.find('.st-sd__compress-api-toggle').on('click', () => panel.find('.st-sd__compress-api-form').toggleClass('open'));
     panel.find('.st-sd__compress-api-save').on('click', () => {
         const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        root.compressApi = {
+        root.api = {
             url: String(panel.find('.st-sd__compress-api-url').val() || '').trim(),
             key: String(panel.find('.st-sd__compress-api-key').val() || '').trim(),
             model: String(panel.find('.st-sd__compress-api-model').val() || '').trim(),
         };
         saveSettings();
+        refreshApiState();
         refreshCompressApiState();
-        toastr.success(compressApiConfigured() ? '摘要 API 已保存' : '地址或模型为空，压缩将只提示、不调用任何 API');
+        toastr.success(apiConfigured() ? '插件 API 已保存' : '地址或模型为空，压缩将只提示、不调用任何 API');
     });
     panel.find('.st-sd__compress-api-clear').on('click', () => {
         const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        delete root.compressApi;
+        delete root.api;
         panel.find('.st-sd__compress-api-url, .st-sd__compress-api-key, .st-sd__compress-api-model').val('');
         saveSettings();
+        refreshApiState();
         refreshCompressApiState();
-        toastr.info('已清除摘要 API');
+        toastr.info('已清除插件 API');
     });
     panel.find('.st-sd__compress-api-test').on('click', async () => {
         const url = String(panel.find('.st-sd__compress-api-url').val() || '').trim();
         const model = String(panel.find('.st-sd__compress-api-model').val() || '').trim();
         if (!url || !model) { toastr.warning('请先填写 API 地址和模型名'); return; }
         const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        const backup = root.compressApi;
-        root.compressApi = { url, key: String(panel.find('.st-sd__compress-api-key').val() || '').trim(), model };
+        const backup = root.api;
+        root.api = { url, key: String(panel.find('.st-sd__compress-api-key').val() || '').trim(), model };
         try {
-            const out = await callCustomApi({ prompt: '请回复"OK"两个字母。', cfg: root.compressApi });
+            const out = await callCustomApi({ prompt: '请回复"OK"两个字母。', cfg: root.api });
             toastr.success('连接成功：' + String(out).trim().slice(0, 30));
         } catch (e) {
-            toastr.error('连接失败：' + safeErrorText(e, root.compressApi && root.compressApi.key) + '（若是跨域/CORS 报错，换一个允许浏览器直连的中转地址）');
+            toastr.error('连接失败：' + safeErrorText(e, root.api && root.api.key) + '（若是跨域/CORS 报错，换一个允许浏览器直连的中转地址）');
         } finally {
-            if (backup) root.compressApi = backup; else delete root.compressApi;
+            if (backup) root.api = backup; else delete root.api;
         }
     });
     // 压缩聊天历史：按钮触发 + 保留条数
