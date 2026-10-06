@@ -12,6 +12,8 @@ import {
     saveSettingsDebounced,
     setExtensionPrompt,
     extension_prompt_types,
+    saveChat,
+    reloadCurrentChat,
 } from '../../../../script.js';
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info, world_info } from '../../../world-info.js';
 import { power_user } from '../../../power-user.js';
@@ -21,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.7'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.8'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -321,6 +323,7 @@ let settings = null;         // 当前角色的数据（便捷引用）
 let activeChar = '';         // 当前绑定角色的显示名
 let activeCharKey = '';      // 当前绑定角色的唯一键（avatar，同名卡也唯一）
 let isSummarizing = false;
+let isCompressing = false;   // 压缩聊天历史进行中标记（防连点）
 let noCharSettings = null; // 无角色/群组时的临时数据（不入库）
 const noCharPrefs = { instructions: [] }; // 无角色/群组时的临时指令（不入库）
 let pendingMigration = null; // 旧版扁平数据迁移挂起（角色卡尚未加载完成时暂存）
@@ -335,6 +338,7 @@ function freshCharSettings() {
         longMemories: [],       // 长期记忆（短期满 10 合并而来；满 10 提醒归档到世界书）
         memoryEnabled: true,    // 自动记忆开关
         summarizeEvery: 1,      // 每 N 轮总结一次（1=每轮都总结）
+        compressKeep: 20,       // 压缩聊天历史时保留最近多少条消息
         roundsSinceSummary: 0,  // 距上次总结已过的轮数
         lastSummaryIndex: -1,   // 上次总结到的聊天消息下标（-1=尚未总结），用于跨轮总结窗口不丢剧情
         storyTime: '',          // 当前剧情时间（AI 接力维护，每次总结时更新）
@@ -514,6 +518,7 @@ function normalizeCharSettings(cs) {
     else cs.summarizeEvery = Math.floor(cs.summarizeEvery);
     cs.roundsSinceSummary = Number(cs.roundsSinceSummary) || 0;
     cs.lastSummaryIndex = (typeof cs.lastSummaryIndex === 'number' && cs.lastSummaryIndex >= 0) ? Math.floor(cs.lastSummaryIndex) : -1;
+    cs.compressKeep = (Number(cs.compressKeep) >= 2 && Number(cs.compressKeep) <= 200) ? Math.floor(Number(cs.compressKeep)) : 20;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
     if (cs.storyDay === undefined || cs.storyDay === null || isNaN(cs.storyDay)) cs.storyDay = null;
     else cs.storyDay = Number(cs.storyDay);
@@ -1863,6 +1868,113 @@ async function summarizeLastRound() {
     }
 }
 
+// ---------------- 压缩聊天历史（手动按钮：超长聊天救急） ----------------
+const COMPRESS_CHUNK_MAX = 14000; // 单次发给总结模型的最大字符数（分段压缩，避免超长请求也触发中转报错）
+const COMPRESS_KEEP_DEFAULT = 20; // 压缩时默认保留最近多少条消息
+
+// 把一组消息拼成可读对话文本，按 chunkMax 切成多段（太长时 map-reduce 分段总结）
+function buildCompressTranscript(messages, chunkMax) {
+    const chunks = [];
+    let cur = [];
+    let used = 0;
+    const flush = () => { if (cur.length) { chunks.push(cur.join('\n\n')); cur = []; used = 0; } };
+    for (const m of messages) {
+        if (!m || typeof m.mes !== 'string') continue;
+        const label = m.is_system ? '系统' : (m.name || (m.is_user ? '用户' : '角色'));
+        let line = label + '：' + m.mes.trim();
+        if (line.length > chunkMax) line = line.slice(0, chunkMax);
+        if (cur.length && used + line.length > chunkMax) flush();
+        cur.push(line);
+        used += line.length;
+    }
+    flush();
+    return chunks;
+}
+
+// 调一次总结模型：把一段文本压成剧情摘要（isFinal=true 时把多段摘要合并成最终版）
+async function compressChunk(text, isFinal) {
+    const systemPrompt = [
+        '你是剧情压缩助手。请把下面已经发生过的故事内容，压缩成一段连贯、精炼的剧情摘要。',
+        '要求：',
+        '1. 只输出摘要正文本身，不要任何解释、客套、序号或标记。',
+        '2. 保留关键事件、人物关系变化、重要约定/伏笔、当前人物与世界状态。',
+        '3. 压缩掉寒暄、日常琐事、重复内容。',
+        '4. 用中文、第三人称叙述，按时间先后顺序。',
+        isFinal ? '5. 下面这段文字本身可能是若干段已压缩的摘要，请把它们合并成一段完整、不重复、时间线连贯的最终摘要。' : '',
+    ].filter(Boolean).join('\n');
+    const raw = await callLLM({ prompt: text, systemPrompt });
+    const out = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
+    if (!out) throw new Error('压缩总结返回空内容');
+    return out;
+}
+
+// 手动压缩聊天历史：把旧消息总结成一段摘要替换掉，只保留最近 compressKeep 条
+async function compressChatHistory() {
+    activateCharacter();
+    if (isCompressing) { toastr.info('正在压缩中，请稍候…'); return; }
+    if (selected_group) { toastr.warning('群聊暂不支持压缩聊天历史'); return; }
+    if (!Array.isArray(chat) || chat.length < 3) { toastr.warning('聊天消息太少，无需压缩'); return; }
+
+    const keep = Math.max(2, Math.min(200, Math.floor(Number(settings.compressKeep) || COMPRESS_KEEP_DEFAULT)));
+    const oldCount = chat.length - keep;
+    if (oldCount < 2) { toastr.info('当前聊天还不长（不足 ' + (keep + 1) + ' 条），无需压缩'); return; }
+
+    const oldMsgs = chat.slice(0, oldCount).filter(m => m && typeof m.mes === 'string' && m.mes.trim());
+    if (oldMsgs.length < 2) { toastr.info('没有足够的旧消息可压缩'); return; }
+
+    // 先导出旧消息备份（压缩不可逆，备份后可自行找回）
+    downloadText(
+        'serendipity-compress-backup-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json',
+        JSON.stringify({ at: new Date().toISOString(), chatKey: currentDataKey(), removedCount: oldMsgs.length, keptCount: keep, messages: oldMsgs }, null, 2),
+        'application/json;charset=utf-8'
+    );
+
+    isCompressing = true;
+    try {
+        // map：分段总结；reduce：多段合并成最终摘要
+        const chunks = buildCompressTranscript(oldMsgs, COMPRESS_CHUNK_MAX);
+        const parts = [];
+        for (let i = 0; i < chunks.length; i++) {
+            if (chunks.length > 1) toastr.info('正在压缩第 ' + (i + 1) + '/' + chunks.length + ' 段…', undefined, { timeOut: 1500 });
+            parts.push(await compressChunk(chunks[i], false));
+        }
+        const summary = parts.length === 1 ? parts[0] : await compressChunk(parts.join('\n\n'), true);
+
+        // 构造摘要消息：系统消息，不参与角色/用户对话，但会被带入上下文
+        const summaryMsg = {
+            name: '',
+            is_user: false,
+            is_system: true,
+            mes: '【前情摘要】\n' + summary,
+            send_date: Date.now(),
+            gen_started: Date.now(),
+            gen_finished: Date.now(),
+            swipe_id: 0,
+            extra: {},
+        };
+
+        // 替换掉旧消息，只保留摘要 + 最近 keep 条
+        chat.splice(0, oldCount, summaryMsg);
+
+        // 旧消息已被替换：清空总结回滚日志并把水位线重置到末尾，防止下次对账误判「消息被删」而回滚记忆
+        settings.summaryJournal = [];
+        settings.lastSummaryIndex = chat.length - 1;
+        saveSettings();
+
+        await saveChat();
+        await reloadCurrentChat();
+
+        toastr.success('已把 ' + oldMsgs.length + ' 条历史消息压缩为一段摘要，保留最近 ' + keep + ' 条');
+    } catch (e) {
+        console.error('[Serendipity] 压缩聊天历史失败：', e);
+        // 中途失败时内存里的 chat 可能已被 splice 过，重新从磁盘读回原样
+        try { await reloadCurrentChat(); } catch (_) { /* 忽略 */ }
+        toastr.error('压缩失败：' + safeErrorText(e) + '（旧消息未改动，已导出备份文件可找回）');
+    } finally {
+        isCompressing = false;
+    }
+}
+
 // ---------------- 记忆注入正文（防失忆） ----------------
 // S 级记忆排最前并加醒目标记，A 级次之，B/未评级正常排后；让「不能忘」的内容始终压在最前面
 function buildMemoryBlock() {
@@ -2334,6 +2446,8 @@ function renderMemories() {
     renderWorldAlert();
     const everyInput = $('#st-serendipity .st-sd__every-input');
     if (everyInput.length) everyInput.val(settings.summarizeEvery || 1);
+    const compressKeepInput = $('#st-serendipity .st-sd__compress-keep');
+    if (compressKeepInput.length) compressKeepInput.val(settings.compressKeep || COMPRESS_KEEP_DEFAULT);
 
     const hasAny = settings.memories.length || settings.longMemories.length;
     if (!hasAny) {
@@ -3988,6 +4102,13 @@ function buildPanel() {
           <input type="number" class="st-sd__every-input" min="1" max="50" title="每 N 轮自动总结一次，1=每轮都总结">
           <span class="st-sd__label">轮总结一次</span>
         </div>
+        <div class="st-sd__compress-row">
+          <span class="st-sd__label">压缩聊天</span>
+          <input type="number" class="st-sd__compress-keep" min="2" max="200" step="1" title="压缩时保留最近多少条消息">
+          <span class="st-sd__label">条</span>
+          <button type="button" class="st-sd__compress">压缩历史</button>
+        </div>
+        <div class="st-sd__hint">聊天太长报错 / 卡顿时用：把前面旧消息压成一段剧情摘要，只保留最近若干条，token 骤降、剧情不断。压缩前会自动下载一份旧消息备份文件。</div>
         <div class="st-sd__add-row">
           <input type="text" class="st-sd__note-input" placeholder="手动补记一条记忆（立刻记下某个设定/事件，不等自动总结）">
           <button type="button" class="st-sd__add-note">补记</button>
@@ -4276,6 +4397,16 @@ function bindPanelEvents() {
         this.value = v;
         saveSettings();
         toastr.success('每 ' + v + ' 轮总结一次');
+    });
+    // 压缩聊天历史：按钮触发 + 保留条数
+    panel.find('.st-sd__compress').on('click', compressChatHistory);
+    panel.find('.st-sd__compress-keep').on('change', function () {
+        let v = parseInt(this.value, 10);
+        if (isNaN(v) || v < 2) v = 2;
+        if (v > 200) v = 200;
+        settings.compressKeep = v;
+        this.value = v;
+        saveSettings();
     });
     // 注入世界书（事件委托，按钮即使被重建也始终能触发）
     panel.on('click', '.st-sd__inject-world', injectToWorldBook);
