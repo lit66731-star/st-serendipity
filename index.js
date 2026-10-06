@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.12'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.13'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2030,6 +2030,16 @@ async function compressChatHistory() {
         await saveChat();
         await reloadCurrentChat();
 
+        // 记录本次压缩结果，显示在「摘要」页的卡片里
+        settings.lastCompress = {
+            at: Date.now(),
+            removed: oldMsgs.length,
+            kept: keep,
+            text: summary,
+        };
+        saveSettings();
+        renderCompressResult();
+
         toastr.success('已把 ' + oldMsgs.length + ' 条历史消息压缩为一段摘要，保留最近 ' + keep + ' 条');
     } catch (e) {
         console.error('[Serendipity] 压缩聊天历史失败：', e);
@@ -2039,6 +2049,19 @@ async function compressChatHistory() {
     } finally {
         isCompressing = false;
     }
+}
+
+// 把上次压缩的结果渲染成「摘要」页里的卡片
+function renderCompressResult() {
+    const box = $('#st-serendipity .st-sd__compress-result');
+    if (!box.length) return;
+    const lc = settings && settings.lastCompress;
+    if (!lc || typeof lc.text !== 'string' || !lc.text.trim()) { box.hide(); return; }
+    const head = '上次压缩：' + new Date(lc.at).toLocaleString() + ' · 压掉 ' + (lc.removed || 0) + ' 条 · 保留 ' + (lc.kept || 0) + ' 条';
+    box.show().html(
+        '<div class="st-sd__compress-result-head">' + escapeHtml(head) + '</div>' +
+        '<div class="st-sd__compress-result-body">' + escapeHtml(lc.text) + '</div>'
+    );
 }
 
 // ---------------- 记忆注入正文（防失忆） ----------------
@@ -4216,6 +4239,7 @@ function buildPanel() {
           <button type="button" class="st-sd__compress">压缩历史</button>
         </div>
         <div class="st-sd__hint">聊天太长报错 / 卡顿时用：把前面旧消息分段总结成一段剧情摘要，只保留最近若干条，token 骤降、剧情不断。压缩前会自动下载旧消息备份；全程只走上面的「摘要 API」，不碰聊天 API。</div>
+        <div class="st-sd__compress-result" style="display:none"></div>
       </div>
 
       <div class="st-sd__pane" data-pane="recall" style="display:none">
@@ -4492,6 +4516,7 @@ function bindPanelEvents() {
         panel.find('.st-sd__compress-api-model').val(c.model || '');
         panel.find('.st-sd__compress-keep').val(settings.compressKeep || COMPRESS_KEEP_DEFAULT);
         refreshCompressApiState();
+        renderCompressResult();
     }
     panel.find('.st-sd__compress-api-toggle').on('click', () => panel.find('.st-sd__compress-api-form').toggleClass('open'));
     panel.find('.st-sd__compress-api-save').on('click', () => {
