@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.10'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.11'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -771,6 +771,15 @@ function apiConfigured() {
     const c = getApiCfg();
     return !!(c.url && c.model);
 }
+// 压缩聊天历史专用 API（与上面的「总结 API」完全独立，绝不回退到聊天 API）
+function getCompressApiCfg() {
+    const r = extension_settings[extensionName] || {};
+    return r.compressApi || {};
+}
+function compressApiConfigured() {
+    const c = getCompressApiCfg();
+    return !!(c.url && c.model);
+}
 function apiEndpoint(url) {
     url = String(url || '').trim().replace(/\/+$/, '');
     if (/\/chat\/completions$/i.test(url)) return url;
@@ -799,8 +808,8 @@ function withTimeout(p, ms) {
     const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error('请求超时（' + Math.round(ms / 1000) + ' 秒）')), ms); });
     return Promise.race([p, timeout]).finally(() => clearTimeout(t));
 }
-async function callCustomApi({ prompt, systemPrompt }) {
-    const c = getApiCfg();
+async function callCustomApi({ prompt, systemPrompt, cfg }) {
+    const c = cfg || getApiCfg();
     const headers = { 'Content-Type': 'application/json' };
     if (c.key) headers.Authorization = 'Bearer ' + c.key.trim();
     const messages = [];
@@ -1903,7 +1912,7 @@ async function compressChunk(text) {
         '3. 压缩掉寒暄、日常琐事、重复内容。',
         '4. 用中文、第三人称叙述，按时间先后顺序；若输入本身是摘要，请合并成一段完整、不重复、时间线连贯的摘要。',
     ].join('\n');
-    const raw = await callLLM({ prompt: text, systemPrompt });
+    const raw = await callCustomApi({ prompt: text, systemPrompt, cfg: getCompressApiCfg() });
     const out = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
     if (!out) throw new Error('压缩总结返回空内容');
     return out;
@@ -1944,6 +1953,10 @@ async function compressChatHistory() {
     activateCharacter();
     if (isCompressing) { toastr.info('正在压缩中，请稍候…'); return; }
     if (selected_group) { toastr.warning('群聊暂不支持压缩聊天历史'); return; }
+    if (!compressApiConfigured()) {
+        toastr.warning('请先在「摘要」页配置独立的摘要 API（未配置不会回退到聊天 API）');
+        return;
+    }
     if (!Array.isArray(chat) || chat.length < 3) { toastr.warning('聊天消息太少，无需压缩'); return; }
 
     const keep = Math.max(2, Math.min(200, Math.floor(Number(settings.compressKeep) || COMPRESS_KEEP_DEFAULT)));
@@ -2493,8 +2506,6 @@ function renderMemories() {
     renderWorldAlert();
     const everyInput = $('#st-serendipity .st-sd__every-input');
     if (everyInput.length) everyInput.val(settings.summarizeEvery || 1);
-    const compressKeepInput = $('#st-serendipity .st-sd__compress-keep');
-    if (compressKeepInput.length) compressKeepInput.val(settings.compressKeep || COMPRESS_KEEP_DEFAULT);
 
     const hasAny = settings.memories.length || settings.longMemories.length;
     if (!hasAny) {
@@ -4113,6 +4124,7 @@ function buildPanel() {
       </div>
       <div class="st-sd__tabs">
         <button type="button" class="st-sd__tab is-active" data-tab="memory">记忆</button>
+        <button type="button" class="st-sd__tab" data-tab="summary">摘要</button>
         <button type="button" class="st-sd__tab" data-tab="recall">向量召回</button>
         <button type="button" class="st-sd__tab" data-tab="censor">屏蔽词</button>
         <button type="button" class="st-sd__tab" data-tab="instruct">指令</button>
@@ -4149,13 +4161,6 @@ function buildPanel() {
           <input type="number" class="st-sd__every-input" min="1" max="50" title="每 N 轮自动总结一次，1=每轮都总结">
           <span class="st-sd__label">轮总结一次</span>
         </div>
-        <div class="st-sd__compress-row">
-          <span class="st-sd__label">压缩聊天</span>
-          <input type="number" class="st-sd__compress-keep" min="2" max="200" step="1" title="压缩时保留最近多少条消息">
-          <span class="st-sd__label">条</span>
-          <button type="button" class="st-sd__compress">压缩历史</button>
-        </div>
-        <div class="st-sd__hint">聊天太长报错 / 卡顿时用：把前面旧消息压成一段剧情摘要，只保留最近若干条，token 骤降、剧情不断。压缩前会自动下载一份旧消息备份文件。</div>
         <div class="st-sd__add-row">
           <input type="text" class="st-sd__note-input" placeholder="手动补记一条记忆（立刻记下某个设定/事件，不等自动总结）">
           <button type="button" class="st-sd__add-note">补记</button>
@@ -4181,6 +4186,30 @@ function buildPanel() {
           <button type="button" class="st-sd__reset">清空本聊天数据</button>
         </div>
         <div class="st-sd__hint">备份是一个 JSON 文件，包含全部聊天的记忆、时间轴、人物等数据以及屏蔽词、指令，不含 API Key；换设备或重装前可先导出。</div>
+      </div>
+
+      <div class="st-sd__pane" data-pane="summary" style="display:none">
+        <div class="st-sd__api-box">
+          <button type="button" class="st-sd__compress-api-toggle">摘要 API 设置</button><span class="st-sd__compress-api-state"></span>
+          <div class="st-sd__compress-api-form">
+            <input type="text" class="st-sd__api-input st-sd__compress-api-url" placeholder="API 地址，如 https://api.openai.com/v1" autocomplete="off">
+            <input type="password" class="st-sd__api-input st-sd__compress-api-key" placeholder="API Key（可选）" autocomplete="new-password" spellcheck="false">
+            <input type="text" class="st-sd__api-input st-sd__compress-api-model" placeholder="模型名，如 gemini-flash / gpt-4o-mini" autocomplete="off">
+            <div class="st-sd__api-btns">
+              <button type="button" class="st-sd__compress-api-save">保存</button>
+              <button type="button" class="st-sd__compress-api-test">测试</button>
+              <button type="button" class="st-sd__compress-api-clear">清除</button>
+            </div>
+            <div class="st-sd__hint">压缩聊天历史专用 API（OpenAI 兼容接口，地址到 /v1 即可）。建议填一个便宜模型，压缩不占聊天主模型额度。未配置时点「压缩历史」只会提示、不会回退到聊天 API。Key 明文存在酒馆设置里，共用酒馆实例请勿填自己的 Key。</div>
+          </div>
+        </div>
+        <div class="st-sd__compress-row">
+          <span class="st-sd__label">压缩聊天</span>
+          <input type="number" class="st-sd__compress-keep" min="2" max="200" step="1" title="压缩时保留最近多少条消息">
+          <span class="st-sd__label">条</span>
+          <button type="button" class="st-sd__compress">压缩历史</button>
+        </div>
+        <div class="st-sd__hint">聊天太长报错 / 卡顿时用：把前面旧消息分段总结成一段剧情摘要，只保留最近若干条，token 骤降、剧情不断。压缩前会自动下载旧消息备份；全程只走上面的「摘要 API」，不碰聊天 API。</div>
       </div>
 
       <div class="st-sd__pane" data-pane="recall" style="display:none">
@@ -4444,6 +4473,55 @@ function bindPanelEvents() {
         this.value = v;
         saveSettings();
         toastr.success('每 ' + v + ' 轮总结一次');
+    });
+    // 摘要（压缩）API 设置：独立于「总结 API」，压缩绝不回退到聊天 API
+    const refreshCompressApiState = () => {
+        const c = getCompressApiCfg();
+        panel.find('.st-sd__compress-api-state').text(compressApiConfigured() ? '已启用：' + c.model : '未设置（不会用聊天 API）');
+    };
+    {
+        const c = getCompressApiCfg();
+        panel.find('.st-sd__compress-api-url').val(c.url || '');
+        panel.find('.st-sd__compress-api-key').val(c.key || '');
+        panel.find('.st-sd__compress-api-model').val(c.model || '');
+        panel.find('.st-sd__compress-keep').val(settings.compressKeep || COMPRESS_KEEP_DEFAULT);
+        refreshCompressApiState();
+    }
+    panel.find('.st-sd__compress-api-toggle').on('click', () => panel.find('.st-sd__compress-api-form').toggleClass('open'));
+    panel.find('.st-sd__compress-api-save').on('click', () => {
+        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
+        root.compressApi = {
+            url: String(panel.find('.st-sd__compress-api-url').val() || '').trim(),
+            key: String(panel.find('.st-sd__compress-api-key').val() || '').trim(),
+            model: String(panel.find('.st-sd__compress-api-model').val() || '').trim(),
+        };
+        saveSettings();
+        refreshCompressApiState();
+        toastr.success(compressApiConfigured() ? '摘要 API 已保存' : '地址或模型为空，压缩将只提示、不调用任何 API');
+    });
+    panel.find('.st-sd__compress-api-clear').on('click', () => {
+        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
+        delete root.compressApi;
+        panel.find('.st-sd__compress-api-url, .st-sd__compress-api-key, .st-sd__compress-api-model').val('');
+        saveSettings();
+        refreshCompressApiState();
+        toastr.info('已清除摘要 API');
+    });
+    panel.find('.st-sd__compress-api-test').on('click', async () => {
+        const url = String(panel.find('.st-sd__compress-api-url').val() || '').trim();
+        const model = String(panel.find('.st-sd__compress-api-model').val() || '').trim();
+        if (!url || !model) { toastr.warning('请先填写 API 地址和模型名'); return; }
+        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
+        const backup = root.compressApi;
+        root.compressApi = { url, key: String(panel.find('.st-sd__compress-api-key').val() || '').trim(), model };
+        try {
+            const out = await callCustomApi({ prompt: '请回复"OK"两个字母。', cfg: root.compressApi });
+            toastr.success('连接成功：' + String(out).trim().slice(0, 30));
+        } catch (e) {
+            toastr.error('连接失败：' + safeErrorText(e, root.compressApi && root.compressApi.key) + '（若是跨域/CORS 报错，换一个允许浏览器直连的中转地址）');
+        } finally {
+            if (backup) root.compressApi = backup; else delete root.compressApi;
+        }
     });
     // 压缩聊天历史：按钮触发 + 保留条数
     panel.find('.st-sd__compress').on('click', compressChatHistory);

@@ -1405,6 +1405,8 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__api-state { margin-left: 8px; font-size: 12px; opacity: 0.6; }
 .st-sd__api-form { display: none; margin-top: 10px; }
 .st-sd__api-form.open { display: block; }
+.st-sd__compress-api-form { display: none; margin-top: 10px; }
+.st-sd__compress-api-form.open { display: block; }
 .st-sd__api-input { display: block; width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 .st-sd__api-btns { display: flex; gap: 8px; flex-wrap: wrap; }
 .st-sd__api-test, .st-sd__api-clear {
