@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.9'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.10'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1869,7 +1869,9 @@ async function summarizeLastRound() {
 }
 
 // ---------------- 压缩聊天历史（手动按钮：超长聊天救急） ----------------
-const COMPRESS_CHUNK_MAX = 5000; // 单次发给总结模型的最大字符数（切小点，避免中转因单段超长断连报 Load failed）
+const COMPRESS_CHUNK_MAX = 5000; // 单次总结输入的最大字符数（切小点，避免中转因单段超长断连报 Load failed）
+const COMPRESS_CONCURRENCY = 4;   // 并行总结的并发数（串行太慢，并行能显著缩短压缩时间）
+const COMPRESS_REDUCE_BATCH = 6;  // 合并摘要时每批最多合并几段（控制合并输入的字符数，避免又超长）
 const COMPRESS_KEEP_DEFAULT = 20; // 压缩时默认保留最近多少条消息
 
 // 把一组消息拼成可读对话文本，按 chunkMax 切成多段（太长时 map-reduce 分段总结）
@@ -1891,17 +1893,16 @@ function buildCompressTranscript(messages, chunkMax) {
     return chunks;
 }
 
-// 调一次总结模型：把一段文本压成剧情摘要（isFinal=true 时把多段摘要合并成最终版）
-async function compressChunk(text, isFinal) {
+// 调一次总结模型：把一段文本压成剧情摘要（输入可能是原始对话，也可能是若干段已压缩的摘要）
+async function compressChunk(text) {
     const systemPrompt = [
-        '你是剧情压缩助手。请把下面已经发生过的故事内容，压缩成一段连贯、精炼的剧情摘要。',
+        '你是剧情压缩助手。请把下面已经发生过的故事内容（可能是原始对话，也可能是若干段已压缩的摘要），压缩成一段连贯、精炼的剧情摘要。',
         '要求：',
         '1. 只输出摘要正文本身，不要任何解释、客套、序号或标记。',
         '2. 保留关键事件、人物关系变化、重要约定/伏笔、当前人物与世界状态。',
         '3. 压缩掉寒暄、日常琐事、重复内容。',
-        '4. 用中文、第三人称叙述，按时间先后顺序。',
-        isFinal ? '5. 下面这段文字本身可能是若干段已压缩的摘要，请把它们合并成一段完整、不重复、时间线连贯的最终摘要。' : '',
-    ].filter(Boolean).join('\n');
+        '4. 用中文、第三人称叙述，按时间先后顺序；若输入本身是摘要，请合并成一段完整、不重复、时间线连贯的摘要。',
+    ].join('\n');
     const raw = await callLLM({ prompt: text, systemPrompt });
     const out = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
     if (!out) throw new Error('压缩总结返回空内容');
@@ -1909,11 +1910,11 @@ async function compressChunk(text, isFinal) {
 }
 
 // 总结调用带重试：中转偶发断连（Load failed 等）时重试几次再放弃
-async function compressChunkRetry(text, isFinal) {
+async function compressChunkRetry(text) {
     let lastErr;
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            return await compressChunk(text, isFinal);
+            return await compressChunk(text);
         } catch (e) {
             lastErr = e;
             console.warn('[Serendipity] 压缩分段第 ' + attempt + ' 次失败：', e);
@@ -1921,6 +1922,21 @@ async function compressChunkRetry(text, isFinal) {
         }
     }
     throw lastErr;
+}
+
+// 有限并发跑一批任务，结果顺序与 tasks 一致
+async function runCompressPool(tasks, concurrency) {
+    const results = new Array(tasks.length);
+    let idx = 0;
+    async function worker() {
+        while (true) {
+            const i = idx++;
+            if (i >= tasks.length) break;
+            results[i] = await tasks[i]();
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker()));
+    return results;
 }
 
 // 手动压缩聊天历史：把旧消息总结成一段摘要替换掉，只保留最近 compressKeep 条
@@ -1946,14 +1962,30 @@ async function compressChatHistory() {
 
     isCompressing = true;
     try {
-        // map：分段总结；reduce：多段合并成最终摘要
+        // map：把旧消息切成小段，并行总结；reduce：多段摘要分批合并成最终摘要
         const chunks = buildCompressTranscript(oldMsgs, COMPRESS_CHUNK_MAX);
-        const parts = [];
-        for (let i = 0; i < chunks.length; i++) {
-            if (chunks.length > 1) toastr.info('正在压缩第 ' + (i + 1) + '/' + chunks.length + ' 段…', undefined, { timeOut: 1500 });
-            parts.push(await compressChunkRetry(chunks[i], false));
+        toastr.info('开始压缩，共 ' + chunks.length + ' 段（并行处理，请稍候…）', undefined, { timeOut: 3000 });
+        let done = 0;
+        const parts = await runCompressPool(chunks.map((c) => async () => {
+            const r = await compressChunkRetry(c);
+            done++;
+            if (done % 10 === 0 || done === chunks.length) {
+                toastr.info('已压缩 ' + done + '/' + chunks.length + ' 段…', undefined, { timeOut: 1500 });
+            }
+            return r;
+        }), COMPRESS_CONCURRENCY);
+
+        // 分批合并：多段摘要逐层并成一段，避免合并输入又超长
+        let summaries = parts;
+        while (summaries.length > 1) {
+            const batches = [];
+            for (let i = 0; i < summaries.length; i += COMPRESS_REDUCE_BATCH) {
+                batches.push(summaries.slice(i, i + COMPRESS_REDUCE_BATCH).join('\n\n'));
+            }
+            toastr.info('正在合并摘要（' + summaries.length + ' 段 → ' + batches.length + ' 段）…', undefined, { timeOut: 3000 });
+            summaries = await runCompressPool(batches.map((b) => () => compressChunkRetry(b)), COMPRESS_CONCURRENCY);
         }
-        const summary = parts.length === 1 ? parts[0] : await compressChunkRetry(parts.join('\n\n'), true);
+        const summary = summaries[0];
 
         // 构造摘要消息：系统消息，不参与角色/用户对话，但会被带入上下文
         const summaryMsg = {
