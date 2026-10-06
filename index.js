@@ -22,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.14'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.15'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -5309,6 +5309,30 @@ window.Serendipity.getForeshadows = function () {
         items: (settings.foreshadows || [])
             .filter(f => f && f.id && typeof f.title === 'string' && f.title.trim())
             .map(f => ({ id: f.id, title: f.title.trim(), status: f.status, note: f.note || '', day: f.day == null ? null : f.day })),
+    };
+};
+
+// 只读：结构化的角色实体列表（唯一 id / 身份域 world·timeline·identity / 人物状态），
+// 供 Risveglio 等插件做身份解析（同名 ≠ 同一身份靠 id 区分，name 只是显示属性）；不改任何数据、不触发总结、不改变现有渲染。
+window.Serendipity.getEntities = function () {
+    if (!settings) return null;
+    return {
+        schema: 1,
+        revision: String(getStringHash(JSON.stringify(settings.entities || []))),
+        items: (settings.entities || []).map(e => ({
+            id: e.id,
+            name: e.name,
+            age: e.age || '',
+            note: e.note || '',
+            world: e.world || '',
+            timeline: e.timeline || '',
+            identity: e.identity || '',
+            body: e.body || '',
+            mind: e.mind || '',
+            goal: e.goal || '',
+            secret: e.secret || '',
+            promise: e.promise || '',
+        })),
     };
 };
 
