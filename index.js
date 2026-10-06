@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.11'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.12'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1878,7 +1878,7 @@ async function summarizeLastRound() {
 }
 
 // ---------------- 压缩聊天历史（手动按钮：超长聊天救急） ----------------
-const COMPRESS_CHUNK_MAX = 5000; // 单次总结输入的最大字符数（切小点，避免中转因单段超长断连报 Load failed）
+const COMPRESS_CHUNK_MAX = 12000; // 单次总结输入的最大字符数（太小段数多、太大会触发中转超长断连，取折中）
 const COMPRESS_CONCURRENCY = 4;   // 并行总结的并发数（串行太慢，并行能显著缩短压缩时间）
 const COMPRESS_REDUCE_BATCH = 6;  // 合并摘要时每批最多合并几段（控制合并输入的字符数，避免又超长）
 const COMPRESS_KEEP_DEFAULT = 20; // 压缩时默认保留最近多少条消息
@@ -1918,16 +1918,22 @@ async function compressChunk(text) {
     return out;
 }
 
-// 总结调用带重试：中转偶发断连（Load failed 等）时重试几次再放弃
+// 总结调用带重试：中转断连（Load failed）或限流（429）时多等一会再重试，不轻易放弃
 async function compressChunkRetry(text) {
     let lastErr;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= 5; attempt++) {
         try {
             return await compressChunk(text);
         } catch (e) {
             lastErr = e;
-            console.warn('[Serendipity] 压缩分段第 ' + attempt + ' 次失败：', e);
-            if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * attempt));
+            const msg = String(e && e.message ? e.message : e);
+            const rateLimited = /429|rate.?limit|rate_limit_exceeded|频繁|过于频繁/i.test(msg);
+            console.warn('[Serendipity] 压缩分段第 ' + attempt + ' 次失败' + (rateLimited ? '（限流）' : '') + '：', e);
+            if (attempt < 5) {
+                // 限流时多等一会（中转常见 15 次/分钟 → 约 7~10 秒后重试；普通断连短一点）
+                const delay = rateLimited ? 8000 * attempt : 1500 * attempt;
+                await new Promise(r => setTimeout(r, delay));
+            }
         }
     }
     throw lastErr;
