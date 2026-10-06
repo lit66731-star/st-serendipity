@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.8'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.9'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1869,7 +1869,7 @@ async function summarizeLastRound() {
 }
 
 // ---------------- 压缩聊天历史（手动按钮：超长聊天救急） ----------------
-const COMPRESS_CHUNK_MAX = 14000; // 单次发给总结模型的最大字符数（分段压缩，避免超长请求也触发中转报错）
+const COMPRESS_CHUNK_MAX = 5000; // 单次发给总结模型的最大字符数（切小点，避免中转因单段超长断连报 Load failed）
 const COMPRESS_KEEP_DEFAULT = 20; // 压缩时默认保留最近多少条消息
 
 // 把一组消息拼成可读对话文本，按 chunkMax 切成多段（太长时 map-reduce 分段总结）
@@ -1908,6 +1908,21 @@ async function compressChunk(text, isFinal) {
     return out;
 }
 
+// 总结调用带重试：中转偶发断连（Load failed 等）时重试几次再放弃
+async function compressChunkRetry(text, isFinal) {
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            return await compressChunk(text, isFinal);
+        } catch (e) {
+            lastErr = e;
+            console.warn('[Serendipity] 压缩分段第 ' + attempt + ' 次失败：', e);
+            if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * attempt));
+        }
+    }
+    throw lastErr;
+}
+
 // 手动压缩聊天历史：把旧消息总结成一段摘要替换掉，只保留最近 compressKeep 条
 async function compressChatHistory() {
     activateCharacter();
@@ -1936,9 +1951,9 @@ async function compressChatHistory() {
         const parts = [];
         for (let i = 0; i < chunks.length; i++) {
             if (chunks.length > 1) toastr.info('正在压缩第 ' + (i + 1) + '/' + chunks.length + ' 段…', undefined, { timeOut: 1500 });
-            parts.push(await compressChunk(chunks[i], false));
+            parts.push(await compressChunkRetry(chunks[i], false));
         }
-        const summary = parts.length === 1 ? parts[0] : await compressChunk(parts.join('\n\n'), true);
+        const summary = parts.length === 1 ? parts[0] : await compressChunkRetry(parts.join('\n\n'), true);
 
         // 构造摘要消息：系统消息，不参与角色/用户对话，但会被带入上下文
         const summaryMsg = {
