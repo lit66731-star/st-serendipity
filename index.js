@@ -22,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.17'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.18'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2730,26 +2730,26 @@ function renderRecall() {
     if (!statusEl.length) return;
     panel.find('.st-sd__vec-toggle').prop('checked', !!settings.archiveVectorized);
 
-    const vs = extension_settings.vectors;
-    if (!vs) {
-        statusEl.html('<div class="st-sd__recall-warn">未检测到酒馆「向量存储」扩展（没装或没启用），语义搜索需要它。</div>');
+    const issue = embedIssue();
+    if (issue) {
+        statusEl.html('<div class="st-sd__recall-warn">' + escapeHtml(issue) + '。</div>');
     } else {
-        const chips = ['<span class="st-sd__recall-chip">源：' + escapeHtml(vectorSourceLabel(vs.source)) + '</span>'];
-        const model = vectorSourceModel(vs);
-        if (model) chips.push('<span class="st-sd__recall-chip">模型：' + escapeHtml(model) + '</span>');
-        chips.push(vs.enabled_world_info
-            ? '<span class="st-sd__recall-chip st-sd__recall-chip--ok" title="仅「预览酒馆世界书向量」时需要；Serendipity 自己的索引不依赖它">酒馆世界书向量化：已启用</span>'
-            : '<span class="st-sd__recall-chip st-sd__recall-chip--warn" title="仅「预览酒馆世界书向量」时需要；Serendipity 自己的索引不依赖它">酒馆世界书向量化：未启用</span>');
+        const chips = ['<span class="st-sd__recall-chip">embeddings：' + escapeHtml(String(getApiCfg().model || '')) + '</span>'];
+        // 「预览酒馆世界书向量」仍依赖酒馆向量存储，单独提示；Serendipity 自己的索引已不依赖它
+        const vs = extension_settings.vectors;
+        if (vs) {
+            chips.push(vs.enabled_world_info
+                ? '<span class="st-sd__recall-chip st-sd__recall-chip--ok" title="仅「预览酒馆世界书向量」时需要；Serendipity 自己的索引不依赖它">酒馆世界书向量化：已启用</span>'
+                : '<span class="st-sd__recall-chip st-sd__recall-chip--warn" title="仅「预览酒馆世界书向量」时需要；Serendipity 自己的索引不依赖它">酒馆世界书向量化：未启用</span>');
+        }
         statusEl.html(chips.join(''));
     }
 
-    // 预览调参默认值：沿用酒馆向量存储当前的阈值/条数；用户手改过就保留
+    // 预览调参默认值：固定 0.25 / 5；用户手改过就保留
     const thresholdInput = panel.find('.st-sd__recall-threshold');
     const topkInput = panel.find('.st-sd__recall-topk');
-    if (vs) {
-        if (!thresholdInput.val()) thresholdInput.val(vs.score_threshold != null ? vs.score_threshold : 0.25);
-        if (!topkInput.val()) topkInput.val(vs.max_entries != null ? vs.max_entries : 5);
-    }
+    if (!thresholdInput.val()) thresholdInput.val(0.25);
+    if (!topkInput.val()) topkInput.val(5);
 
     // 预览范围：默认是 Serendipity 自己的索引；也可以选一本世界书看酒馆向量存储里的归档向量
     renderRecallScope();
@@ -2772,8 +2772,7 @@ function renderRecall() {
 async function runOwnSemanticSearch(query) {
     const panel = $('#st-serendipity');
     const list = panel.find('.st-sd__recall-list');
-    const vs = extension_settings.vectors;
-    const issue = semanticSourceIssue(vs);
+    const issue = embedIssue();
     if (issue) { list.html('<div class="st-sd__empty">' + escapeHtml(issue) + '。</div>'); return; }
     const key = currentDataKey();
     if (!key) { list.html('<div class="st-sd__empty">当前没有选中角色或群聊，没有可预览的索引。</div>'); return; }
@@ -2784,19 +2783,17 @@ async function runOwnSemanticSearch(query) {
     const topK = (!isNaN(topkRaw) && topkRaw >= 1) ? topkRaw : 5;
     list.html('<div class="st-sd__empty">正在语义搜索…</div>');
     try {
-        const collectionId = semanticCollectionId();
-        const indexed = await semanticList(collectionId, vs);
+        const store = loadEmbedStore(key);
+        const indexed = store.model === embedModelSignature() ? store.items.size : 0;
         if (currentDataKey() !== key || settings !== st) return;
-        if (!indexed.length) {
-            list.html('<div class="st-sd__empty">本聊天的索引还是空的（当前 embedding 源/模型下没有向量）。到上面开启「注入正文」让它自动建索引，或点「清空并重建」。</div>');
+        if (!indexed) {
+            list.html('<div class="st-sd__empty">本聊天的索引还是空的。到上面开启「注入正文」让它自动建索引，或点「清空并重建」。</div>');
             return;
         }
-        const resp = await semanticVectorFetch('/api/vector/query', semanticBody(collectionId, vs, { searchText: query, topK, threshold }), 30000);
-        const data = await resp.json();
+        const meta = await queryLocalVectors(query, topK, threshold);
         if (currentDataKey() !== key || settings !== st) return;
-        const meta = Array.isArray(data.metadata) ? data.metadata : [];
         if (!meta.length) {
-            list.html('<div class="st-sd__empty">没有召回任何条目（索引里有 ' + indexed.length + ' 条向量，但相似度都低于阈值 ' + escapeHtml(String(threshold)) + '）。把「阈值」调低到 0 再试。</div>');
+            list.html('<div class="st-sd__empty">没有召回任何条目（索引里有 ' + indexed + ' 条向量，但相似度都低于阈值 ' + escapeHtml(String(threshold)) + '）。把「阈值」调低到 0 再试。</div>');
             return;
         }
         const itemMap = {};
@@ -3035,6 +3032,174 @@ function recallHash(it) {
     return getStringHash(it.id + '\u0000' + it.text);
 }
 
+// ============ 本地语义召回（自建：插件 API 的 embeddings 生成向量 + 本地余弦，不依赖酒馆向量存储） ============
+// 思路：向量不再交给酒馆的 /api/vector/*，而是用已配置的插件 API 的 /embeddings 端点生成向量，
+// L2 归一化后以 Float32Array→base64 存进 localStorage（按聊天分空间）；查询时对 query 算向量、与本地缓存算点积（=余弦）。
+// 这样语义召回彻底不依赖「酒馆向量存储扩展 / embedding 源」这条脆弱链路，失败面大幅缩小。
+
+const EMBED_BATCH = 16;                // 每批最多 embed 多少条（中转一次塞太多容易超长/限流）
+const EMBED_TIMEOUT_MS = 60000;        // 批量入库超时（后台同步，可稍长）
+const EMBED_QUERY_TIMEOUT_MS = 15000;  // 查询向量超时（注入正文会阻塞生成，要短）
+
+// OpenAI 兼容的 embeddings 端点（url 可能带 /chat/completions 或裸 /v1）
+function embedEndpoint(url) {
+    url = String(url || '').trim().replace(/\/+$/, '');
+    if (/\/embeddings$/i.test(url)) return url;
+    if (/\/chat\/completions$/i.test(url)) return url.replace(/\/chat\/completions$/i, '/embeddings');
+    return url + '/embeddings';
+}
+
+// 向量模型签名：url + 模型名。变了就视为向量空间不兼容 → 全量重建
+function embedModelSignature() {
+    const c = getApiCfg();
+    return String(c.url || '').trim().replace(/\/+$/, '') + '|' + String(c.model || '').trim();
+}
+
+// 自建语义召回当前不可用的原因（'' = 可用）。只检查配置；端点的真实可用性在调用失败时报错（带 HTTP 原因）
+function embedIssue() {
+    if (!apiConfigured()) return '未配置插件 API（语义召回需要它提供 embeddings 端点，绝不回退到聊天 API）';
+    return '';
+}
+
+// L2 归一化（存前/查前都归一化，余弦相似度 = 点积）
+function normalizeVec(v) {
+    let norm = 0;
+    for (let i = 0; i < v.length; i++) norm += v[i] * v[i];
+    norm = Math.sqrt(norm);
+    if (norm === 0) return v.slice();
+    const out = new Array(v.length);
+    for (let i = 0; i < v.length; i++) out[i] = v[i] / norm;
+    return out;
+}
+
+function dotVec(a, b) {
+    let s = 0;
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) s += a[i] * b[i];
+    return s;
+}
+
+// Float32Array ↔ base64（localStorage 里存紧凑的 float32，别存 JSON 数字串，省 3~4 倍空间）
+function vecToB64(v) {
+    const f = new Float32Array(v.length);
+    for (let i = 0; i < v.length; i++) f[i] = v[i];
+    const bytes = new Uint8Array(f.buffer);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+}
+
+function b64ToVec(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return Array.from(new Float32Array(bytes.buffer));
+}
+
+function embedStoreKey(key) {
+    return 'serendipity_emb_' + getStringHash(key || currentDataKey() || 'default');
+}
+
+// 读本地向量缓存：{ model: 签名, items: Map<hash, { id, text, vec }> }（vec 已 L2 归一化的普通数组）
+function loadEmbedStore(key) {
+    const store = { model: '', items: new Map() };
+    let raw;
+    try { raw = localStorage.getItem(embedStoreKey(key)); } catch (e) { return store; }
+    if (!raw) return store;
+    try {
+        const d = JSON.parse(raw);
+        store.model = String(d.model || '');
+        const items = d.items || {};
+        for (const h of Object.keys(items)) {
+            const rec = items[h];
+            if (!rec || typeof rec.v !== 'string') continue;
+            store.items.set(Number(h), { id: rec.id, text: rec.text, vec: b64ToVec(rec.v) });
+        }
+    } catch (e) {
+        console.warn('[Serendipity] 读取本地向量缓存失败，将重建：', e);
+    }
+    return store;
+}
+
+function saveEmbedStore(store, key) {
+    const items = {};
+    for (const [h, rec] of store.items) items[h] = { id: rec.id, text: rec.text, v: vecToB64(rec.vec) };
+    try {
+        localStorage.setItem(embedStoreKey(key), JSON.stringify({ model: store.model, items }));
+    } catch (e) {
+        // 容量不足：保留内存里已算的，下次还会重算，至少不崩
+        console.warn('[Serendipity] 保存本地向量缓存失败（可能超出浏览器存储上限）：', e);
+    }
+}
+
+function clearEmbedStore(key) {
+    try { localStorage.removeItem(embedStoreKey(key)); } catch (e) { /* 忽略 */ }
+}
+
+// 调插件 API 的 embeddings 端点，返回与 texts 一一对应的向量数组
+async function embedTexts(texts, timeoutMs) {
+    const c = getApiCfg();
+    const headers = { 'Content-Type': 'application/json' };
+    if (c.key) headers.Authorization = 'Bearer ' + c.key.trim();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs || EMBED_TIMEOUT_MS);
+    let res;
+    try {
+        res = await fetch(embedEndpoint(c.url), {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ model: c.model.trim(), input: texts }),
+            signal: ctrl.signal,
+        });
+    } catch (e) {
+        if (e && e.name === 'AbortError') throw new Error('embeddings 请求超时');
+        throw new Error(safeErrorText(e, c.key) || '网络请求失败');
+    } finally {
+        clearTimeout(timer);
+    }
+    if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        throw new Error('embeddings HTTP ' + res.status + (t ? '：' + safeErrorText(t, c.key).slice(0, 200) : '（常见原因：这个 API/中转不支持 embeddings 端点、或模型不是 embedding 模型）'));
+    }
+    const d = await res.json();
+    const data = d && Array.isArray(d.data) ? d.data : null;
+    if (!data || !data.length) throw new Error('embeddings 返回为空');
+    // 有些中转不保证 data 顺序和 input 一致，按 index 字段重排（OpenAI 规范里每个元素带 index）
+    let ordered = data;
+    if (data.every(x => x && x.index != null)) ordered = data.slice().sort((a, b) => a.index - b.index);
+    const vecs = ordered.map(x => (x && Array.isArray(x.embedding)) ? x.embedding : null);
+    if (vecs.some(v => !v)) throw new Error('embeddings 返回格式不是 OpenAI 兼容（缺少 data[].embedding 数组）');
+    return vecs;
+}
+
+// 用本地缓存对 query 做余弦召回，返回 [{ hash, index, text, score }]（按相似度降序，shape 与酒馆 metadata 兼容）
+async function queryLocalVectors(queryText, topK, threshold) {
+    const key = currentDataKey();
+    if (!key) return [];
+    const store = loadEmbedStore(key);
+    const sig = embedModelSignature();
+    if (!store.items.size || store.model !== sig) return [];
+    const qv = await embedTexts([queryText], EMBED_QUERY_TIMEOUT_MS);
+    const q = normalizeVec(qv[0]);
+    const thr = (threshold != null && !isNaN(threshold)) ? Number(threshold) : 0;
+    const scored = [];
+    for (const [h, rec] of store.items) {
+        const s = dotVec(q, rec.vec);
+        if (thr > 0 && s < thr) continue;
+        scored.push({ hash: h, index: rec.id, text: rec.text, score: s });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, Math.max(1, topK || 1));
+}
+
+// 用本地 store 重建 sr.index 快照（{ id: hash }，供面板显示已索引条数）
+function syncIndexSnapshot(sr, store) {
+    const items = {};
+    for (const [h, rec] of store.items) items[rec.id] = h;
+    sr.index.items = items;
+    sr.index.model = store.model;
+}
+
 // 插件当前用不了的 embedding 源 → 返回原因；可用返回 ''
 // （WebLLM / KoboldCpp 需要浏览器端先算好向量再随请求带上，插件走的是纯服务端请求，两者都不支持）
 function semanticSourceIssue(vs) {
@@ -3110,18 +3275,20 @@ function semanticReportError(e, context) {
     renderRecallIndexState();
 }
 
-// 同步索引：以向量库里实际存在的内容为准（/list），而不是本地快照——
-// 缺的补、过期/多余/重复的删，先删后插。所以中断后重来、两个标签页同时跑、手动删过向量，结果都是对的。
-// job.rebuild = 先清空该集合再全量重建；job.force = 即使没开启注入也同步
+// 同步索引（本地版）：以 buildRecallItems() 的 hash 集合为准，和本地向量缓存对账——过期/多余的删掉、缺的批量 embed 补上，
+// 模型签名变了则全量重建。向量全在本浏览器 localStorage，不再走酒馆 /api/vector/*。
+// job.rebuild = 先清空缓存再全量重建；job.force = 即使没开启注入也同步
 async function syncSemanticIndex(job = {}) {
-    const vs = extension_settings.vectors;
-    if (semanticSourceIssue(vs)) return 0;
+    const issue = embedIssue();
+    if (issue) return 0;
     const sr = settings.semanticRecall;
     if (!sr || (!sr.enabled && !job.force && !job.rebuild)) return 0;
     const key = currentDataKey();
     if (!key) return 0;
-    const collectionId = semanticCollectionId();
-    const idx = sr.index; // 只写开始时捕获的这份聊天的索引，期间切换聊天也不会串档
+    const idx = sr.index;
+
+    const store = loadEmbedStore(key);
+    if (job.rebuild) { store.items.clear(); store.model = ''; }
 
     const want = new Map(); // hash → 条目
     for (const it of buildRecallItems()) {
@@ -3129,44 +3296,38 @@ async function syncSemanticIndex(job = {}) {
         if (!want.has(h)) want.set(h, it);
     }
 
-    if (job.rebuild) {
-        await semanticPurge(collectionId);
-        idx.items = {};
-    }
-    const listed = await semanticList(collectionId, vs);
-    const count = new Map();
-    for (const h of listed) count.set(h, (count.get(h) || 0) + 1);
+    // 过期/多余的删掉
+    for (const h of [...store.items.keys()]) if (!want.has(h)) store.items.delete(h);
 
-    const toDelete = [];
-    const toInsert = [];
-    for (const [h, c] of count) if (!want.has(h) || c > 1) toDelete.push(h); // 酒馆按 hash 删，重复项只能整组删掉重插
-    for (const [h, it] of want) if (!count.has(h) || count.get(h) > 1) toInsert.push({ hash: h, text: it.text, index: it.id });
+    // 模型变了 → 向量空间不兼容，全量重建
+    const sig = embedModelSignature();
+    if (store.model !== sig) { store.items.clear(); store.model = sig; }
 
     const present = new Set();
-    for (const h of count.keys()) if (want.has(h) && count.get(h) === 1) present.add(h);
-    const commit = () => {
-        const items = {};
-        for (const h of present) { const it = want.get(h); if (it) items[it.id] = h; }
-        idx.items = items;
-        idx.model = semanticModelSignature(vs);
-        saveSettings();
-    };
+    for (const h of store.items.keys()) if (want.has(h)) present.add(h);
+    const missing = [];
+    for (const [h, it] of want) if (!store.items.has(h)) missing.push({ h, it });
 
     semanticStatus.total = want.size;
     semanticStatus.done = present.size;
     try {
-        for (let i = 0; i < toDelete.length; i += 200) {
-            await semanticDelete(collectionId, vs, toDelete.slice(i, i + 200));
-        }
-        for (let i = 0; i < toInsert.length; i += 20) {
-            const batch = toInsert.slice(i, i + 20);
-            await semanticInsert(collectionId, vs, batch);
-            for (const b of batch) present.add(b.hash);
+        for (let i = 0; i < missing.length; i += EMBED_BATCH) {
+            const batch = missing.slice(i, i + EMBED_BATCH);
+            const vecs = await embedTexts(batch.map(x => x.it.text));
+            vecs.forEach((v, j) => {
+                const b = batch[j];
+                store.items.set(b.h, { id: b.it.id, text: b.it.text, vec: normalizeVec(v) });
+                present.add(b.h);
+            });
             semanticStatus.done = present.size;
+            saveEmbedStore(store, key);
             if (settings.semanticRecall === sr) renderRecallIndexState();
         }
     } finally {
-        commit(); // 中途失败也把已完成的部分记下来
+        // 中途失败也把已完成的部分记下来
+        syncIndexSnapshot(sr, store);
+        saveEmbedStore(store, key);
+        saveSettings();
     }
     if (settings.semanticRecall === sr) renderRecallIndexState();
     return want.size;
@@ -3216,7 +3377,7 @@ function requestSemanticSync(opts = {}) {
 
 // 清掉某个聊天的向量集合（重置数据时用），排在当前同步之后，避免刚清完又被写回去
 function purgeSemanticCollectionLater(collectionId) {
-    const run = () => semanticPurge(collectionId).catch(e => console.warn('[Serendipity] 清理向量集合失败：', e));
+    const run = () => clearEmbedStore(currentDataKey());
     if (semanticSyncDone) semanticSyncDone.then(run); else run();
 }
 
@@ -3331,8 +3492,7 @@ async function runSemanticRecallInjection(genType) {
     const setBlock = (text) => setExtensionPrompt('serendipity_semantic_recall', text, extension_prompt_types.IN_PROMPT, 0);
     const sr = settings.semanticRecall;
     if (!sr || !sr.enabled) return;
-    const vs = extension_settings.vectors;
-    if (semanticSourceIssue(vs)) return;
+    if (embedIssue()) return;
     const keyBefore = currentDataKey();
     if (!keyBefore) return;
     const st = settings;
@@ -3340,15 +3500,9 @@ async function runSemanticRecallInjection(genType) {
     const queryText = semanticQueryText(genType);
     if (!queryText) { setBlock(''); return; }
     try {
-        const resp = await semanticVectorFetch('/api/vector/query', semanticBody(semanticCollectionId(), vs, {
-            searchText: queryText,
-            topK: Math.max(1, Number(sr.queryTopK) || 20),
-            threshold: Number(sr.threshold) || 0,
-        }), 15000);
-        const data = await resp.json();
+        const meta = await queryLocalVectors(queryText, Math.max(1, Number(sr.queryTopK) || 20), Number(sr.threshold) || 0);
         // 查询期间切换了聊天 / 又有新的召回请求：这次结果作废
         if (currentDataKey() !== keyBefore || settings !== st || seq !== semanticRecallSeq) return;
-        const meta = Array.isArray(data.metadata) ? data.metadata : [];
         const bridge = buildRelativeTimeBridge(recentChatTexts(2, genType).join('\n'));
         const allItems = buildRecallItems();
         const lex = lexicalRank(latestUserText(genType), allItems, Math.max(1, Number(sr.queryTopK) || 20));
@@ -3438,14 +3592,13 @@ function renderRecallIndexState() {
     const el = $('#st-serendipity .st-sd__recall-index-state');
     if (!el.length) return;
     const sr = settings.semanticRecall;
-    const vs = extension_settings.vectors;
-    const issue = semanticSourceIssue(vs);
+    const issue = embedIssue();
     if (issue) { el.text(issue + '，无法建立索引。'); return; }
     const n = (sr && sr.index && sr.index.items) ? Object.keys(sr.index.items).length : 0;
     let text;
     if (semanticStatus.running) text = '正在同步索引…' + (semanticStatus.total ? '（' + semanticStatus.done + ' / ' + semanticStatus.total + '）' : '');
     else if (!sr.enabled) text = '注入关闭中，开启后自动建索引。';
-    else text = '已索引 ' + n + ' 条（源：' + vectorSourceLabel(vs.source) + '）';
+    else text = '已索引 ' + n + ' 条（embeddings：' + escapeHtml(String(getApiCfg().model || '')) + '）';
     if (!semanticStatus.running && semanticStatus.error && semanticStatus.errorKey === currentDataKey()) text += ' ⚠ ' + semanticStatus.error;
     el.text(text);
 }
@@ -3845,11 +3998,10 @@ function resetCurrentChar() {
     if (!confirm('确定清空「' + name + '」的全部 Serendipity 数据吗？这个聊天的记忆、时间轴、人物、世界状态等都会被清空，且不可撤销（屏蔽词和指令是全局/角色级设置，不受影响）。')) return;
     const keepWorldBook = settings.worldBook;
     const hadIndex = !!(settings.semanticRecall && (settings.semanticRecall.enabled || Object.keys(settings.semanticRecall.index.items).length));
-    const collectionId = semanticCollectionId();
     Object.assign(settings, freshCharSettings());
     settings.worldBook = keepWorldBook; // 保留用户选择的世界书，方便下次直接注入
     saveSettings();
-    if (hadIndex) purgeSemanticCollectionLater(collectionId);
+    if (hadIndex) purgeSemanticCollectionLater();
     setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
     updatePromptInjection();
     renderMemories();
@@ -4636,6 +4788,7 @@ function bindPanelEvents() {
         settings.semanticRecall.enabled = this.checked;
         saveSettings();
         updatePromptInjection();
+        if (this.checked) scheduleSemanticSync(); // 开启就立即（防抖）建索引，别等下一轮总结才建
         renderRecallIndexState();
     });
     // 注入调参（召回条数 / 候选阈值 / 候选条数）
@@ -4651,11 +4804,11 @@ function bindPanelEvents() {
         if (!isNaN(bd) && bd >= 0) sr.charBudget = bd;
         saveSettings();
     });
-    // 清空并重建索引：先清掉本聊天的向量集合再全量重新嵌入
+    // 清空并重建索引：先清掉本聊天的本地向量缓存再全量重新嵌入
     panel.find('.st-sd__recall-rebuild').on('click', async function () {
-        const issue = semanticSourceIssue(extension_settings.vectors);
+        const issue = embedIssue();
         if (issue) { toastr.warning(issue); return; }
-        if (!confirm('清空并重建会把本聊天的全部条目重新做一遍 embedding（走你配置的向量源，API 源会产生用量）。确定吗？')) return;
+        if (!confirm('清空并重建会把本聊天的全部条目重新做一遍 embedding（走插件 API 的 embeddings 端点，会产生用量）。确定吗？')) return;
         const btn = $(this);
         btn.prop('disabled', true);
         try {
