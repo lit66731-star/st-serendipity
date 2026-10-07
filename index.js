@@ -22,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.15'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.16'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1735,7 +1735,7 @@ async function summarizeLastRound() {
     let used = 0;
     for (let k = sel.length - 1; k >= 0; k--) {
         const x = sel[k];
-        let line = (x.m.name || (x.m.is_user ? '用户' : '角色')) + '：' + x.m.mes;
+        let line = '【第' + (x.i + 1) + '楼】' + (x.m.name || (x.m.is_user ? '用户' : '角色')) + '：' + x.m.mes;
         if (line.length > SUMMARY_TRANSCRIPT_MAX) line = line.slice(0, SUMMARY_TRANSCRIPT_MAX);
         if (lines.length >= 2 && used + line.length > SUMMARY_TRANSCRIPT_MAX) break;
         lines.unshift(line);
@@ -1871,15 +1871,16 @@ const COMPRESS_REDUCE_BATCH = 6;  // 合并摘要时每批最多合并几段（�
 const COMPRESS_KEEP_DEFAULT = 20; // 压缩时默认保留最近多少条消息
 
 // 把一组消息拼成可读对话文本，按 chunkMax 切成多段（太长时 map-reduce 分段总结）
-function buildCompressTranscript(messages, chunkMax) {
+function buildCompressTranscript(items, chunkMax) {
     const chunks = [];
     let cur = [];
     let used = 0;
     const flush = () => { if (cur.length) { chunks.push(cur.join('\n\n')); cur = []; used = 0; } };
-    for (const m of messages) {
+    for (const it of items) {
+        const m = it && it.m;
         if (!m || typeof m.mes !== 'string') continue;
         const label = m.is_system ? '系统' : (m.name || (m.is_user ? '用户' : '角色'));
-        let line = label + '：' + m.mes.trim();
+        let line = '【第' + ((it.i != null ? it.i : 0) + 1) + '楼】' + label + '：' + m.mes.trim();
         if (line.length > chunkMax) line = line.slice(0, chunkMax);
         if (cur.length && used + line.length > chunkMax) flush();
         cur.push(line);
@@ -1956,7 +1957,9 @@ async function compressChatHistory() {
     const oldCount = chat.length - keep;
     if (oldCount < 2) { toastr.info('当前聊天还不长（不足 ' + (keep + 1) + ' 条），无需压缩'); return; }
 
-    const oldMsgs = chat.slice(0, oldCount).filter(m => m && typeof m.mes === 'string' && m.mes.trim());
+    // 首楼开场白（第 0 条）永不压缩：只压缩第 1 条到第 oldCount-1 条
+    const compressStart = 1;
+    const oldMsgs = chat.slice(compressStart, oldCount).filter(m => m && typeof m.mes === 'string' && m.mes.trim());
     if (oldMsgs.length < 2) { toastr.info('没有足够的旧消息可压缩'); return; }
 
     // 先导出旧消息备份（压缩不可逆，备份后可自行找回）
@@ -1969,7 +1972,9 @@ async function compressChatHistory() {
     isCompressing = true;
     try {
         // map：把旧消息切成小段，并行总结；reduce：多段摘要分批合并成最终摘要
-        const chunks = buildCompressTranscript(oldMsgs, COMPRESS_CHUNK_MAX);
+        // 带上原始楼层下标，压缩摘要里能标出「第几楼」
+        const indexedOld = chat.slice(compressStart, oldCount).map((m, i) => ({ m, i: i + compressStart })).filter(x => x.m && typeof x.m.mes === 'string' && x.m.mes.trim());
+        const chunks = buildCompressTranscript(indexedOld, COMPRESS_CHUNK_MAX);
         toastr.info('开始压缩，共 ' + chunks.length + ' 段（并行处理，请稍候…）', undefined, { timeOut: 3000 });
         let done = 0;
         const parts = await runCompressPool(chunks.map((c) => async () => {
@@ -2007,7 +2012,7 @@ async function compressChatHistory() {
         };
 
         // 替换掉旧消息，只保留摘要 + 最近 keep 条
-        chat.splice(0, oldCount, summaryMsg);
+        chat.splice(compressStart, oldCount - compressStart, summaryMsg);
 
         // 旧消息已被替换：清空总结回滚日志并把水位线重置到末尾，防止下次对账误判「消息被删」而回滚记忆
         settings.summaryJournal = [];
