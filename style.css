@@ -455,7 +455,9 @@
     margin-bottom: 8px;
 }
 .st-sd__compress-keep { width: 64px; flex: 0 0 auto; text-align: center; }
-.st-sd__compress-result { margin-top: 12px; border: 1px solid var(--sd-border); border-radius: var(--sd-r); overflow: hidden; }
+.st-sd__compress-result { margin-top: 12px; }
+.st-sd__compress-result-item { border: 1px solid var(--sd-border); border-radius: var(--sd-r); overflow: hidden; }
+.st-sd__compress-result-item + .st-sd__compress-result-item { margin-top: 12px; }
 .st-sd__compress-result-head { padding: 8px 10px; font-size: 12px; color: var(--sd-text-2); background: var(--sd-surface-2); border-bottom: 1px solid var(--sd-border); }
 .st-sd__compress-result-body { padding: 10px; font-size: 13px; line-height: 1.6; color: var(--sd-text); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
 .st-sd__world-row { margin-bottom: 8px; }

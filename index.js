@@ -22,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.16'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.17'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -337,7 +337,8 @@ function freshCharSettings() {
         longMemories: [],       // 长期记忆（短期满 10 合并而来；满 10 提醒归档到世界书）
         memoryEnabled: true,    // 自动记忆开关
         summarizeEvery: 1,      // 每 N 轮总结一次（1=每轮都总结）
-        compressKeep: 20,       // 压缩聊天历史时保留最近多少条消息
+        compressKeep: 20,       // 生成摘要时保留最近多少条消息不纳入摘要（留给正文上下文）
+        summaryArchive: [],     // 剧情摘要归档 [{ id, at, from, to, text }]：只生成摘要、不删聊天正文
         roundsSinceSummary: 0,  // 距上次总结已过的轮数
         lastSummaryIndex: -1,   // 上次总结到的聊天消息下标（-1=尚未总结），用于跨轮总结窗口不丢剧情
         storyTime: '',          // 当前剧情时间（AI 接力维护，每次总结时更新）
@@ -377,7 +378,7 @@ function freshCharSettings() {
 // 规范化单个角色的数据（补默认值 + 指令结构迁移）
 function normalizeCharSettings(cs) {
     if (!cs || typeof cs !== 'object') cs = {};
-    for (const key of ['memories', 'longMemories', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows', 'summaryJournal', 'timeFixLog', 'ignoredChecks']) {
+    for (const key of ['memories', 'longMemories', 'worldState', 'entities', 'relationshipLines', 'timeline', 'checks', 'foreshadows', 'summaryJournal', 'timeFixLog', 'ignoredChecks', 'summaryArchive']) {
         if (!Array.isArray(cs[key])) cs[key] = [];
     }
     cs.ignoredChecks = cs.ignoredChecks.filter(t => typeof t === 'string').slice(-100);
@@ -1942,46 +1943,39 @@ async function runCompressPool(tasks, concurrency) {
     return results;
 }
 
-// 手动压缩聊天历史：把旧消息总结成一段摘要替换掉，只保留最近 compressKeep 条
+// 生成剧情摘要：把旧消息分段总结成摘要，单独存起来（世界书 + 面板归档），聊天正文一条不动
 async function compressChatHistory() {
     activateCharacter();
-    if (isCompressing) { toastr.info('正在压缩中，请稍候…'); return; }
-    if (selected_group) { toastr.warning('群聊暂不支持压缩聊天历史'); return; }
+    if (isCompressing) { toastr.info('正在生成摘要，请稍候…'); return; }
+    if (selected_group) { toastr.warning('群聊暂不支持生成摘要'); return; }
     if (!apiConfigured()) {
-        toastr.warning('请先在「记忆」页配置插件 API（压缩不回退到聊天 API）');
+        toastr.warning('请先在「摘要」页配置插件 API（生成摘要不回退到聊天 API）');
         return;
     }
-    if (!Array.isArray(chat) || chat.length < 3) { toastr.warning('聊天消息太少，无需压缩'); return; }
+    if (!Array.isArray(chat) || chat.length < 3) { toastr.warning('聊天消息太少，无需生成摘要'); return; }
 
     const keep = Math.max(2, Math.min(200, Math.floor(Number(settings.compressKeep) || COMPRESS_KEEP_DEFAULT)));
     const oldCount = chat.length - keep;
-    if (oldCount < 2) { toastr.info('当前聊天还不长（不足 ' + (keep + 1) + ' 条），无需压缩'); return; }
+    if (oldCount < 2) { toastr.info('当前聊天还不长（不足 ' + (keep + 1) + ' 条），无需生成摘要'); return; }
 
-    // 首楼开场白（第 0 条）永不压缩：只压缩第 1 条到第 oldCount-1 条
+    // 首楼开场白（第 0 条）永不纳入：只总结第 1 条到第 oldCount-1 条
     const compressStart = 1;
     const oldMsgs = chat.slice(compressStart, oldCount).filter(m => m && typeof m.mes === 'string' && m.mes.trim());
-    if (oldMsgs.length < 2) { toastr.info('没有足够的旧消息可压缩'); return; }
-
-    // 先导出旧消息备份（压缩不可逆，备份后可自行找回）
-    downloadText(
-        'serendipity-compress-backup-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json',
-        JSON.stringify({ at: new Date().toISOString(), chatKey: currentDataKey(), removedCount: oldMsgs.length, keptCount: keep, messages: oldMsgs }, null, 2),
-        'application/json;charset=utf-8'
-    );
+    if (oldMsgs.length < 2) { toastr.info('没有足够的旧消息可总结'); return; }
 
     isCompressing = true;
     try {
         // map：把旧消息切成小段，并行总结；reduce：多段摘要分批合并成最终摘要
-        // 带上原始楼层下标，压缩摘要里能标出「第几楼」
+        // 带上原始楼层下标，摘要里能标出「第几楼」
         const indexedOld = chat.slice(compressStart, oldCount).map((m, i) => ({ m, i: i + compressStart })).filter(x => x.m && typeof x.m.mes === 'string' && x.m.mes.trim());
         const chunks = buildCompressTranscript(indexedOld, COMPRESS_CHUNK_MAX);
-        toastr.info('开始压缩，共 ' + chunks.length + ' 段（并行处理，请稍候…）', undefined, { timeOut: 3000 });
+        toastr.info('开始生成摘要，共 ' + chunks.length + ' 段（并行处理，请稍候…）', undefined, { timeOut: 3000 });
         let done = 0;
         const parts = await runCompressPool(chunks.map((c) => async () => {
             const r = await compressChunkRetry(c);
             done++;
             if (done % 10 === 0 || done === chunks.length) {
-                toastr.info('已压缩 ' + done + '/' + chunks.length + ' 段…', undefined, { timeOut: 1500 });
+                toastr.info('已总结 ' + done + '/' + chunks.length + ' 段…', undefined, { timeOut: 1500 });
             }
             return r;
         }), COMPRESS_CONCURRENCY);
@@ -1998,62 +1992,92 @@ async function compressChatHistory() {
         }
         const summary = summaries[0];
 
-        // 构造摘要消息：系统消息，不参与角色/用户对话，但会被带入上下文
-        const summaryMsg = {
-            name: '',
-            is_user: false,
-            is_system: true,
-            mes: '【前情摘要】\n' + summary,
-            send_date: Date.now(),
-            gen_started: Date.now(),
-            gen_finished: Date.now(),
-            swipe_id: 0,
-            extra: {},
-        };
+        // 楼层范围（首楼编号从 1 起，跳过第 0 条开场白）：from = 第 2 楼，to = 第 oldCount 楼
+        const from = compressStart + 1;
+        const to = oldCount;
 
-        // 替换掉旧消息，只保留摘要 + 最近 keep 条
-        chat.splice(compressStart, oldCount - compressStart, summaryMsg);
-
-        // 旧消息已被替换：清空总结回滚日志并把水位线重置到末尾，防止下次对账误判「消息被删」而回滚记忆
-        settings.summaryJournal = [];
-        settings.lastSummaryIndex = chat.length - 1;
+        // 存进面板归档（只生成摘要，聊天正文一条不动）
+        settings.summaryArchive.push({
+            id: uid(),
+            at: Date.now(),
+            from,
+            to,
+            text: summary,
+        });
         saveSettings();
 
-        await saveChat();
-        await reloadCurrentChat();
+        // 同步写一份到世界书（关键词按需召回），失败不阻断面板归档
+        let worldBook = '';
+        try {
+            worldBook = await writeSummaryToWorldBook(summary, from, to);
+        } catch (e) {
+            console.error('[Serendipity] 摘要写入世界书失败：', e);
+        }
 
-        // 记录本次压缩结果，显示在「摘要」页的卡片里
         settings.lastCompress = {
             at: Date.now(),
-            removed: oldMsgs.length,
+            covered: oldMsgs.length,
+            from,
+            to,
             kept: keep,
             text: summary,
+            worldBook,
         };
         saveSettings();
         renderCompressResult();
 
-        toastr.success('已把 ' + oldMsgs.length + ' 条历史消息压缩为一段摘要，保留最近 ' + keep + ' 条');
+        if (worldBook) {
+            toastr.success('已生成第 ' + from + '–' + to + ' 楼剧情摘要（正文未动），并存到世界书「' + worldBook + '」');
+        } else {
+            toastr.success('已生成第 ' + from + '–' + to + ' 楼剧情摘要（正文未动），已存入「摘要」页归档');
+        }
     } catch (e) {
-        console.error('[Serendipity] 压缩聊天历史失败：', e);
-        // 中途失败时内存里的 chat 可能已被 splice 过，重新从磁盘读回原样
-        try { await reloadCurrentChat(); } catch (_) { /* 忽略 */ }
-        toastr.error('压缩失败：' + safeErrorText(e) + '（旧消息未改动，已导出备份文件可找回）');
+        console.error('[Serendipity] 生成剧情摘要失败：', e);
+        toastr.error('生成摘要失败：' + safeErrorText(e));
     } finally {
         isCompressing = false;
     }
 }
 
-// 把上次压缩的结果渲染成「摘要」页里的卡片
+// 把一段剧情摘要写成一条世界书条目：关键词按需召回，不常驻、不删聊天正文
+async function writeSummaryToWorldBook(summary, from, to) {
+    const worldName = getSelectedWorldBook();
+    if (!worldName) return ''; // 没选世界书就跳过，只存面板归档
+    const data = await loadWorldInfo(worldName);
+    if (!data || typeof data !== 'object' || !data.entries) {
+        throw new Error('读取世界书「' + worldName + '」失败，可能已被删除，请重新选择');
+    }
+    const entry = createWorldInfoEntry(worldName, data);
+    if (!entry) throw new Error('在世界书「' + worldName + '」中创建条目失败');
+    const dateStr = new Date().toLocaleString();
+    entry.comment = '[Serendipity] 前情摘要 第' + from + '–' + to + '楼 ' + dateStr;
+    entry.content = '【前情摘要 · 第' + from + '–' + to + '楼 · ' + dateStr + '】以下事件是过去已经发生的剧情，不是当前正在发生；除非剧情明确说再次发生。\n' + summary;
+    entry.key = memoryKeywords({ text: summary, entityRef: null, storyLocation: settings.storyLocation });
+    entry.constant = false;   // 不常驻，靠关键词/语义按需召回
+    entry.selective = true;
+    const charFile = currentCharFileName();
+    if (charFile) entry.characterFilter = { isExclude: false, names: [charFile], tags: [] };
+    entry.vectorized = !!settings.archiveVectorized;
+    entry.position = 0;
+    entry.role = 0;
+    await saveWorldInfo(worldName, data, true);
+    return worldName;
+}
+
+// 把「剧情摘要归档」渲染成「摘要」页里的卡片列表（新→旧）。聊天正文没动，这里可回看每次生成的摘要
 function renderCompressResult() {
     const box = $('#st-serendipity .st-sd__compress-result');
     if (!box.length) return;
-    const lc = settings && settings.lastCompress;
-    if (!lc || typeof lc.text !== 'string' || !lc.text.trim()) { box.hide(); return; }
-    const head = '上次压缩：' + new Date(lc.at).toLocaleString() + ' · 压掉 ' + (lc.removed || 0) + ' 条 · 保留 ' + (lc.kept || 0) + ' 条';
-    box.show().html(
-        '<div class="st-sd__compress-result-head">' + escapeHtml(head) + '</div>' +
-        '<div class="st-sd__compress-result-body">' + escapeHtml(lc.text) + '</div>'
-    );
+    const list = (settings && Array.isArray(settings.summaryArchive)) ? settings.summaryArchive.slice().reverse() : [];
+    if (!list.length) { box.hide().html(''); return; }
+    const html = list.map(s => {
+        const head = '剧情摘要：第 ' + (s.from || '?') + '–' + (s.to || '?') + ' 楼 · ' + (s.at ? new Date(s.at).toLocaleString() : '');
+        return '<div class="st-sd__compress-result-item">' +
+            '<div class="st-sd__compress-result-head">' + escapeHtml(head) + '</div>' +
+            '<div class="st-sd__compress-result-body">' + escapeHtml(String(s.text || '')) + '</div>' +
+            '</div>';
+    }).join('');
+    box.show().html(html);
 }
 
 // ---------------- 记忆注入正文（防失忆） ----------------
@@ -4221,16 +4245,16 @@ function buildPanel() {
               <button type="button" class="st-sd__compress-api-test">测试</button>
               <button type="button" class="st-sd__compress-api-clear">清除</button>
             </div>
-            <div class="st-sd__hint">与「记忆」页的插件 API 是同一份配置（两处改的是同一个）。OpenAI 兼容接口，地址到 /v1 即可；建议填一个便宜模型。未配置时点「压缩历史」只会提示、不会回退到聊天 API。Key 明文存在酒馆设置里，共用酒馆实例请勿填自己的 Key。</div>
+            <div class="st-sd__hint">与「记忆」页的插件 API 是同一份配置（两处改的是同一个）。OpenAI 兼容接口，地址到 /v1 即可；建议填一个便宜模型。未配置时点「生成剧情摘要」只会提示、不会回退到聊天 API。Key 明文存在酒馆设置里，共用酒馆实例请勿填自己的 Key。</div>
           </div>
         </div>
         <div class="st-sd__compress-row">
-          <span class="st-sd__label">压缩聊天</span>
-          <input type="number" class="st-sd__compress-keep" min="2" max="200" step="1" title="压缩时保留最近多少条消息">
+          <span class="st-sd__label">摘要聊天</span>
+          <input type="number" class="st-sd__compress-keep" min="2" max="200" step="1" title="生成摘要时保留最近多少条消息不纳入">
           <span class="st-sd__label">条</span>
-          <button type="button" class="st-sd__compress">压缩历史</button>
+          <button type="button" class="st-sd__compress">生成剧情摘要</button>
         </div>
-        <div class="st-sd__hint">聊天太长报错 / 卡顿时用：把前面旧消息分段总结成一段剧情摘要，只保留最近若干条，token 骤降、剧情不断。压缩前会自动下载旧消息备份；全程只走上面的「插件 API」，不碰聊天 API。</div>
+        <div class="st-sd__hint">把前面的旧消息分段总结成一段剧情摘要，单独存到「世界书」和下面归档里，聊天正文一条不动（翻记录不会丢楼层）。正文太长老报错时，可配合把摘要写进世界书让模型按需召回。全程只走上面的「插件 API」，不碰聊天 API。</div>
         <div class="st-sd__compress-result" style="display:none"></div>
       </div>
 
