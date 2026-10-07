@@ -455,6 +455,8 @@
     margin-bottom: 8px;
 }
 .st-sd__compress-keep { width: 64px; flex: 0 0 auto; text-align: center; }
+.st-sd__embed-model-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.st-sd__embed-model { flex: 1; min-width: 0; }
 .st-sd__compress-result { margin-top: 12px; }
 .st-sd__compress-result-item { border: 1px solid var(--sd-border); border-radius: var(--sd-r); overflow: hidden; }
 .st-sd__compress-result-item + .st-sd__compress-result-item { margin-top: 12px; }

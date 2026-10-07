@@ -22,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.18'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.19'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2729,12 +2729,13 @@ function renderRecall() {
     const worldSelect = panel.find('.st-sd__recall-world');
     if (!statusEl.length) return;
     panel.find('.st-sd__vec-toggle').prop('checked', !!settings.archiveVectorized);
+    panel.find('.st-sd__embed-model').val(((extension_settings[extensionName] || {}).embedModel) || '');
 
     const issue = embedIssue();
     if (issue) {
         statusEl.html('<div class="st-sd__recall-warn">' + escapeHtml(issue) + '。</div>');
     } else {
-        const chips = ['<span class="st-sd__recall-chip">embeddings：' + escapeHtml(String(getApiCfg().model || '')) + '</span>'];
+        const chips = ['<span class="st-sd__recall-chip">embeddings：' + escapeHtml(embedModelName()) + '</span>'];
         // 「预览酒馆世界书向量」仍依赖酒馆向量存储，单独提示；Serendipity 自己的索引已不依赖它
         const vs = extension_settings.vectors;
         if (vs) {
@@ -3049,10 +3050,18 @@ function embedEndpoint(url) {
     return url + '/embeddings';
 }
 
-// 向量模型签名：url + 模型名。变了就视为向量空间不兼容 → 全量重建
+// 语义召回用的 embeddings 模型名：优先用「向量召回」页单独填的，没填则回退用插件 API 的模型名
+function embedModelName() {
+    const root = extension_settings[extensionName] || {};
+    const em = String(root.embedModel || '').trim();
+    if (em) return em;
+    return String(getApiCfg().model || '').trim();
+}
+
+// 向量模型签名：url + embeddings 模型名。变了就视为向量空间不兼容 → 全量重建
 function embedModelSignature() {
     const c = getApiCfg();
-    return String(c.url || '').trim().replace(/\/+$/, '') + '|' + String(c.model || '').trim();
+    return String(c.url || '').trim().replace(/\/+$/, '') + '|' + embedModelName();
 }
 
 // 自建语义召回当前不可用的原因（'' = 可用）。只检查配置；端点的真实可用性在调用失败时报错（带 HTTP 原因）
@@ -3148,7 +3157,7 @@ async function embedTexts(texts, timeoutMs) {
         res = await fetch(embedEndpoint(c.url), {
             method: 'POST',
             headers,
-            body: JSON.stringify({ model: c.model.trim(), input: texts }),
+            body: JSON.stringify({ model: embedModelName(), input: texts }),
             signal: ctrl.signal,
         });
     } catch (e) {
@@ -3159,7 +3168,7 @@ async function embedTexts(texts, timeoutMs) {
     }
     if (!res.ok) {
         const t = await res.text().catch(() => '');
-        throw new Error('embeddings HTTP ' + res.status + (t ? '：' + safeErrorText(t, c.key).slice(0, 200) : '（常见原因：这个 API/中转不支持 embeddings 端点、或模型不是 embedding 模型）'));
+        throw new Error('embeddings HTTP ' + res.status + (t ? '：' + safeErrorText(t, c.key).slice(0, 200) : '（常见原因：这个 API/中转不支持 embeddings 端点、或模型不是 embedding 模型——请到「向量召回」页单独填 embeddings 模型）'));
     }
     const d = await res.json();
     const data = d && Array.isArray(d.data) ? d.data : null;
@@ -3598,7 +3607,7 @@ function renderRecallIndexState() {
     let text;
     if (semanticStatus.running) text = '正在同步索引…' + (semanticStatus.total ? '（' + semanticStatus.done + ' / ' + semanticStatus.total + '）' : '');
     else if (!sr.enabled) text = '注入关闭中，开启后自动建索引。';
-    else text = '已索引 ' + n + ' 条（embeddings：' + escapeHtml(String(getApiCfg().model || '')) + '）';
+    else text = '已索引 ' + n + ' 条（embeddings：' + escapeHtml(embedModelName()) + '）';
     if (!semanticStatus.running && semanticStatus.error && semanticStatus.errorKey === currentDataKey()) text += ' ⚠ ' + semanticStatus.error;
     el.text(text);
 }
@@ -4413,6 +4422,13 @@ function buildPanel() {
       <div class="st-sd__pane" data-pane="recall" style="display:none">
         <div class="st-sd__recall-status"></div>
 
+        <div class="st-sd__embed-model-row">
+          <span class="st-sd__label">embeddings 模型</span>
+          <input type="text" class="st-sd__embed-model" placeholder="如 embedding-3 / text-embedding-3-small（留空则用插件 API 的模型名）" autocomplete="off">
+          <button type="button" class="st-sd__embed-model-save">保存</button>
+        </div>
+        <div class="st-sd__hint">向量召回复用插件 API 的地址和 Key，但模型单独填 embedding 模型（智谱填 embedding-3，OpenAI 填 text-embedding-3-small 等），别填对话模型。改动模型会自动全量重建索引。</div>
+
         <div class="st-sd__section-title">注入正文（自动语义召回）</div>
         <div class="st-sd__recall-inject">
           <label class="st-sd__switch"><input type="checkbox" class="st-sd__recall-inject-toggle"><span class="st-sd__switch-slider"></span></label>
@@ -4429,8 +4445,8 @@ function buildPanel() {
           <span class="st-sd__recall-index-state"></span>
         </div>
         <details class="st-sd__note"><summary>说明</summary>
-          <p>把本角色当前的数据（记忆/长期记忆/时间线/人物/关系/未回收伏笔/世界状态）写进酒馆向量库的独立集合，数据变化后自动增量同步（只处理新增/改动的条目），每次生成前按最新消息语义召回。</p>
-          <p>需要酒馆「扩展 → 向量存储」里配好 embedding 源（WebLLM、KoboldCpp 不支持）。每个条目首次建索引会调用一次 embedding：API 源会产生用量，本地源（Transformers/Ollama 等）免费。换源/换模型后会自动在新模型下补建索引，旧模型的向量留在原处。</p>
+          <p>把本角色当前的数据（记忆/长期记忆/时间线/人物/关系/未回收伏笔/世界状态）用插件 API 的 embeddings 生成向量、存进浏览器本地（localStorage，按聊天分空间），数据变化后自动增量同步（只处理新增/改动的条目），每次生成前按最新消息语义召回。</p>
+          <p>需要已配置插件 API，并在上面单独填 embedding 模型（走它的 /embeddings 端点，不依赖酒馆向量存储、不回退聊天 API）。每条首次建索引会调一次 embedding，会产生用量；换模型会自动全量重建。</p>
         </details>
 
         <div class="st-sd__section-title">手动预览</div>
@@ -4790,6 +4806,16 @@ function bindPanelEvents() {
         updatePromptInjection();
         if (this.checked) scheduleSemanticSync(); // 开启就立即（防抖）建索引，别等下一轮总结才建
         renderRecallIndexState();
+    });
+    // embeddings 模型单独保存（url/key 复用插件 API，只有模型名独立，因为总结用对话模型、向量召回要 embedding 模型）
+    panel.find('.st-sd__embed-model-save').on('click', () => {
+        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
+        const val = String(panel.find('.st-sd__embed-model').val() || '').trim();
+        if (val) root.embedModel = val; else delete root.embedModel;
+        saveSettings();
+        if (settings.semanticRecall && settings.semanticRecall.enabled) scheduleSemanticSync(); // 换模型 → 自动重建索引
+        renderRecall();
+        toastr.success(val ? ('embeddings 模型已保存：' + val) : '已清除，将回退用插件 API 的模型名');
     });
     // 注入调参（召回条数 / 候选阈值 / 候选条数）
     panel.on('change', '.st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk, .st-sd__recall-inject-budget', function () {
