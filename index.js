@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.29'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.30'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1746,7 +1746,7 @@ function reconcileWithChat() {
     renderTimeAxis();
     renderPeople();
     renderStorylines();
-    saveSettingsImmediate(); // 回滚立刻落盘，别只存在内存里等下一次防抖保存
+    saveSettings(); // 回滚防抖落盘，别只存在内存里等下一次防抖保存（刷新/更新前由 reloadOnUpdate 兜底）
     toastr.info('检测到消息被重新生成/删除，已回滚对应的记忆与时间轴，将按新内容重新总结');
     return true;
 }
@@ -1906,7 +1906,7 @@ async function summarizeLastRound() {
             summaryFailStreak[keyBefore] = 0;
             const promoted = promoteMemories();
             if (settings.autoFixTime) repairTimeData();
-            saveSettingsImmediate(); // 总结结果立刻落盘，不经过防抖，避免刷新/更新时把刚写好的记忆丢掉
+            saveSettings(); // 防抖落盘即可；刷新/自动更新前的丢保存由 reloadOnUpdate 的强制落盘兜底
             refreshLocalChecks(); // 先重算本地时间冲突，再注入正文，保证本轮就提醒模型
             updatePromptInjection();
             renderMemories();
