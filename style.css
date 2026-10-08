@@ -191,12 +191,14 @@
     box-sizing: border-box;
     padding: var(--sd-pane-pad, 28px 40px 40px);
     overflow-y: auto;
+    overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
 }
 
 .st-sd__toolbar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 10px;
     margin-bottom: 16px;
 }
