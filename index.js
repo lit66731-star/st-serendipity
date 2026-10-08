@@ -12,7 +12,7 @@ import {
     saveSettings as saveSettingsImmediate,
     setExtensionPrompt,
     extension_prompt_types,
-    saveChat,
+    saveChatConditional,
     reloadCurrentChat,
 } from '../../../../script.js';
 import { loadWorldInfo, createWorldInfoEntry, saveWorldInfo, world_names, updateWorldInfoList, selected_world_info, world_info } from '../../../world-info.js';
@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.30'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.31'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2147,7 +2147,7 @@ async function compressChatHistory() {
         settings.lastSummaryIndex = chat.length - 1;
         saveSettings();
 
-        await saveChat();
+        await saveChatConditional();
         await reloadCurrentChat();
 
         settings.lastCompress = {
