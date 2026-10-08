@@ -22,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.24'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.25'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -359,6 +359,7 @@ function freshCharSettings() {
         autoFixTime: false,     // 每轮总结后是否自动修复时间数据（默认关：只检测提醒）
         summaryJournal: [],     // 总结回滚日志 [{ idx, sig, snap }]：每次总结前的状态快照，用户重新生成/滑动/删除对应消息时据此回滚
         foreshadows: [],        // 伏笔/未完成事项 [{ id, title, status, note, day }]
+        storylines: [],         // 剧情线/多线关联 [{ id, title, kind, status, summary, goal, startDay, lastDay }]（kind:主线/支线/感情线/伏笔线；status:进行中/已结束/搁置）
         injectForeshadows: false, // 是否把未完成伏笔注入正文提醒模型（默认关，以本地管理为主）
         injectChecks: true,      // 是否把已发现的一致性冲突注入正文提醒模型避免重犯（默认开，验证层闭环）
         worldReminderShown: false, // 长期记忆满 10 的归档提醒是否已弹过（归档后重置）
@@ -545,6 +546,17 @@ function normalizeCharSettings(cs) {
     if (typeof cs.worldBook !== 'string') cs.worldBook = '';
     if (typeof cs.archivedWorldBook !== 'string') cs.archivedWorldBook = '';
     if (cs.archiveVectorized === undefined) cs.archiveVectorized = false;
+    if (!Array.isArray(cs.storylines)) cs.storylines = [];
+    cs.storylines = cs.storylines.map(sl => ({
+        id: typeof sl.id === 'string' ? sl.id : uid(),
+        title: typeof sl.title === 'string' ? sl.title : '',
+        kind: typeof sl.kind === 'string' ? sl.kind : '支线',
+        status: typeof sl.status === 'string' ? sl.status : '进行中',
+        summary: typeof sl.summary === 'string' ? sl.summary : '',
+        goal: typeof sl.goal === 'string' ? sl.goal : '',
+        startDay: (sl.startDay != null && Number.isFinite(Number(sl.startDay))) ? Number(sl.startDay) : (cs.storyDay != null ? cs.storyDay : null),
+        lastDay: (sl.lastDay != null && Number.isFinite(Number(sl.lastDay))) ? Number(sl.lastDay) : (cs.storyDay != null ? cs.storyDay : null),
+    })).filter(sl => sl.title);
     if (!cs.semanticRecall || typeof cs.semanticRecall !== 'object' || Array.isArray(cs.semanticRecall)) cs.semanticRecall = {};
     cs.semanticRecall = {
         enabled: !!cs.semanticRecall.enabled,
@@ -898,6 +910,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
             '【时间轴】本段结束时的剧情进度，严格写成「第X天|地点|本段重要事情」三段（X 是从故事开始算的天数，如「第27天|北境营地|与斥候队长会面」；地点或事情未知写「无」）',
             '【世界状态】当前累计的世界状态，严格写成「类别：内容；类别：内容」单行（类别取：物品/日程，内容用顿号分隔；某类别无内容或未变化写「无」，需要清空某类写「空」）',
             '【关系变化】本轮人物关系是否发生明确变化；没有写「无」，有则严格写成「A→B|变化|变化前|变化后|好感变化|当前态度|原因|事件|第X天」单行（A→B=谁对谁；变化如「好感上升/关系升温/产生信任」；好感变化如「+10」「-5」，写不出写「无」；当前态度写不出写「无」；原因与事件写具体剧情；第X天为该变化发生的剧情天数）',
+            '【剧情线】当前各剧情线的进展，每条写成「线名|类型|状态|目标|当前进展」一段，多条用「；」分隔；没有明确剧情线写「无」（类型取：主线/支线/感情线/伏笔线；状态取：进行中/已结束/搁置；线名要稳定一致，同一条线每次沿用同一个名字）',
         ].join('\n'),
         prompt: transcript,
     };
@@ -1186,6 +1199,65 @@ function applyRelationshipChange(ch) {
         event: ch.event,
         affection: ch.affection || '',
     });
+}
+
+// ---------------- 剧情线 / 多线关联 ----------------
+// 从总结结果里解析【剧情线】行 → [{ title, kind, status, goal, summary }]（无写「无」返回空数组）
+// 格式：线名|类型|状态|目标|当前进展，多条用「；」分隔
+const STORYLINE_KINDS = ['主线', '支线', '感情线', '伏笔线'];
+const STORYLINE_STATUS = ['进行中', '已结束', '搁置'];
+function normalizeStorylineKind(v) {
+    const s = String(v || '').trim();
+    return STORYLINE_KINDS.includes(s) ? s : '支线';
+}
+function normalizeStorylineStatus(v) {
+    const s = String(v || '').trim();
+    return STORYLINE_STATUS.includes(s) ? s : '进行中';
+}
+function extractStorylines(text) {
+    const m = String(text).match(/【剧情线】\s*([^\n]+)/);
+    if (!m || !m[1]) return [];
+    const raw = m[1].trim();
+    if (!raw || raw === '无') return [];
+    return raw.split(/[；;]/).map(seg => seg.trim()).filter(Boolean).map(seg => {
+        const p = seg.split(/[|｜]/).map(s => s.trim());
+        const title = (p[0] || '').trim();
+        if (!title) return null;
+        return {
+            title,
+            kind: normalizeStorylineKind(p[1]),
+            status: normalizeStorylineStatus(p[2]),
+            goal: (p[3] && p[3] !== '无') ? p[3] : '',
+            summary: (p[4] && p[4] !== '无') ? p[4] : '',
+        };
+    }).filter(Boolean);
+}
+
+// 应用剧情线：按线名（忽略首尾空白与大小写）合并——新线追加、已有线更新状态/目标/当前进展/最后活跃日（startDay 只在新线时记录，历史不删不改）
+function applyStorylines(list) {
+    if (!Array.isArray(list) || !list.length) return;
+    for (const sl of list) {
+        const key = sl.title.trim().toLowerCase();
+        const existing = settings.storylines.find(x => x.title && x.title.trim().toLowerCase() === key);
+        if (existing) {
+            existing.kind = sl.kind;
+            existing.status = sl.status;
+            if (sl.goal) existing.goal = sl.goal;
+            existing.summary = sl.summary;
+            existing.lastDay = settings.storyDay != null ? settings.storyDay : existing.lastDay;
+        } else {
+            settings.storylines.push({
+                id: uid(),
+                title: sl.title.trim(),
+                kind: sl.kind,
+                status: sl.status,
+                summary: sl.summary,
+                goal: sl.goal,
+                startDay: settings.storyDay != null ? settings.storyDay : null,
+                lastDay: settings.storyDay != null ? settings.storyDay : null,
+            });
+        }
+    }
 }
 
 // ---------------- 角色实体自动登记 ----------------
@@ -1639,7 +1711,7 @@ async function compressLongMemory(longId, sources, key, st) {
 // 每次总结前给「会被总结改动的状态」拍快照，连同被总结的那条 AI 消息的签名存进日志；
 // 之后若那条消息被重新生成 / 滑动换版本 / 删除，就回滚到快照，让下一次总结按新内容重做
 const JOURNAL_MAX = 3;
-const JOURNAL_KEYS = ['storyTime', 'storyDay', 'storyPeriod', 'storyLocation', 'pendingJump', 'memories', 'longMemories', 'timeline', 'worldState', 'entities', 'pendingEntityAssignments', 'relationshipLines', 'lastSummaryIndex'];
+const JOURNAL_KEYS = ['storyTime', 'storyDay', 'storyPeriod', 'storyLocation', 'pendingJump', 'memories', 'longMemories', 'timeline', 'worldState', 'entities', 'pendingEntityAssignments', 'relationshipLines', 'storylines', 'lastSummaryIndex'];
 
 function messageSig(m) {
     if (!m) return '';
@@ -1813,14 +1885,16 @@ async function summarizeLastRound() {
             applyWorldState(extractWorldState(result));
             // 情感线：解析并追加关系变化（无变化/解析失败则不动；历史只追加不改写）
             applyRelationshipChange(extractRelationshipChange(result));
+            // 剧情线：解析并按线名合并（新线追加、已有线更新状态/进展）
+            applyStorylines(extractStorylines(result));
             // 角色实体自动登记（开关开启时）：优先用【人物档案】带出年龄/简介/身份域；模型没输出该行时退回只登记【在场人物】名字
             if (settings.autoRegisterEntities) {
                 const infos = extractEntityInfos(result);
                 if (infos.length) mergeEntityInfos(infos);
                 else registerEntities(extractPresentChars(result));
             }
-            // 记忆正文去掉【时间轴】【世界状态】【关系变化】【人物档案】行（结构化数据已单独存，正文保持干净）
-            const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').trim();
+            // 记忆正文去掉【时间轴】【世界状态】【关系变化】【人物档案】【剧情线】行（结构化数据已单独存，正文保持干净）
+            const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').replace(/【剧情线】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
             const newMemId = uid();
             settings.memories.push({ id: newMemId, time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
@@ -2220,6 +2294,19 @@ function buildRelationshipBlock() {
     return parts.join('\n\n');
 }
 
+// 剧情线注入正文块：只注入「进行中」的线（已结束/搁置不占 token），每条一行极简锚点
+function buildStorylineBlock() {
+    const lines = settings.storylines.filter(sl => sl && sl.title && sl.title.trim() && sl.status === '进行中');
+    if (!lines.length) return '';
+    const parts = lines.map((sl, i) => {
+        let s = (i + 1) + '. [' + sl.kind + '] ' + sl.title;
+        if (sl.goal) s += '（目标：' + sl.goal + '）';
+        if (sl.summary) s += '｜进展：' + sl.summary;
+        return s;
+    });
+    return parts.join('\n');
+}
+
 // 把记忆 + 禁止词注入正文 prompt（IN_PROMPT：进入系统提示，正文生成时会被模型读取）
 function updatePromptInjection() {
     // 记忆底层规则注入（记忆开启时常驻，让模型遵守剧情时间/事件/人物/世界状态的连续性规则）
@@ -2274,6 +2361,15 @@ function updatePromptInjection() {
     setExtensionPrompt(
         'serendipity_relationship',
         relBlock ? '[Serendipity 情感线]\n以下是人物之间的关系轨迹（当前关系 + 最近变化 + 关键节点）。请保持关系连续、不要倒退或遗忘；历史关系只追加不改写，只有剧情明确发生分手/决裂/失忆/关系重建等时才记录新的变化。\n\n' + relBlock : '',
+        extension_prompt_types.IN_PROMPT,
+        0,
+    );
+
+    // 剧情线注入：只注入「进行中」的线（已结束/搁置不占 token），让模型持续推进主线/支线目标
+    const storylineBlock = settings.memoryEnabled ? buildStorylineBlock().trim() : '';
+    setExtensionPrompt(
+        'serendipity_storylines',
+        storylineBlock ? '[Serendipity 剧情线]\n以下是当前进行中的剧情线（类型/目标/进展）。请在后续生成中持续推进这些线的目标、不要遗忘或跑偏；某条线剧情明确完结或暂时搁置时，请在总结里把它的状态写成「已结束」或「搁置」。\n\n' + storylineBlock : '',
         extension_prompt_types.IN_PROMPT,
         0,
     );
