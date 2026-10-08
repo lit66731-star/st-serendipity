@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.32'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.33'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -323,6 +323,7 @@ let settings = null;         // 当前角色的数据（便捷引用）
 let activeChar = '';         // 当前绑定角色的显示名
 let activeCharKey = '';      // 当前绑定角色的唯一键（avatar，同名卡也唯一）
 let isSummarizing = false;
+let summaryPending = false;  // 总结进行中又来了新轮：不跳过，记下待总结，跑完当前再补下一轮（保证「每 N 轮」不合并）
 let isCompressing = false;   // 压缩聊天历史进行中标记（防连点）
 let noCharSettings = null; // 无角色/群组时的临时数据（不入库）
 const noCharPrefs = { instructions: [] }; // 无角色/群组时的临时指令（不入库）
@@ -1776,9 +1777,11 @@ function noteSummaryFailure(st, key, lastIdx) {
 }
 
 async function summarizeLastRound() {
+    // 上一轮总结还没跑完：不直接跳过，而是记一笔「还有一轮待总结」，等当前跑完再补，避免这一轮被并进下一轮
+    if (isSummarizing) { summaryPending = true; return; }
     activateCharacter(); // 每次总结前重新绑定到当前角色，避免切换角色后总结写错档
     reconcileWithChat();
-    if (!settings.memoryEnabled || isSummarizing) return;
+    if (!settings.memoryEnabled) return;
     if (!currentDataKey()) return; // 没有选中角色/群组，没有可写入的档案
     if (!Array.isArray(chat) || chat.length < 2) return;
     if (!apiConfigured()) return; // 未配置插件 API：跳过本次总结，不回退聊天 API
@@ -1940,13 +1943,14 @@ async function summarizeLastRound() {
     } finally {
         isSummarizing = false;
         // 总结期间若有重新生成/滑动，isSummarizing 会让对账被跳过，这里补一次；
-        // 补到回滚后若还有没总结的新内容，立刻补一次总结，否则滑动的这段会一直无人重新总结
+        // 补到回滚后若还有没总结的新内容，或总结期间又有新轮排队，就接着跑下一轮（保证不合并、不丢）
         setTimeout(() => {
             if (!settings) return;
             activateCharacter();
-            if (reconcileWithChat() && settings.memoryEnabled && hasUnsummarizedChat()) {
-                summarizeLastRound();
-            }
+            const rolled = reconcileWithChat();
+            const wantNext = summaryPending || (rolled && settings.memoryEnabled && hasUnsummarizedChat());
+            summaryPending = false;
+            if (wantNext) summarizeLastRound();
         }, 0);
     }
 }
@@ -6172,6 +6176,7 @@ jQuery(async () => {
     eventSource.on(event_types.CHAT_CHANGED, () => {
         // 语义召回块是上个聊天的资料，立刻清掉，免得新聊天第一次生成带着旧剧情
         setExtensionPrompt('serendipity_semantic_recall', '', extension_prompt_types.IN_PROMPT, 0);
+        summaryPending = false; // 换聊天后，上个聊天挂起的待总结作废，避免给新聊天乱补一轮
         setTimeout(() => {
             activateCharacter();
             updatePromptInjection();
