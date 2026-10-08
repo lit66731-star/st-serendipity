@@ -22,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.23'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.24'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -3046,7 +3046,7 @@ function buildRelativeTimeBridge(queryText) {
 
 // 历史事实标签：【第N天 · 具体时间 · 地点】；没有发生时间的（人物/关系/世界状态）标为当前状态快照
 function recallTimeLabel(it) {
-    if (it.day == null && !it.time) return '【当前状态】';
+    if (it.day == null && !it.time && !it.dayLabel) return '【当前状态】';
     const parts = [];
     if (it.dayLabel) parts.push(it.dayLabel);
     else if (it.day != null) parts.push('第' + it.day + '天');
@@ -3086,6 +3086,15 @@ function buildRecallItems() {
         items.push(recallItem('foreshadow', f.id, '[伏笔] ' + body, '', f.day, '', { tag: '伏笔（埋下日）', body }));
     }
     for (const w of settings.worldState) if (w && w.id) items.push(recallItem('world', w.id, '[世界状态] ' + w.cat + '：' + w.text, '', null, '', { tag: '世界状态', body: w.cat + '：' + w.text }));
+    // 剧情摘要归档也纳入自建语义召回：压缩后的旧剧情以「前情摘要」形式被按需召回，不再依赖酒馆向量存储
+    for (const s of settings.summaryArchive) if (s && s.id && s.text) {
+        const range = '第' + (s.from != null ? s.from : '?') + '–' + (s.to != null ? s.to : '?') + '楼';
+        items.push(recallItem('summary', s.id, '[前情摘要] ' + range + '：' + s.text, '', null, '', {
+            tag: '前情摘要',
+            body: s.text,
+            dayLabel: '前情摘要 ' + range,
+        }));
+    }
     return items;
 }
 
