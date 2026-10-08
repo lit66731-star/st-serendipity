@@ -22,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.25'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.26'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1744,6 +1744,7 @@ function reconcileWithChat() {
     renderMemories();
     renderTimeAxis();
     renderPeople();
+    renderStorylines();
     toastr.info('检测到消息被重新生成/删除，已回滚对应的记忆与时间轴，将按新内容重新总结');
     return true;
 }
@@ -4186,6 +4187,7 @@ function resetCurrentChar() {
     renderBlockedWords();
     renderInstructions();
     renderForeshadows();
+    renderStorylines();
     renderChecks();
     toastr.success('已清空「' + name + '」的 Serendipity 数据');
 }
@@ -4342,6 +4344,7 @@ function renderChecks() {
 
 // ---------------- 伏笔/未完成事项 UI ----------------
 let foreshadowEditingId = null; // 当前编辑中的伏笔条目 id
+let storylineEditingId = null;   // 当前编辑中的剧情线条目 id
 
 function updateForeshadowBadge() {
     const tab = $('#st-serendipity .st-sd__tab[data-tab="fore"]');
@@ -4386,6 +4389,50 @@ function renderForeshadows() {
 function cycleForeshadowStatus(f) {
     const i = FORESHADOW_STATUSES.indexOf(f.status);
     f.status = FORESHADOW_STATUSES[(i + 1) % FORESHADOW_STATUSES.length];
+}
+
+// ---------------- 剧情线 / 多线关联（面板） ----------------
+function renderStorylines() {
+    const list = $('#st-serendipity .st-sd__sl-list');
+    if (!list.length) return;
+    if (!settings.storylines.length) {
+        list.html('<div class="st-sd__empty">暂无剧情线。总结时模型会自动提取（「线名|类型|状态|目标|进展」），或在上方手动添加。</div>');
+        return;
+    }
+    const statusOrder = { '进行中': 0, '搁置': 1, '已结束': 2 };
+    const items = settings.storylines.slice().sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9));
+    list.html(items.map(sl => {
+        if (sl.id === storylineEditingId) {
+            return '<div class="st-sd__sl st-sd__sl--edit" data-id="' + sl.id + '">'
+                + '<div class="st-sd__sl-edit-row">'
+                + '<input type="text" class="st-sd__sl-e-title" value="' + escapeHtml(sl.title) + '" placeholder="剧情线名">'
+                + '<select class="st-sd__sl-e-kind">' + STORYLINE_KINDS.map(k => '<option value="' + k + '"' + (k === sl.kind ? ' selected' : '') + '>' + k + '</option>').join('') + '</select>'
+                + '<select class="st-sd__sl-e-status">' + STORYLINE_STATUS.map(s => '<option value="' + s + '"' + (s === sl.status ? ' selected' : '') + '>' + s + '</option>').join('') + '</select>'
+                + '</div>'
+                + '<input type="text" class="st-sd__sl-e-goal" value="' + escapeHtml(sl.goal) + '" placeholder="目标（可选）">'
+                + '<textarea class="st-sd__sl-e-summary" placeholder="当前进展">' + escapeHtml(sl.summary) + '</textarea>'
+                + '<div class="st-sd__sl-actions"><button type="button" class="st-sd__sl-save" data-id="' + sl.id + '">保存</button><button type="button" class="st-sd__sl-cancel">取消</button></div>'
+                + '</div>';
+        }
+        const statusCls = sl.status === '进行中' ? 'st-sd__sl-status--open' : (sl.status === '已结束' ? 'st-sd__sl-status--done' : 'st-sd__sl-status--paused');
+        const dayRange = (sl.startDay != null || sl.lastDay != null) ? ('第' + (sl.startDay != null ? sl.startDay : '?') + '–' + (sl.lastDay != null ? sl.lastDay : '?') + '天') : '';
+        return '<div class="st-sd__sl" data-id="' + sl.id + '">'
+            + '<div class="st-sd__sl-head">'
+            + '<span class="st-sd__sl-kind">' + escapeHtml(sl.kind) + '</span>'
+            + '<span class="st-sd__sl-title">' + escapeHtml(sl.title) + '</span>'
+            + '<button type="button" class="st-sd__sl-status ' + statusCls + '" data-id="' + sl.id + '" title="点击切换状态（' + STORYLINE_STATUS.join(' / ') + '）">' + escapeHtml(sl.status) + '</button>'
+            + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__sl-edit" data-id="' + sl.id + '">编辑</button><button type="button" class="st-sd__sl-del" data-id="' + sl.id + '">删除</button></span>'
+            + '</div>'
+            + (sl.goal ? '<div class="st-sd__sl-goal">目标：' + escapeHtml(sl.goal) + '</div>' : '')
+            + (sl.summary ? '<div class="st-sd__sl-summary">' + escapeHtml(sl.summary) + '</div>' : '')
+            + (dayRange ? '<div class="st-sd__sl-days">' + escapeHtml(dayRange) + '</div>' : '')
+            + '</div>';
+    }).join(''));
+}
+
+function cycleStorylineStatus(sl) {
+    const i = STORYLINE_STATUS.indexOf(sl.status);
+    sl.status = STORYLINE_STATUS[(i + 1) % STORYLINE_STATUS.length];
 }
 
 // ---------------- 主题（仅本机偏好，存于全局设置，不进入任何聊天数据） ----------------
@@ -4502,6 +4549,7 @@ function buildPanel() {
         <button type="button" class="st-sd__tab" data-tab="censor">屏蔽词</button>
         <button type="button" class="st-sd__tab" data-tab="instruct">指令</button>
         <button type="button" class="st-sd__tab" data-tab="time">时间轴</button>
+        <button type="button" class="st-sd__tab" data-tab="storyline">剧情线</button>
         <button type="button" class="st-sd__tab" data-tab="people">人物</button>
         <button type="button" class="st-sd__tab" data-tab="fore">伏笔</button>
         <button type="button" class="st-sd__tab" data-tab="check">检查</button>
@@ -4679,6 +4727,22 @@ function buildPanel() {
         <div class="st-sd__hint">手动设定时间轴锚点（第X天 + 年月日几时几分 + 地点），下次总结从这里接力推进。下方时间线按「第X天 / 年月日几时几分 / 地点 / 重要事情」不断叠加，可编辑/删除。</div>
         <div class="st-sd__axis-hints"></div>
         <div class="st-sd__axis-list"></div>
+      </div>
+
+      <div class="st-sd__pane" data-pane="storyline" style="display:none">
+        <div class="st-sd__add-row">
+          <input type="text" class="st-sd__sl-title" placeholder="剧情线名，如「调查身世」">
+          <select class="st-sd__sl-kind" title="类型">
+            ${STORYLINE_KINDS.map(k => `<option value="${k}">${k}</option>`).join('')}
+          </select>
+          <select class="st-sd__sl-status" title="状态">
+            ${STORYLINE_STATUS.map(s => `<option value="${s}">${s}</option>`).join('')}
+          </select>
+          <input type="text" class="st-sd__sl-goal" placeholder="目标（可空，如「查明父母下落」）">
+          <button type="button" class="st-sd__sl-add">添加</button>
+        </div>
+        <div class="st-sd__hint">剧情线记录故事的线索走向（主线/支线/感情线/伏笔线）。总结时模型会自动提取并按线名合并同名线（历史不删不改）；这里可手动添加/编辑/删除。状态为「进行中」的线会注入正文，让模型持续推进目标；「已结束/搁置」不注入。</div>
+        <div class="st-sd__sl-list"></div>
       </div>
 
       <div class="st-sd__pane" data-pane="people" style="display:none">
@@ -5508,6 +5572,75 @@ function bindPanelEvents() {
         renderForeshadows();
     });
 
+    // 剧情线/多线关联：添加
+    const addStoryline = () => {
+        const title = panel.find('.st-sd__sl-title').val().trim();
+        if (!title) return;
+        const kind = panel.find('.st-sd__sl-kind').val() || '支线';
+        const status = panel.find('.st-sd__sl-status').val() || '进行中';
+        const goal = panel.find('.st-sd__sl-goal').val().trim();
+        const key = title.toLowerCase();
+        if (!settings.storylines.some(sl => sl.title && sl.title.trim().toLowerCase() === key)) {
+            settings.storylines.push({ id: uid(), title, kind, status, summary: '', goal, startDay: settings.storyDay, lastDay: settings.storyDay });
+            saveSettings();
+            updatePromptInjection();
+            renderStorylines();
+        }
+        panel.find('.st-sd__sl-title').val('');
+        panel.find('.st-sd__sl-goal').val('');
+    };
+    panel.find('.st-sd__sl-add').on('click', addStoryline);
+    panel.find('.st-sd__sl-title').on('keydown', (e) => { if (e.key === 'Enter') addStoryline(); });
+
+    // 剧情线：切换状态（循环：进行中 → 已结束 → 搁置）
+    panel.on('click', '.st-sd__sl-status', function () {
+        const id = String($(this).data('id'));
+        const sl = settings.storylines.find(x => x.id === id);
+        if (!sl) return;
+        cycleStorylineStatus(sl);
+        saveSettings();
+        updatePromptInjection();
+        renderStorylines();
+    });
+
+    // 剧情线：编辑/保存/取消/删除
+    panel.on('click', '.st-sd__sl-edit', function () {
+        storylineEditingId = String($(this).data('id'));
+        renderStorylines();
+        const inp = panel.find('.st-sd__sl-e-title');
+        if (inp.length) inp.focus();
+    });
+    panel.on('click', '.st-sd__sl-cancel', function () {
+        storylineEditingId = null;
+        renderStorylines();
+    });
+    panel.on('click', '.st-sd__sl-save', function () {
+        const id = String($(this).data('id'));
+        const sl = settings.storylines.find(x => x.id === id);
+        if (!sl) { storylineEditingId = null; renderStorylines(); return; }
+        const title = panel.find('.st-sd__sl-e-title').val().trim();
+        if (!title) { toastr.warning('线名不能为空'); return; }
+        sl.title = title;
+        sl.kind = panel.find('.st-sd__sl-e-kind').val() || '支线';
+        sl.status = panel.find('.st-sd__sl-e-status').val() || '进行中';
+        sl.goal = panel.find('.st-sd__sl-e-goal').val().trim();
+        sl.summary = panel.find('.st-sd__sl-e-summary').val().trim();
+        if (settings.storyDay != null) sl.lastDay = settings.storyDay;
+        storylineEditingId = null;
+        saveSettings();
+        updatePromptInjection();
+        renderStorylines();
+        toastr.success('已保存');
+    });
+    panel.on('click', '.st-sd__sl-del', function () {
+        const id = String($(this).data('id'));
+        if (!confirm('确定删除这条剧情线吗？')) return;
+        settings.storylines = settings.storylines.filter(x => x.id !== id);
+        saveSettings();
+        updatePromptInjection();
+        renderStorylines();
+    });
+
     // 一致性检查：注入开关 / 立即检查 / 清空 / 忽略单条
     panel.find('.st-sd__check-toggle').prop('checked', !!settings.injectChecks).on('change', function () {
         settings.injectChecks = this.checked;
@@ -5561,6 +5694,7 @@ function togglePanel(force) {
         renderBlockedWords();
         renderInstructions();
         renderForeshadows();
+        renderStorylines();
         renderChecks();
         renderCharBinding();
         renderRecall();
@@ -5824,6 +5958,7 @@ async function importBackupFile(file) {
     renderBlockedWords();
     renderInstructions();
     renderForeshadows();
+    renderStorylines();
     renderChecks();
     renderCharBinding();
     $('#st-serendipity .st-sd__censor-toggle').prop('checked', censorOn());
@@ -6038,6 +6173,7 @@ jQuery(async () => {
             renderBlockedWords();
             renderInstructions();
             renderForeshadows();
+            renderStorylines();
             renderChecks();
             renderCharBinding();
             renderRecall();
@@ -6054,6 +6190,7 @@ jQuery(async () => {
     renderBlockedWords();
     renderInstructions();
     renderForeshadows();
+    renderStorylines();
     renderChecks();
     renderCharBinding();
     initUpdateReminder();

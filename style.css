@@ -281,8 +281,8 @@
 }
 
 /* 内联文字按钮：编辑 / 删除 / 保存 / 取消 */
-.st-sd__memory-edit, .st-sd__tl-edit, .st-sd__world-edit, .st-sd__fore-edit,
-.st-sd__memory-del, .st-sd__tl-del, .st-sd__world-del, .st-sd__fore-del {
+.st-sd__memory-edit, .st-sd__tl-edit, .st-sd__world-edit, .st-sd__fore-edit, .st-sd__sl-edit,
+.st-sd__memory-del, .st-sd__tl-del, .st-sd__world-del, .st-sd__fore-del, .st-sd__sl-del {
     border: none;
     background: transparent;
     color: var(--sd-text-3);
@@ -292,15 +292,15 @@
     padding: 3px 7px;
     transition: color 0.15s, background 0.15s;
 }
-.st-sd__memory-edit:hover, .st-sd__tl-edit:hover, .st-sd__world-edit:hover, .st-sd__fore-edit:hover {
+.st-sd__memory-edit:hover, .st-sd__tl-edit:hover, .st-sd__world-edit:hover, .st-sd__fore-edit:hover, .st-sd__sl-edit:hover {
     color: var(--sd-text);
     background: var(--sd-surface-2);
 }
-.st-sd__memory-del:hover, .st-sd__tl-del:hover, .st-sd__world-del:hover, .st-sd__fore-del:hover {
+.st-sd__memory-del:hover, .st-sd__tl-del:hover, .st-sd__world-del:hover, .st-sd__fore-del:hover, .st-sd__sl-del:hover {
     color: var(--sd-danger);
     background: var(--sd-danger-bg);
 }
-.st-sd__memory-save, .st-sd__tl-save, .st-sd__world-save, .st-sd__fore-save {
+.st-sd__memory-save, .st-sd__tl-save, .st-sd__world-save, .st-sd__fore-save, .st-sd__sl-save {
     border: 1px solid var(--sd-primary);
     background: var(--sd-primary);
     color: var(--sd-on-primary);
@@ -311,10 +311,10 @@
     padding: 3px 10px;
     transition: background 0.15s;
 }
-.st-sd__memory-save:hover, .st-sd__tl-save:hover, .st-sd__world-save:hover, .st-sd__fore-save:hover {
+.st-sd__memory-save:hover, .st-sd__tl-save:hover, .st-sd__world-save:hover, .st-sd__fore-save:hover, .st-sd__sl-save:hover {
     background: var(--sd-primary-hover);
 }
-.st-sd__memory-cancel, .st-sd__tl-cancel, .st-sd__world-cancel, .st-sd__fore-cancel {
+.st-sd__memory-cancel, .st-sd__tl-cancel, .st-sd__world-cancel, .st-sd__fore-cancel, .st-sd__sl-cancel {
     border: none;
     background: transparent;
     color: var(--sd-text-3);
@@ -324,7 +324,7 @@
     padding: 3px 10px;
     transition: color 0.15s, background 0.15s;
 }
-.st-sd__memory-cancel:hover, .st-sd__tl-cancel:hover, .st-sd__world-cancel:hover, .st-sd__fore-cancel:hover {
+.st-sd__memory-cancel:hover, .st-sd__tl-cancel:hover, .st-sd__world-cancel:hover, .st-sd__fore-cancel:hover, .st-sd__sl-cancel:hover {
     color: var(--sd-text);
     background: var(--sd-surface-2);
 }
@@ -342,11 +342,13 @@
 .st-sd__world-item:hover .st-sd__memory-actions,
 .st-sd__npc-item:hover .st-sd__memory-actions,
 .st-sd__fore:hover .st-sd__memory-actions,
+.st-sd__sl:hover .st-sd__memory-actions,
 .st-sd__memory.is-editing .st-sd__memory-actions,
 .st-sd__tl-item--edit .st-sd__memory-actions,
 .st-sd__world-item.is-editing .st-sd__memory-actions,
 .st-sd__npc-item.is-editing .st-sd__memory-actions,
-.st-sd__fore--edit .st-sd__memory-actions { opacity: 1; }
+.st-sd__fore--edit .st-sd__memory-actions,
+.st-sd__sl--edit .st-sd__memory-actions { opacity: 1; }
 
 /* ============ 开关 ============ */
 .st-sd__switch {
@@ -389,7 +391,9 @@
 .st-sd__recall-input, .st-sd__recall-world,
 .st-sd__recall-threshold, .st-sd__recall-topk,
 .st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk,
-.st-sd__recall-inject-budget, .st-sd__recall-world-search {
+.st-sd__recall-inject-budget, .st-sd__recall-world-search,
+.st-sd__sl-title, .st-sd__sl-kind, .st-sd__sl-status, .st-sd__sl-goal,
+.st-sd__sl-e-title, .st-sd__sl-e-kind, .st-sd__sl-e-status, .st-sd__sl-e-goal {
     border: 1px solid var(--sd-border-2);
     border-radius: var(--sd-r);
     height: 34px;
@@ -412,11 +416,13 @@
 .st-sd__recall-input:focus, .st-sd__recall-world:focus,
 .st-sd__recall-threshold:focus, .st-sd__recall-topk:focus,
 .st-sd__recall-inject-topk:focus, .st-sd__recall-inject-threshold:focus, .st-sd__recall-inject-querytopk:focus,
-.st-sd__recall-inject-budget:focus, .st-sd__recall-world-search:focus {
+.st-sd__recall-inject-budget:focus, .st-sd__recall-world-search:focus,
+.st-sd__sl-title:focus, .st-sd__sl-kind:focus, .st-sd__sl-status:focus, .st-sd__sl-goal:focus,
+.st-sd__sl-e-title:focus, .st-sd__sl-e-kind:focus, .st-sd__sl-e-status:focus, .st-sd__sl-e-goal:focus {
     border-color: var(--sd-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--sd-accent) 25%, transparent);
 }
-.st-sd__world-select, .st-sd__world-cat, .st-sd__recall-world { background: var(--sd-surface); cursor: pointer; }
+.st-sd__world-select, .st-sd__world-cat, .st-sd__recall-world, .st-sd__sl-kind, .st-sd__sl-status, .st-sd__sl-e-kind, .st-sd__sl-e-status { background: var(--sd-surface); cursor: pointer; }
 
 /* 记忆编辑 textarea */
 .st-sd__memory-edit-text {
@@ -1082,6 +1088,107 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 }
 .st-sd__fore-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
+/* ============ 剧情线 / 多线关联 ============ */
+.st-sd__sl {
+    padding: 12px 2px;
+    border-bottom: 1px solid var(--sd-border);
+    background: transparent;
+}
+.st-sd__sl:last-child { border-bottom: none; }
+.st-sd__sl--edit {
+    background: var(--sd-surface);
+    border: 1px solid var(--sd-accent);
+    border-radius: var(--sd-r-lg);
+    padding: 12px;
+    margin: 4px 0 10px;
+}
+.st-sd__sl-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.st-sd__sl-kind {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 550;
+    letter-spacing: 0.2px;
+    color: var(--sd-text-2);
+    background: var(--sd-surface-2);
+    border-radius: 999px;
+    padding: 2px 11px;
+}
+.st-sd__sl-status {
+    flex: 0 0 auto;
+    border: none;
+    border-radius: 999px;
+    padding: 2px 11px;
+    font-size: 11px;
+    font-weight: 550;
+    letter-spacing: 0.2px;
+    cursor: pointer;
+    transition: filter 0.15s;
+}
+.st-sd__sl-status:hover { filter: brightness(0.96); }
+.st-sd__sl-status--open { background: var(--sd-accent-bg); color: var(--sd-accent-deep); }
+.st-sd__sl-status--done { background: var(--sd-ok-bg); color: var(--sd-ok); text-decoration: line-through; }
+.st-sd__sl-status--paused { background: var(--sd-warn-bg); color: var(--sd-warn); }
+.st-sd__sl-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--sd-text);
+    line-height: 1.6;
+    word-break: break-word;
+}
+.st-sd__sl-goal {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--sd-text-2);
+    line-height: 1.6;
+    word-break: break-word;
+}
+.st-sd__sl-summary {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--sd-text-3);
+    line-height: 1.6;
+    word-break: break-word;
+}
+.st-sd__sl-days {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--sd-text-3);
+    line-height: 1.6;
+}
+.st-sd__sl-edit-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.st-sd__sl-edit-row input { flex: 1; min-width: 0; }
+.st-sd__sl-edit-row select { flex: 0 0 auto; max-width: 84px; }
+.st-sd__sl-e-title, .st-sd__sl-e-goal {
+    display: block;
+    width: 100%;
+    margin-bottom: 6px;
+}
+.st-sd__sl-e-summary {
+    display: block;
+    width: 100%;
+    min-height: 72px;
+    box-sizing: border-box;
+    border: 1px solid var(--sd-border-2);
+    border-radius: var(--sd-r);
+    padding: 9px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--sd-text);
+    background: var(--sd-surface);
+    resize: vertical;
+    outline: none;
+    margin-bottom: 6px;
+}
+.st-sd__sl-e-summary:focus { border-color: var(--sd-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sd-accent) 25%, transparent); }
+.st-sd__sl-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
 /* ============ 情感线 / 关系轨迹 ============ */
 .st-sd__rel-list { flex: 1; min-height: 0; overflow-y: auto; }
 .st-sd__rel-item {
@@ -1286,7 +1393,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 /* 所有页面整页滚动翻阅：列表不再抢占固定小窗，随内容自然撑高，由 .st-sd__pane 统一纵向滚动 */
 .st-sd__memory-list, .st-sd__word-list, .st-sd__instr-list,
 .st-sd__axis-list, .st-sd__world-list, .st-sd__check-list,
-.st-sd__fore-list, .st-sd__rel-list, .st-sd__recall-list {
+.st-sd__fore-list, .st-sd__rel-list, .st-sd__recall-list, .st-sd__sl-list {
     flex: none;
     min-height: 0;
     overflow-y: visible;
