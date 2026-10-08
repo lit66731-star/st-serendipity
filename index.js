@@ -22,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.21'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.22'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -338,6 +338,7 @@ function freshCharSettings() {
         memoryEnabled: true,    // 自动记忆开关
         summarizeEvery: 1,      // 每 N 轮总结一次（1=每轮都总结）
         compressKeep: 20,       // 生成摘要时保留最近多少条消息不纳入摘要（留给正文上下文）
+        compressBackupDownload: false, // 生成摘要后是否自动下载 JSON 备份文件（默认关：全文已在面板归档可回看，旧楼层也已隐藏可 /unhide 恢复，手机上下载易导致页面跳走）
         summaryArchive: [],     // 剧情摘要归档 [{ id, at, from, to, text, raw, rawSize }]：原文全文归档 + 摘要替身（旧楼层隐藏、不删）
         roundsSinceSummary: 0,  // 距上次总结已过的轮数
         lastSummaryIndex: -1,   // 上次总结到的聊天消息下标（-1=尚未总结），用于跨轮总结窗口不丢剧情
@@ -519,6 +520,7 @@ function normalizeCharSettings(cs) {
     cs.roundsSinceSummary = Number(cs.roundsSinceSummary) || 0;
     cs.lastSummaryIndex = (typeof cs.lastSummaryIndex === 'number' && cs.lastSummaryIndex >= 0) ? Math.floor(cs.lastSummaryIndex) : -1;
     cs.compressKeep = (Number(cs.compressKeep) >= 2 && Number(cs.compressKeep) <= 200) ? Math.floor(Number(cs.compressKeep)) : 20;
+    if (cs.compressBackupDownload === undefined) cs.compressBackupDownload = false;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
     if (cs.storyDay === undefined || cs.storyDay === null || isNaN(cs.storyDay)) cs.storyDay = null;
     else cs.storyDay = Number(cs.storyDay);
@@ -2001,22 +2003,25 @@ async function compressChatHistory() {
             '【第' + (x.i + 1) + '楼】' + (x.m.is_system ? '系统' : (x.m.name || (x.m.is_user ? '用户' : '角色'))) + '：' + x.m.mes.trim()
         ).join('\n\n');
 
-        // 隐藏前先落一份原文备份文件（全文归档，双保险），再标记隐藏
-        downloadText(
-            'serendipity-compress-backup-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json',
-            JSON.stringify({
-                at: new Date().toISOString(),
-                chatKey: currentDataKey(),
-                from,
-                to,
-                hiddenCount: indexedOld.length,
-                keptCount: keep,
-                summary,
-                raw,
-                messages: indexedOld.map(x => ({ index: x.i, name: x.m.name, is_user: !!x.m.is_user, is_system: !!x.m.is_system, mes: x.m.mes })),
-            }, null, 2),
-            'application/json;charset=utf-8'
-        );
+        // 可选：自动下载一份 JSON 备份文件（默认关，手机 WebView 下载易把页面跳走；
+        // 全文本就存在面板归档里可展开回看，旧楼层也已隐藏可 /unhide 恢复）
+        if (settings.compressBackupDownload) {
+            downloadText(
+                'serendipity-compress-backup-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json',
+                JSON.stringify({
+                    at: new Date().toISOString(),
+                    chatKey: currentDataKey(),
+                    from,
+                    to,
+                    hiddenCount: indexedOld.length,
+                    keptCount: keep,
+                    summary,
+                    raw,
+                    messages: indexedOld.map(x => ({ index: x.i, name: x.m.name, is_user: !!x.m.is_user, is_system: !!x.m.is_system, mes: x.m.mes })),
+                }, null, 2),
+                'application/json;charset=utf-8'
+            );
+        }
 
         // 存进面板归档（含摘要 + 原文全文，可回看）
         settings.summaryArchive.push({
@@ -4472,7 +4477,13 @@ function buildPanel() {
           <span class="st-sd__label">条</span>
           <button type="button" class="st-sd__compress">生成剧情摘要</button>
         </div>
-        <div class="st-sd__hint">把前面的旧消息分段总结成一段剧情摘要，单独存到「世界书」和下面归档里，聊天正文一条不动（翻记录不会丢楼层）。正文太长老报错时，可配合把摘要写进世界书让模型按需召回。全程只走上面的「插件 API」，不碰聊天 API。</div>
+        <div class="st-sd__compress-row">
+          <label class="st-sd__switch st-sd__vec-switch" title="开启后，生成摘要会额外自动下载一份 JSON 备份文件；手机上建议关闭（WebView 下载容易把页面跳走）。全文已存在下方归档里可展开回看，旧楼层也已隐藏可用 /unhide 恢复。">
+            <input type="checkbox" class="st-sd__backup-download-toggle"><span class="st-sd__switch-slider"></span>
+          </label>
+          <span class="st-sd__vec-label">自动下载 JSON 备份</span>
+        </div>
+        <div class="st-sd__hint">把前面的旧消息分段总结成一段剧情摘要，旧楼层隐藏（不删除）、摘要替身插在其后；摘要写进「世界书」按需召回，原文全文存进下面归档可回看。全程只走上面的「插件 API」，不碰聊天 API。</div>
         <div class="st-sd__compress-result" style="display:none"></div>
       </div>
 
@@ -4759,6 +4770,7 @@ function bindPanelEvents() {
         panel.find('.st-sd__compress-api-key').val(c.key || '');
         panel.find('.st-sd__compress-api-model').val(c.model || '');
         panel.find('.st-sd__compress-keep').val(settings.compressKeep || COMPRESS_KEEP_DEFAULT);
+        panel.find('.st-sd__backup-download-toggle').prop('checked', !!settings.compressBackupDownload);
         refreshCompressApiState();
         renderCompressResult();
     }
@@ -4808,6 +4820,10 @@ function bindPanelEvents() {
         if (v > 200) v = 200;
         settings.compressKeep = v;
         this.value = v;
+        saveSettings();
+    });
+    panel.find('.st-sd__backup-download-toggle').on('change', function () {
+        settings.compressBackupDownload = this.checked;
         saveSettings();
     });
     // 注入世界书（事件委托，按钮即使被重建也始终能触发）
@@ -5942,5 +5958,13 @@ jQuery(async () => {
 // 在这里刷新页面以加载新版本，无需手动刷新。
 export function reloadOnUpdate() {
     toastr.info('Serendipity 已更新，正在刷新页面以应用新版本...', undefined, { timeOut: 1500 });
-    setTimeout(() => location.reload(), 1500);
+    const doReload = () => {
+        // 有长任务在跑（生成剧情摘要 / 自动总结）时先别刷新，等它跑完再刷，避免打断浪费额度
+        if (isCompressing || isSummarizing) {
+            setTimeout(doReload, 1500);
+            return;
+        }
+        location.reload();
+    };
+    setTimeout(doReload, 1500);
 }
