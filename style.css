@@ -1527,8 +1527,8 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 @media screen and (max-width: 1000px) {
     .st-sd__head { padding: 20px 20px 16px; }
     .st-sd__update { padding: 9px 20px; }
-    .st-sd__tabs { padding: 0 8px; overflow-x: auto; }
-    .st-sd__tab { flex: 1 0 auto; padding: 12px 8px 11px; font-size: 12px; }
+    .st-sd__tabs { padding: 0 8px; flex-wrap: wrap; row-gap: 2px; }
+    .st-sd__tab { flex: 0 0 auto; padding: 11px 10px 10px; font-size: 12px; }
     .st-sd__pane { padding: 20px 20px 28px; }
     /* ST 移动端给 body 设了 touch-action:none + overflow:hidden，这里在面板打开时恢复触摸滚动 */
     body.st-sd-open { touch-action: auto !important; }
