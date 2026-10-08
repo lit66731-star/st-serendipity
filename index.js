@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.31'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.32'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1939,8 +1939,15 @@ async function summarizeLastRound() {
         noteSummaryFailure(stBefore, keyBefore, lastIdx);
     } finally {
         isSummarizing = false;
-        // 总结期间若有重新生成/滑动，isSummarizing 会让对账被跳过，这里补一次
-        setTimeout(() => { if (settings) { activateCharacter(); reconcileWithChat(); } }, 0);
+        // 总结期间若有重新生成/滑动，isSummarizing 会让对账被跳过，这里补一次；
+        // 补到回滚后若还有没总结的新内容，立刻补一次总结，否则滑动的这段会一直无人重新总结
+        setTimeout(() => {
+            if (!settings) return;
+            activateCharacter();
+            if (reconcileWithChat() && settings.memoryEnabled && hasUnsummarizedChat()) {
+                summarizeLastRound();
+            }
+        }, 0);
     }
 }
 
