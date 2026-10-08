@@ -22,7 +22,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.20'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.21'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -338,7 +338,7 @@ function freshCharSettings() {
         memoryEnabled: true,    // 自动记忆开关
         summarizeEvery: 1,      // 每 N 轮总结一次（1=每轮都总结）
         compressKeep: 20,       // 生成摘要时保留最近多少条消息不纳入摘要（留给正文上下文）
-        summaryArchive: [],     // 剧情摘要归档 [{ id, at, from, to, text, raw, rawSize }]：原文全文归档 + 摘要替身替换旧消息
+        summaryArchive: [],     // 剧情摘要归档 [{ id, at, from, to, text, raw, rawSize }]：原文全文归档 + 摘要替身（旧楼层隐藏、不删）
         roundsSinceSummary: 0,  // 距上次总结已过的轮数
         lastSummaryIndex: -1,   // 上次总结到的聊天消息下标（-1=尚未总结），用于跨轮总结窗口不丢剧情
         storyTime: '',          // 当前剧情时间（AI 接力维护，每次总结时更新）
@@ -1943,7 +1943,7 @@ async function runCompressPool(tasks, concurrency) {
     return results;
 }
 
-// 生成剧情摘要：把旧消息分段总结成摘要，原文先归档（面板全文 + 备份下载），再删掉旧消息、顶部注入摘要替身（世界书另存关键词摘要）
+// 生成剧情摘要：把旧消息分段总结成摘要，原文先归档（面板全文 + 备份下载），再隐藏旧楼层（不删）、在旧楼层后注入摘要替身（世界书另存关键词摘要）
 async function compressChatHistory() {
     activateCharacter();
     if (isCompressing) { toastr.info('正在生成摘要，请稍候…'); return; }
@@ -1996,12 +1996,12 @@ async function compressChatHistory() {
         const from = compressStart + 1;
         const to = oldCount;
 
-        // 原文全文（归档用）：把这次要删掉的旧消息原样拼成一段，附上楼层与说话人
+        // 原文全文（归档用）：把这次要隐藏的旧消息原样拼成一段，附上楼层与说话人
         const raw = indexedOld.map(x =>
             '【第' + (x.i + 1) + '楼】' + (x.m.is_system ? '系统' : (x.m.name || (x.m.is_user ? '用户' : '角色'))) + '：' + x.m.mes.trim()
         ).join('\n\n');
 
-        // 删消息不可逆：先落一份原文备份文件（全文归档），再动正文
+        // 隐藏前先落一份原文备份文件（全文归档，双保险），再标记隐藏
         downloadText(
             'serendipity-compress-backup-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json',
             JSON.stringify({
@@ -2009,7 +2009,7 @@ async function compressChatHistory() {
                 chatKey: currentDataKey(),
                 from,
                 to,
-                removedCount: indexedOld.length,
+                hiddenCount: indexedOld.length,
                 keptCount: keep,
                 summary,
                 raw,
@@ -2038,7 +2038,8 @@ async function compressChatHistory() {
             console.error('[Serendipity] 摘要写入世界书失败：', e);
         }
 
-        // 摘要替身：系统消息，不参与角色/用户对话，但会进上下文；删掉旧消息、只留替身 + 最近 keep 条
+        // 摘要替身：系统消息，UI 里作为灰色系统提示可见、不进正文对话
+        // （摘要真正进上下文靠的是上面写进世界书的那条，按关键词/语义按需召回）
         const summaryMsg = {
             name: '',
             is_user: false,
@@ -2050,9 +2051,16 @@ async function compressChatHistory() {
             swipe_id: 0,
             extra: {},
         };
-        chat.splice(compressStart, oldCount - compressStart, summaryMsg);
 
-        // 旧消息已删：清空总结回滚日志并重置水位线，防止 reconcileWithChat 误判「消息被删」而回滚记忆
+        // 隐藏旧楼层（不删除）：is_system = true 会让这些消息从 coreChat 剔除（token 立降），
+        // 但楼层原地保留、随时可用酒馆 /unhide 恢复，不会打水漂
+        for (let i = compressStart; i < oldCount; i++) {
+            if (chat[i]) chat[i].is_system = true;
+        }
+        // 摘要替身插在旧楼层之后、最近 keep 条之前，作为可视的分隔提示
+        chat.splice(oldCount, 0, summaryMsg);
+
+        // 旧楼层已隐藏：清空总结回滚日志并重置水位线，防止 reconcileWithChat 误判「消息变动」而回滚记忆
         settings.summaryJournal = [];
         settings.lastSummaryIndex = chat.length - 1;
         saveSettings();
@@ -2062,7 +2070,7 @@ async function compressChatHistory() {
 
         settings.lastCompress = {
             at: Date.now(),
-            removed: indexedOld.length,
+            hidden: indexedOld.length,
             kept: keep,
             from,
             to,
@@ -2072,10 +2080,10 @@ async function compressChatHistory() {
         saveSettings();
         renderCompressResult();
 
-        toastr.success('已把第 ' + from + '–' + to + ' 楼共 ' + indexedOld.length + ' 条压缩为一段摘要（原文已归档 + 备份下载），保留最近 ' + keep + ' 条');
+        toastr.success('已把第 ' + from + '–' + to + ' 楼共 ' + indexedOld.length + ' 条压缩为一段摘要并隐藏旧楼层（原文已归档 + 备份下载，可 /unhide 恢复），保留最近 ' + keep + ' 条');
     } catch (e) {
         console.error('[Serendipity] 生成剧情摘要失败：', e);
-        // 中途失败时内存里的 chat 可能已被 splice 过，重新从磁盘读回原样
+        // 中途失败时内存里的 chat 可能已被改过（is_system 标记），重新从磁盘读回原样
         try { await reloadCurrentChat(); } catch (_) { /* 忽略 */ }
         toastr.error('生成摘要失败：' + safeErrorText(e) + '（旧消息未改动，原文已归档/备份，可找回）');
     } finally {
