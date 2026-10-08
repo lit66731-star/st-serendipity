@@ -9,6 +9,7 @@ import {
     eventSource,
     getRequestHeaders,
     saveSettingsDebounced,
+    saveSettings as saveSettingsImmediate,
     setExtensionPrompt,
     extension_prompt_types,
     saveChat,
@@ -22,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.28'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.29'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1745,6 +1746,7 @@ function reconcileWithChat() {
     renderTimeAxis();
     renderPeople();
     renderStorylines();
+    saveSettingsImmediate(); // 回滚立刻落盘，别只存在内存里等下一次防抖保存
     toastr.info('检测到消息被重新生成/删除，已回滚对应的记忆与时间轴，将按新内容重新总结');
     return true;
 }
@@ -1904,7 +1906,7 @@ async function summarizeLastRound() {
             summaryFailStreak[keyBefore] = 0;
             const promoted = promoteMemories();
             if (settings.autoFixTime) repairTimeData();
-            saveSettings();
+            saveSettingsImmediate(); // 总结结果立刻落盘，不经过防抖，避免刷新/更新时把刚写好的记忆丢掉
             refreshLocalChecks(); // 先重算本地时间冲突，再注入正文，保证本轮就提醒模型
             updatePromptInjection();
             renderMemories();
@@ -6200,12 +6202,15 @@ jQuery(async () => {
 // 在这里刷新页面以加载新版本，无需手动刷新。
 export function reloadOnUpdate() {
     toastr.info('Serendipity 已更新，正在刷新页面以应用新版本...', undefined, { timeOut: 1500 });
-    const doReload = () => {
+    const doReload = async () => {
         // 有长任务在跑（生成剧情摘要 / 自动总结）时先别刷新，等它跑完再刷，避免打断浪费额度
         if (isCompressing || isSummarizing) {
             setTimeout(doReload, 1500);
             return;
         }
+        // 刷新前先把尚未落盘的记忆/设置立刻保存：本地 saveSettings 走的是防抖保存(setTimeout)，
+        // 刷新会直接丢弃还没触发的防抖，导致每次更新都丢掉最近一两轮刚总结出的记忆。
+        try { await saveSettingsImmediate(); } catch (e) { console.warn('[Serendipity] 刷新前保存失败：', e); }
         location.reload();
     };
     setTimeout(doReload, 1500);
