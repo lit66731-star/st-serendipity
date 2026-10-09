@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.34'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.35'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -329,6 +329,7 @@ let noCharSettings = null; // 无角色/群组时的临时数据（不入库）
 const noCharPrefs = { instructions: [] }; // 无角色/群组时的临时指令（不入库）
 let pendingMigration = null; // 旧版扁平数据迁移挂起（角色卡尚未加载完成时暂存）
 let editingId = null;        // 当前处于编辑态的记忆条目 id（null 表示无）
+let storyEditing = false;    // 当前剧情时间锚点（标题）是否处于编辑态
 let isInjecting = false;     // 世界书注入进行中标记（防连点/并发注入）
 
 // ---------------- 设置 ----------------
@@ -1015,6 +1016,18 @@ function pushTimelineEntry(day, time, location, event, period) {
     const entry = { id: uid(), day, time, location, event, period: period || '', origDay: null };
     settings.timeline.push(entry);
     return entry;
+}
+
+// 编辑时间轴「最新（天数最大且不落后于当前锚点）」的条目后，把标题锚点同步过去，避免改了时间轴、标题还停在旧时间
+function syncAnchorFromTimeline(e) {
+    if (!e || e.day == null) return;
+    const maxDay = settings.timeline.reduce((mx, t) => (t.day != null && (mx == null || t.day > mx)) ? t.day : mx, null);
+    if (maxDay != null && e.day < maxDay) return;                  // 不是最新那条，不动锚点
+    if (settings.storyDay != null && e.day < settings.storyDay) return; // 想回退到更早的天数请用标题「编辑」
+    settings.storyDay = e.day;
+    if (e.time) settings.storyTime = e.time;
+    if (e.location) settings.storyLocation = e.location;
+    if (e.period) settings.storyPeriod = e.period;
 }
 
 // 把世界状态按类别分组（供注入与展示复用）
@@ -2686,6 +2699,27 @@ function memoryItemHtml(m, deletable, tier) {
 function renderStoryTime() {
     const el = $('#st-serendipity .st-sd__story-time');
     if (!el.length) return;
+
+    // 编辑态：直接改锚点的 第X天 / 年月日周几几时几分 / 地点 / 时段
+    if (storyEditing) {
+        const d = settings.storyDay != null ? settings.storyDay : '';
+        el.html(`<div class="st-sd__story-eyebrow">STORY TIME · 编辑</div>
+            <div class="st-sd__story-edit-row">
+                <label class="st-sd__story-day-label">第 <input type="number" class="st-sd__story-e-day" min="1" step="1" value="${d}"> 天</label>
+                <input type="text" class="st-sd__story-e-time" placeholder="年月日 周几 几时几分" value="${escapeHtml(settings.storyTime || '')}" spellcheck="false">
+            </div>
+            <div class="st-sd__story-edit-row">
+                <input type="text" class="st-sd__story-e-loc" placeholder="地点" value="${escapeHtml(settings.storyLocation || '')}" spellcheck="false">
+                <input type="text" class="st-sd__story-e-period" placeholder="时段（可选）" value="${escapeHtml(settings.storyPeriod || '')}" spellcheck="false">
+            </div>
+            <div class="st-sd__story-edit-actions">
+                <button type="button" class="st-sd__story-save">保存</button>
+                <button type="button" class="st-sd__story-cancel">取消</button>
+            </div>`);
+        return;
+    }
+
+    const editBtn = '<button type="button" class="st-sd__story-edit" title="修改当前剧情时间锚点">编辑</button>';
     const day = settings.storyDay != null ? ('第 ' + settings.storyDay + ' 天') : '';
     const time = settings.storyTime ? escapeHtml(settings.storyTime) : '';
     let hero = time || day || '';
@@ -2695,7 +2729,7 @@ function renderStoryTime() {
         if (i >= 0) metaParts.splice(i, 1);
     }
     if (!hero) {
-        el.html(`<div class="st-sd__story-eyebrow">STORY TIME</div>
+        el.html(`<div class="st-sd__story-eyebrow">STORY TIME${editBtn}</div>
             <div class="st-sd__story-hero is-empty">尚未开始</div>
             <div class="st-sd__story-meta"><span>等待首次总结，时间锚点会从这里自动推进</span></div>`);
         return;
@@ -2708,7 +2742,7 @@ function renderStoryTime() {
         ? `<div class="st-sd__jump"><div class="st-sd__jump-text">待确认：时间想从第 ${pj.from} 天跳到第 ${pj.day} 天${pj.location ? '（' + escapeHtml(pj.location) + '）' : ''}，尚未生效</div>
             <div class="st-sd__jump-btns"><button class="st-sd__jump-ok">采用</button><button class="st-sd__jump-no">忽略</button></div></div>`
         : '';
-    el.html(`<div class="st-sd__story-eyebrow">STORY TIME</div>
+    el.html(`<div class="st-sd__story-eyebrow">STORY TIME${editBtn}</div>
         <div class="st-sd__story-hero">${hero}</div>${metaHtml}${jumpHtml}`);
 }
 
@@ -5169,6 +5203,32 @@ function bindPanelEvents() {
         toastr.success('已保存修改');
     });
 
+    // 当前剧情时间锚点（标题）：编辑 / 取消 / 保存
+    panel.on('click', '.st-sd__story-edit', function () {
+        storyEditing = true;
+        renderStoryTime();
+        const inp = panel.find('.st-sd__story-e-time');
+        if (inp.length) inp.focus();
+    });
+    panel.on('click', '.st-sd__story-cancel', function () {
+        storyEditing = false;
+        renderStoryTime();
+    });
+    panel.on('click', '.st-sd__story-save', function () {
+        const dayVal = parseInt(panel.find('.st-sd__story-e-day').val(), 10);
+        settings.storyDay = isNaN(dayVal) ? null : dayVal;
+        settings.storyTime = (panel.find('.st-sd__story-e-time').val() || '').trim();
+        settings.storyLocation = (panel.find('.st-sd__story-e-loc').val() || '').trim();
+        settings.storyPeriod = (panel.find('.st-sd__story-e-period').val() || '').trim();
+        storyEditing = false;
+        saveSettings();
+        refreshLocalChecks();
+        updatePromptInjection();
+        renderMemories();
+        renderTimeAxis();
+        toastr.success('已保存剧情时间');
+    });
+
     // 事件委托：删除记忆 / 删除屏蔽词
     panel.on('click', '.st-sd__memory-del', function () {
         const id = $(this).data('id');
@@ -5506,8 +5566,11 @@ function bindPanelEvents() {
         e.location = panel.find('.st-sd__tl-e-loc').val().trim();
         e.event = panel.find('.st-sd__tl-e-event').val().trim();
         timelineEditingId = null;
+        syncAnchorFromTimeline(e);   // 改的是最新那条时，标题锚点跟着同步
         saveSettings();
+        updatePromptInjection();     // 锚点可能变了，注入的正文要刷新
         renderTimeAxis();
+        renderStoryTime();           // 标题同步后立即刷新
         toastr.success('已保存');
     });
     panel.on('click', '.st-sd__tl-del', function () {
