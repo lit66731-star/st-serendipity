@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.35'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.36'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -984,6 +984,29 @@ function checkTimeAdvance(day) {
     return { kind: 'ok', prev };
 }
 
+// 从时间字符串里提取「几时几分」（支持 19:05 / 19：05 / 19时05分 / 19点05），换算成当天分钟数；解析不出返回 null
+function extractClock(str) {
+    const s = String(str || '');
+    let m = s.match(/(\d{1,2})\s*[:：]\s*(\d{1,2})/);
+    if (!m) m = s.match(/(\d{1,2})\s*[时点]\s*(\d{1,2})\s*分?/);
+    if (!m) return null;
+    const h = parseInt(m[1], 10), mm = parseInt(m[2], 10);
+    if (h > 23 || mm > 59) return null;
+    return h * 60 + mm;
+}
+
+// 某天当前已知的最晚时刻（分钟数，取当前锚点与时间轴同日条目的最大值）；解析不出返回 null
+function latestClockOnDay(day) {
+    let max = null;
+    if (settings.storyDay === day) max = extractClock(settings.storyTime);
+    for (const e of settings.timeline) {
+        if (e.day !== day) continue;
+        const c = extractClock(e.time);
+        if (c != null && (max == null || c > max)) max = c;
+    }
+    return max;
+}
+
 // 采用待确认的大跨度跳跃：时间轴推进到该天，补记当时的时间线条目，并把挂起期间写下的记忆改标到新日期
 function applyPendingJump() {
     const p = settings.pendingJump;
@@ -1881,6 +1904,9 @@ async function summarizeLastRound() {
             }
             const jump = adv.kind === 'jump';
             const backward = adv.kind === 'backward' || jump; // 倒退或大跨度：都先不改动时间轴
+            // 同一天内时间倒退：新写的时间比当前锚点/时间线已有的更早（如 19:05 早于已发生的 19:08）
+            const timeBackward = !backward && !!axis && axis.day != null && settings.storyDay != null && axis.day === settings.storyDay
+                && (() => { const nc = extractClock(newStoryTime); const fc = latestClockOnDay(axis.day); return nc != null && fc != null && nc < fc; })();
             // 回忆类事件：只是在追述过去，不是现在发生的场景，不记成当前日期的时间线条目
             const recollection = !!axis && axis.recollection && !backward;
             if (jump) {
@@ -1890,6 +1916,10 @@ async function summarizeLastRound() {
             } else if (backward) {
                 newStoryTime = settings.storyTime;
                 toastr.warning('总结把当前进度写成了第' + axis.day + '天（当前第' + adv.prev + '天），疑似只是回忆过去，已保持时间轴不变', undefined, { timeOut: 8000 });
+            } else if (timeBackward) {
+                const proposed = newStoryTime; // 回退前模型想写的时间
+                newStoryTime = settings.storyTime;
+                toastr.warning('总结把当前时间写成了「' + (proposed || '') + '」，比时间线已有的「' + (settings.storyTime || '') + '」更早，疑似倒退，已保持原时间', undefined, { timeOut: 8000 });
             }
             settings.storyTime = newStoryTime;
             if (axis && !backward) {

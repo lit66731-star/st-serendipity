@@ -53,7 +53,7 @@
     background: var(--sd-bg);
     border: none;
     border-radius: 0;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     font-size: var(--sd-fs, 13px);
     line-height: var(--sd-lh, 1.65);
     display: flex;
@@ -103,19 +103,19 @@
     font-weight: 500;
     letter-spacing: 0.01em;
     line-height: 1.1;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
 }
 .st-sd__version {
     font-family: var(--sd-sans);
     font-size: 11px;
     font-weight: 400;
     letter-spacing: 0.4px;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
 }
 .st-sd__char {
     font-size: 11px;
     letter-spacing: 0.3px;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -126,7 +126,7 @@
     height: 30px;
     border: none;
     background: transparent;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     border-radius: var(--sd-r);
     cursor: pointer;
     display: flex;
@@ -135,7 +135,7 @@
     transition: background 0.15s, color 0.15s;
     flex: 0 0 auto;
 }
-.st-sd__close:hover { background: var(--sd-surface-2); color: var(--sd-text); }
+.st-sd__close:hover { background: var(--sd-surface-2); color: var(--sd-text) !important; }
 .st-sd__close svg { width: 16px; height: 16px; }
 
 /* ============ 导航（不是按钮，用细线 + 字重 + 少量强调色表达选中态） ============ */
@@ -151,16 +151,16 @@
     padding: 12px 18px 11px;
     margin-bottom: -1px;
     font-size: 12.5px;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     letter-spacing: 0.3px;
     cursor: pointer;
     border-bottom: 2px solid transparent;
     transition: color 0.15s, border-color 0.15s;
     white-space: nowrap;
 }
-.st-sd__tab:hover { color: var(--sd-text-2); }
+.st-sd__tab:hover { color: var(--sd-text-2) !important; }
 .st-sd__tab.is-active {
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     font-weight: 600;
     border-bottom-color: var(--sd-accent);
 }
@@ -175,7 +175,7 @@
     line-height: 15px;
     text-align: center;
     vertical-align: 1px;
-    color: var(--sd-accent-deep);
+ color: var(--sd-accent-deep) !important;
     background: var(--sd-accent-bg);
     border-radius: 999px;
 }
@@ -205,7 +205,7 @@
 .st-sd__label {
     font-size: 12px;
     font-weight: 600;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     letter-spacing: 0.2px;
 }
 
@@ -215,7 +215,7 @@
 .st-sd__world-add, .st-sd__fore-add, .st-sd__axis-save {
     border: 1px solid var(--sd-primary);
     background: var(--sd-primary);
-    color: var(--sd-on-primary);
+ color: var(--sd-on-primary) !important;
     border-radius: var(--sd-r);
     height: 34px;
     padding: 0 16px;
@@ -243,7 +243,7 @@
 .st-sd__export, .st-sd__check-clear {
     border: 1px solid var(--sd-border-2);
     background: transparent;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     border-radius: var(--sd-r);
     height: 34px;
     padding: 0 14px;
@@ -255,14 +255,14 @@
 .st-sd__export:hover, .st-sd__check-clear:hover {
     background: var(--sd-surface-2);
     border-color: var(--sd-border-2);
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
 }
 
 /* 危险操作：克制的警示色，做成底部文字链接 */
 .st-sd__reset {
     border: none;
     background: transparent;
-    color: var(--sd-danger);
+ color: var(--sd-danger) !important;
     padding: 2px 0;
     font-size: 12px;
     cursor: pointer;
@@ -287,7 +287,7 @@
 .st-sd__memory-del, .st-sd__tl-del, .st-sd__world-del, .st-sd__fore-del, .st-sd__sl-del {
     border: none;
     background: transparent;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     font-size: 11px;
     cursor: pointer;
     border-radius: var(--sd-r-sm);
@@ -295,17 +295,17 @@
     transition: color 0.15s, background 0.15s;
 }
 .st-sd__memory-edit:hover, .st-sd__tl-edit:hover, .st-sd__world-edit:hover, .st-sd__fore-edit:hover, .st-sd__sl-edit:hover {
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface-2);
 }
 .st-sd__memory-del:hover, .st-sd__tl-del:hover, .st-sd__world-del:hover, .st-sd__fore-del:hover, .st-sd__sl-del:hover {
-    color: var(--sd-danger);
+ color: var(--sd-danger) !important;
     background: var(--sd-danger-bg);
 }
 .st-sd__memory-save, .st-sd__tl-save, .st-sd__world-save, .st-sd__fore-save, .st-sd__sl-save {
     border: 1px solid var(--sd-primary);
     background: var(--sd-primary);
-    color: var(--sd-on-primary);
+ color: var(--sd-on-primary) !important;
     font-size: 11px;
     font-weight: 550;
     cursor: pointer;
@@ -319,7 +319,7 @@
 .st-sd__memory-cancel, .st-sd__tl-cancel, .st-sd__world-cancel, .st-sd__fore-cancel, .st-sd__sl-cancel {
     border: none;
     background: transparent;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     font-size: 11px;
     cursor: pointer;
     border-radius: var(--sd-r-sm);
@@ -327,7 +327,7 @@
     transition: color 0.15s, background 0.15s;
 }
 .st-sd__memory-cancel:hover, .st-sd__tl-cancel:hover, .st-sd__world-cancel:hover, .st-sd__fore-cancel:hover, .st-sd__sl-cancel:hover {
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface-2);
 }
 
@@ -401,7 +401,7 @@
     height: 34px;
     padding: 0 12px;
     font-size: 12.5px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     outline: none;
     box-sizing: border-box;
@@ -437,7 +437,7 @@
     font-family: inherit;
     font-size: 13px;
     line-height: 1.7;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     resize: vertical;
     outline: none;
@@ -469,7 +469,7 @@
     height: 34px;
     padding: 0 8px;
     font-size: 12.5px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     outline: none;
     box-sizing: border-box;
@@ -483,7 +483,7 @@
     height: 34px;
     padding: 0 12px;
     font-size: 12.5px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     outline: none;
     box-sizing: border-box;
@@ -492,17 +492,17 @@
 .st-sd__compress-result { margin-top: 12px; }
 .st-sd__compress-result-item { border: 1px solid var(--sd-border); border-radius: var(--sd-r); overflow: hidden; }
 .st-sd__compress-result-item + .st-sd__compress-result-item { margin-top: 12px; }
-.st-sd__compress-result-head { padding: 8px 10px; font-size: 12px; color: var(--sd-text-2); background: var(--sd-surface-2); border-bottom: 1px solid var(--sd-border); }
-.st-sd__compress-result-body { padding: 10px; font-size: 13px; line-height: 1.6; color: var(--sd-text); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
+.st-sd__compress-result-head { padding: 8px 10px; font-size: 12px; color: var(--sd-text-2) !important; background: var(--sd-surface-2); border-bottom: 1px solid var(--sd-border); }
+.st-sd__compress-result-body { padding: 10px; font-size: 13px; line-height: 1.6; color: var(--sd-text) !important; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
 .st-sd__compress-result-raw { border-top: 1px solid var(--sd-border); }
-.st-sd__compress-result-raw summary { padding: 8px 10px; font-size: 12px; color: var(--sd-text-2); cursor: pointer; user-select: none; }
-.st-sd__compress-result-raw summary:hover { color: var(--sd-text); }
-.st-sd__compress-result-raw pre { margin: 0; padding: 10px; font-size: 12px; line-height: 1.6; color: var(--sd-text); white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; background: var(--sd-surface-2); }
+.st-sd__compress-result-raw summary { padding: 8px 10px; font-size: 12px; color: var(--sd-text-2) !important; cursor: pointer; user-select: none; }
+.st-sd__compress-result-raw summary:hover { color: var(--sd-text) !important; }
+.st-sd__compress-result-raw pre { margin: 0; padding: 10px; font-size: 12px; line-height: 1.6; color: var(--sd-text) !important; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; background: var(--sd-surface-2); }
 .st-sd__world-row { margin-bottom: 8px; }
 .st-sd__world-select, .st-sd__world-search { width: 100%; }
 .st-sd__world-search { margin-bottom: 6px; }
 .st-sd__vec-switch { margin-left: 10px; vertical-align: middle; }
-.st-sd__vec-label { margin-left: 8px; font-size: 12px; color: var(--sd-text-2); vertical-align: middle; }
+.st-sd__vec-label { margin-left: 8px; font-size: 12px; color: var(--sd-text-2) !important; vertical-align: middle; }
 
 /* ============ 向量召回（语义搜索）页 ============ */
 .st-sd__recall-status { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
@@ -512,18 +512,18 @@
     padding: 3px 9px;
     border-radius: 999px;
     font-size: 11px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     background: var(--sd-surface);
     border: 1px solid var(--sd-border);
 }
-.st-sd__recall-chip--ok { color: var(--sd-ok); border-color: var(--sd-ok); background: var(--sd-ok-bg); }
-.st-sd__recall-chip--warn { color: var(--sd-warn); border-color: var(--sd-warn); background: var(--sd-warn-bg); }
+.st-sd__recall-chip--ok { color: var(--sd-ok) !important; border-color: var(--sd-ok); background: var(--sd-ok-bg); }
+.st-sd__recall-chip--warn { color: var(--sd-warn) !important; border-color: var(--sd-warn); background: var(--sd-warn-bg); }
 .st-sd__recall-warn {
     padding: 10px 12px;
     border-radius: var(--sd-r);
     font-size: 12px;
     line-height: 1.6;
-    color: var(--sd-warn);
+ color: var(--sd-warn) !important;
     background: var(--sd-warn-bg);
     border: 1px solid var(--sd-border-2);
 }
@@ -546,21 +546,21 @@
 }
 .st-sd__tune--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .st-sd__tune-cell { display: flex; flex-direction: column; gap: 5px; min-width: 0; margin: 0; }
-.st-sd__tune-name { font-size: 12px; color: var(--sd-text); font-weight: 500; }
+.st-sd__tune-name { font-size: 12px; color: var(--sd-text) !important; font-weight: 500; }
 .st-sd__tune-cell input { width: 100%; text-align: center; }
-.st-sd__tune-sub { font-size: 10.5px; color: var(--sd-text-3); line-height: 1.4; }
+.st-sd__tune-sub { font-size: 10.5px; color: var(--sd-text-3) !important; line-height: 1.4; }
 @media (max-width: 640px) { .st-sd__tune { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 /* 折叠说明：默认只露一个小小的「说明」，需要时再展开 */
-.st-sd__note { margin: 10px 0 6px; font-size: 11px; color: var(--sd-text-3); line-height: 1.7; }
+.st-sd__note { margin: 10px 0 6px; font-size: 11px; color: var(--sd-text-3) !important; line-height: 1.7; }
 .st-sd__note > summary {
     display: inline-flex; align-items: center; gap: 4px;
     cursor: pointer; list-style: none; user-select: none;
-    color: var(--sd-text-3); font-size: 11px;
+ color: var(--sd-text-3) !important; font-size: 11px;
 }
 .st-sd__note > summary::-webkit-details-marker { display: none; }
 .st-sd__note > summary::before { content: '▸'; font-size: 9px; transition: transform 0.15s; }
 .st-sd__note[open] > summary::before { transform: rotate(90deg); }
-.st-sd__note > summary:hover { color: var(--sd-text-2); }
+.st-sd__note > summary:hover { color: var(--sd-text-2) !important; }
 .st-sd__note p { margin: 6px 0 0; padding-left: 13px; }
 .st-sd__recall-list {
     flex: 1;
@@ -584,7 +584,7 @@
     flex: 0 0 auto;
     font-size: 12px;
     font-weight: 700;
-    color: var(--sd-accent-deep);
+ color: var(--sd-accent-deep) !important;
     line-height: 1.5;
     min-width: 28px;
     text-align: center;
@@ -594,7 +594,7 @@
     min-width: 0;
     font-size: 13px;
     line-height: 1.7;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     white-space: pre-wrap;
     word-break: break-word;
 }
@@ -603,14 +603,14 @@
     align-self: flex-start;
     padding: 3px 10px;
     font-size: 12px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     background: var(--sd-surface-2);
     border: 1px solid var(--sd-border);
     border-radius: var(--sd-r);
     cursor: pointer;
     white-space: nowrap;
 }
-.st-sd__recall-copy:hover { color: var(--sd-accent); border-color: var(--sd-accent); }
+.st-sd__recall-copy:hover { color: var(--sd-accent) !important; border-color: var(--sd-accent); }
 
 /* 注入正文（自动语义召回）开关行 */
 .st-sd__recall-inject { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
@@ -618,12 +618,12 @@
 .st-sd__recall-inject .st-sd__label { flex: 1; min-width: 0; line-height: 1.5; font-weight: 400; }
 .st-sd__recall-rebuild-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .st-sd__recall-rebuild { flex: 0 0 auto; }
-.st-sd__recall-index-state { flex: 1; min-width: 0; font-size: 12px; color: var(--sd-text-2); line-height: 1.5; }
+.st-sd__recall-index-state { flex: 1; min-width: 0; font-size: 12px; color: var(--sd-text-2) !important; line-height: 1.5; }
 .st-sd__world-alert {
     display: none;
     background: var(--sd-warn-bg);
     border: 1px solid var(--sd-border-2);
-    color: var(--sd-warn);
+ color: var(--sd-warn) !important;
     border-radius: var(--sd-r);
     padding: 10px 12px;
     font-size: 12px;
@@ -633,7 +633,7 @@
 .st-sd__hint {
     margin-top: 14px;
     font-size: 11px;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     line-height: 1.7;
 }
 .st-sd__reset-row { margin-top: 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
@@ -641,7 +641,7 @@
 .st-sd__empty {
     padding: 28px 12px;
     text-align: center;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     font-size: 12px;
     line-height: 1.7;
 }
@@ -659,7 +659,7 @@
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.18em;
-    color: var(--sd-accent-deep);
+ color: var(--sd-accent-deep) !important;
     margin-bottom: 9px;
 }
 .st-sd__story-hero {
@@ -668,11 +668,11 @@
     font-weight: 400;
     letter-spacing: 0.01em;
     line-height: 1.3;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     word-break: break-word;
 }
 .st-sd__story-hero.is-empty {
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     font-size: 17px;
 }
 .st-sd__story-meta {
@@ -682,9 +682,9 @@
     gap: 6px;
     margin-top: 11px;
     font-size: 12px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
 }
-.st-sd__story-dot { color: var(--sd-text-3); }
+.st-sd__story-dot { color: var(--sd-text-3) !important; }
 /* 剧情时间锚点：标题行右上角编辑按钮 + 内联编辑表单 */
 .st-sd__story-eyebrow {
     display: flex;
@@ -695,7 +695,7 @@
 .st-sd__story-edit {
     border: none;
     background: transparent;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     font-size: 11px;
     letter-spacing: normal;
     cursor: pointer;
@@ -703,14 +703,14 @@
     padding: 3px 7px;
     transition: color 0.15s, background 0.15s;
 }
-.st-sd__story-edit:hover { color: var(--sd-text); background: var(--sd-surface-2); }
+.st-sd__story-edit:hover { color: var(--sd-text) !important; background: var(--sd-surface-2); }
 .st-sd__story-edit-row { display: flex; gap: 6px; margin-bottom: 6px; }
 .st-sd__story-day-label {
     display: inline-flex;
     align-items: center;
     gap: 4px;
     font-size: 12px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     white-space: nowrap;
 }
 .st-sd__story-e-day,
@@ -722,7 +722,7 @@
     height: 34px;
     padding: 0 12px;
     font-size: 12.5px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     outline: none;
     box-sizing: border-box;
@@ -743,7 +743,7 @@
 .st-sd__story-save {
     border: 1px solid var(--sd-primary);
     background: var(--sd-primary);
-    color: var(--sd-on-primary);
+ color: var(--sd-on-primary) !important;
     font-size: 11px;
     font-weight: 550;
     cursor: pointer;
@@ -755,14 +755,14 @@
 .st-sd__story-cancel {
     border: none;
     background: transparent;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     font-size: 11px;
     cursor: pointer;
     border-radius: var(--sd-r-sm);
     padding: 3px 10px;
     transition: color 0.15s, background 0.15s;
 }
-.st-sd__story-cancel:hover { color: var(--sd-text); }
+.st-sd__story-cancel:hover { color: var(--sd-text) !important; }
 
 /* ============ 记忆档案（扁平行 + 细分隔线，突出 第X天 / 时间 / 地点 / 事件） ============ */
 .st-sd__memory-list {
@@ -777,7 +777,7 @@
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 1px;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     margin: 6px 0 4px;
     padding: 10px 0 8px;
     border-bottom: 1px solid var(--sd-border);
@@ -791,7 +791,7 @@
     font-size: 10px;
     transition: transform 0.15s;
     flex: 0 0 auto;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
 }
 details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotate(90deg); }
 .st-sd__tier-title--static { cursor: default; }
@@ -804,7 +804,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     transition: background 0.12s;
 }
 .st-sd__memory:last-child { border-bottom: none; }
-.st-sd__memory:hover .st-sd__memory-day { color: var(--sd-accent-deep); }
+.st-sd__memory:hover .st-sd__memory-day { color: var(--sd-accent-deep) !important; }
 .st-sd__memory.is-editing {
     background: var(--sd-surface);
     border: 1px solid var(--sd-accent);
@@ -828,10 +828,10 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.2px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     transition: color 0.12s;
 }
-.st-sd__memory-clock { font-size: 12.5px; color: var(--sd-text-2); }
+.st-sd__memory-clock { font-size: 12.5px; color: var(--sd-text-2) !important; }
 .st-sd__memory-imp {
     font-size: 11.5px;
     font-weight: 600;
@@ -839,15 +839,15 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     padding: 1px 8px;
     letter-spacing: 0.2px;
 }
-.st-sd__memory-imp--s { color: #fff; background: #c0392b; }
-.st-sd__memory-imp--a { color: #fff; background: #d48806; }
+.st-sd__memory-imp--s { color: #fff !important; background: #c0392b; }
+.st-sd__memory-imp--a { color: #fff !important; background: #d48806; }
 .st-sd__memory-ent {
     font-size: 11.5px;
     font-weight: 600;
     border-radius: 999px;
     padding: 1px 8px;
     letter-spacing: 0.2px;
-    color: var(--sd-accent-deep);
+ color: var(--sd-accent-deep) !important;
     background: var(--sd-accent-bg);
 }
 .st-sd__memory-ent-select {
@@ -856,7 +856,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     height: 30px;
     padding: 0 8px;
     font-size: 12px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     outline: none;
     margin-bottom: 6px;
@@ -867,18 +867,18 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     height: 30px;
     padding: 0 8px;
     font-size: 12px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     outline: none;
     margin-bottom: 6px;
 }
-.st-sd__memory-loc { font-size: 12px; color: var(--sd-text-3); }
+.st-sd__memory-loc { font-size: 12px; color: var(--sd-text-3) !important; }
 .st-sd__memory-text {
     margin: 0;
     font-family: inherit;
     font-size: 13px;
     line-height: 1.75;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     white-space: pre-wrap;
     word-break: break-word;
 }
@@ -888,7 +888,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     justify-content: space-between;
     margin-top: 11px;
 }
-.st-sd__memory-rec { font-size: 11px; letter-spacing: 0.2px; color: var(--sd-text-3); }
+.st-sd__memory-rec { font-size: 11px; letter-spacing: 0.2px; color: var(--sd-text-3) !important; }
 
 /* ============ 屏蔽词（灰玫瑰胶囊） ============ */
 .st-sd__word-list {
@@ -908,14 +908,14 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     border-radius: 999px;
     padding: 5px 8px 5px 12px;
     font-size: 12px;
-    color: var(--sd-accent-deep);
+ color: var(--sd-accent-deep) !important;
 }
 .st-sd__word-del {
     width: 18px;
     height: 18px;
     border: none;
     background: transparent;
-    color: var(--sd-accent-deep);
+ color: var(--sd-accent-deep) !important;
     border-radius: 50%;
     font-size: 13px;
     line-height: 1;
@@ -925,7 +925,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     justify-content: center;
     transition: background 0.15s, color 0.15s;
 }
-.st-sd__word-del:hover { background: var(--sd-danger); color: #FFFFFF; }
+.st-sd__word-del:hover { background: var(--sd-danger); color: #FFFFFF !important; }
 
 /* ============ 指令（扁平行） ============ */
 .st-sd__instr-list { flex: 1; min-height: 0; overflow-y: auto; }
@@ -944,14 +944,14 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     line-height: 1.7;
     word-break: break-word;
     white-space: pre-wrap;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
 }
 .st-sd__instr-del {
     width: 22px;
     height: 22px;
     border: none;
     background: transparent;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     border-radius: 50%;
     font-size: 14px;
     line-height: 1;
@@ -962,14 +962,14 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     justify-content: center;
     transition: background 0.15s, color 0.15s;
 }
-.st-sd__instr-del:hover { background: var(--sd-danger-bg); color: var(--sd-danger); }
+.st-sd__instr-del:hover { background: var(--sd-danger-bg); color: var(--sd-danger) !important; }
 
 /* ============ 时间轴 ============ */
 .st-sd__axis-current {
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.2px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
 }
 .st-sd__axis-day { width: 84px; flex: 0 0 auto; }
 .st-sd__axis-time { flex: 1; min-width: 0; }
@@ -977,7 +977,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__axis-hints { margin-bottom: 10px; }
 .st-sd__axis-hint {
     font-size: 11.5px;
-    color: var(--sd-warn);
+ color: var(--sd-warn) !important;
     line-height: 1.6;
     margin-bottom: 4px;
     word-break: break-word;
@@ -1001,14 +1001,14 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     align-items: baseline;
     gap: 10px;
     font-size: 12px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
 }
-.st-sd__tl-day { font-weight: 600; color: var(--sd-text); flex: 0 0 auto; }
-.st-sd__tl-time { flex: 0 0 auto; color: var(--sd-text-3); }
+.st-sd__tl-day { font-weight: 600; color: var(--sd-text) !important; flex: 0 0 auto; }
+.st-sd__tl-time { flex: 0 0 auto; color: var(--sd-text-3) !important; }
 .st-sd__tl-loc {
     flex: 1;
     min-width: 0;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1016,7 +1016,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__tl-event {
     margin-top: 6px;
     font-size: 12.5px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     line-height: 1.7;
     word-break: break-word;
 }
@@ -1038,7 +1038,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 1px;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     margin: 10px 0 2px;
     padding: 8px 0 7px;
     border-bottom: 1px solid var(--sd-border);
@@ -1058,7 +1058,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     min-width: 0;
     line-height: 1.6;
     word-break: break-word;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
 }
 .st-sd__world-edit-text { flex: 1; min-width: 0; }
 
@@ -1080,17 +1080,17 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     flex: 0 0 auto;
     font-size: 11px;
     font-weight: 600;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     letter-spacing: 0.2px;
     white-space: nowrap;
 }
-.st-sd__check--time .st-sd__check-badge { color: var(--sd-warn); }
-.st-sd__check--state .st-sd__check-badge { color: var(--sd-danger); }
+.st-sd__check--time .st-sd__check-badge { color: var(--sd-warn) !important; }
+.st-sd__check--state .st-sd__check-badge { color: var(--sd-danger) !important; }
 .st-sd__check-text {
     flex: 1;
     min-width: 0;
     font-size: 12.5px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     line-height: 1.6;
     word-break: break-word;
 }
@@ -1100,7 +1100,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     flex: 0 0 auto;
     border: none;
     background: transparent;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     border-radius: 50%;
     font-size: 12px;
     line-height: 1;
@@ -1110,7 +1110,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     justify-content: center;
     transition: background 0.15s, color 0.15s;
 }
-.st-sd__check-del:hover { background: var(--sd-danger-bg); color: var(--sd-danger); }
+.st-sd__check-del:hover { background: var(--sd-danger-bg); color: var(--sd-danger) !important; }
 
 /* ============ 伏笔 / 未完成事项 ============ */
 .st-sd__fore-list { flex: 1; min-height: 0; overflow-y: auto; }
@@ -1144,20 +1144,20 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     transition: filter 0.15s;
 }
 .st-sd__fore-status:hover { filter: brightness(0.96); }
-.st-sd__fore-status--open { background: var(--sd-accent-bg); color: var(--sd-accent-deep); }
-.st-sd__fore-status--done { background: var(--sd-ok-bg); color: var(--sd-ok); text-decoration: line-through; }
+.st-sd__fore-status--open { background: var(--sd-accent-bg); color: var(--sd-accent-deep) !important; }
+.st-sd__fore-status--done { background: var(--sd-ok-bg); color: var(--sd-ok) !important; text-decoration: line-through; }
 .st-sd__fore-title {
     flex: 1;
     min-width: 0;
     font-size: 12.5px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     line-height: 1.6;
     word-break: break-word;
 }
 .st-sd__fore-note {
     margin-top: 6px;
     font-size: 12px;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     line-height: 1.6;
     word-break: break-word;
 }
@@ -1193,7 +1193,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     font-size: 11px;
     font-weight: 550;
     letter-spacing: 0.2px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     background: var(--sd-surface-2);
     border-radius: 999px;
     padding: 2px 11px;
@@ -1210,35 +1210,35 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     transition: filter 0.15s;
 }
 .st-sd__sl-status:hover { filter: brightness(0.96); }
-.st-sd__sl-status--open { background: var(--sd-accent-bg); color: var(--sd-accent-deep); }
-.st-sd__sl-status--done { background: var(--sd-ok-bg); color: var(--sd-ok); text-decoration: line-through; }
-.st-sd__sl-status--paused { background: var(--sd-warn-bg); color: var(--sd-warn); }
+.st-sd__sl-status--open { background: var(--sd-accent-bg); color: var(--sd-accent-deep) !important; }
+.st-sd__sl-status--done { background: var(--sd-ok-bg); color: var(--sd-ok) !important; text-decoration: line-through; }
+.st-sd__sl-status--paused { background: var(--sd-warn-bg); color: var(--sd-warn) !important; }
 .st-sd__sl-title {
     flex: 1;
     min-width: 0;
     font-size: 12.5px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     line-height: 1.6;
     word-break: break-word;
 }
 .st-sd__sl-goal {
     margin-top: 6px;
     font-size: 12px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     line-height: 1.6;
     word-break: break-word;
 }
 .st-sd__sl-summary {
     margin-top: 4px;
     font-size: 12px;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     line-height: 1.6;
     word-break: break-word;
 }
 .st-sd__sl-days {
     margin-top: 4px;
     font-size: 11px;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     line-height: 1.6;
 }
 .st-sd__sl-edit-row { display: flex; gap: 6px; margin-bottom: 6px; }
@@ -1260,7 +1260,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     font-family: inherit;
     font-size: 13px;
     line-height: 1.7;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     resize: vertical;
     outline: none;
@@ -1289,12 +1289,12 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__rel-pair {
     font-size: 14px;
     font-weight: 600;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     font-family: var(--sd-serif);
     min-width: 0;
     word-break: break-word;
 }
-.st-sd__rel-arrow { color: var(--sd-accent-deep); font-weight: 400; }
+.st-sd__rel-arrow { color: var(--sd-accent-deep) !important; font-weight: 400; }
 .st-sd__rel-chips {
     display: flex;
     flex-wrap: wrap;
@@ -1307,7 +1307,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     gap: 6px;
     font-size: 12px;
     line-height: 1.5;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-accent-bg);
     border-radius: var(--sd-r);
     padding: 3px 10px;
@@ -1317,10 +1317,10 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__rel-chip em {
     font-style: normal;
     font-size: 11px;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
 }
-.st-sd__rel-chip--pos { background: var(--sd-ok-bg); color: var(--sd-ok); font-weight: 600; }
-.st-sd__rel-chip--neg { background: var(--sd-danger-bg); color: var(--sd-danger); font-weight: 600; }
+.st-sd__rel-chip--pos { background: var(--sd-ok-bg); color: var(--sd-ok) !important; font-weight: 600; }
+.st-sd__rel-chip--neg { background: var(--sd-danger-bg); color: var(--sd-danger) !important; font-weight: 600; }
 .st-sd__rel-hist {
     border-top: 1px dashed var(--sd-border);
     padding-top: 2px;
@@ -1339,13 +1339,13 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__rel-row-top .st-sd__rel-row-del { margin-left: auto; }
 .st-sd__rel-day {
     flex: 0 0 auto;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     font-variant-numeric: tabular-nums;
     font-size: 11px;
 }
 .st-sd__rel-to {
     min-width: 0;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     font-weight: 550;
     word-break: break-word;
 }
@@ -1355,14 +1355,14 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     font-weight: 600;
     border-radius: var(--sd-r-sm);
     padding: 1px 6px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     background: var(--sd-surface-2);
 }
-.st-sd__rel-delta.st-sd__rel-chip--pos { background: var(--sd-ok-bg); color: var(--sd-ok); }
-.st-sd__rel-delta.st-sd__rel-chip--neg { background: var(--sd-danger-bg); color: var(--sd-danger); }
+.st-sd__rel-delta.st-sd__rel-chip--pos { background: var(--sd-ok-bg); color: var(--sd-ok) !important; }
+.st-sd__rel-delta.st-sd__rel-chip--neg { background: var(--sd-danger-bg); color: var(--sd-danger) !important; }
 .st-sd__rel-reason {
     margin-top: 4px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     line-height: 1.6;
     word-break: break-word;
 }
@@ -1379,7 +1379,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     height: 30px;
     padding: 0 10px;
     font-size: 12px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     outline: none;
     box-sizing: border-box;
@@ -1388,7 +1388,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__rel-hist-add {
     border: 1px solid var(--sd-primary);
     background: var(--sd-primary);
-    color: var(--sd-on-primary);
+ color: var(--sd-on-primary) !important;
     border-radius: var(--sd-r);
     height: 30px;
     padding: 0 12px;
@@ -1403,18 +1403,18 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__rel-del, .st-sd__rel-row-del {
     border: none;
     background: transparent;
-    color: var(--sd-text-3);
+ color: var(--sd-text-3) !important;
     font-size: 11px;
     cursor: pointer;
     border-radius: var(--sd-r-sm);
     padding: 3px 7px;
     transition: color 0.15s, background 0.15s;
 }
-.st-sd__rel-del:hover, .st-sd__rel-row-del:hover { color: var(--sd-danger); background: var(--sd-danger-bg); }
+.st-sd__rel-del:hover, .st-sd__rel-row-del:hover { color: var(--sd-danger) !important; background: var(--sd-danger-bg); }
 .st-sd__rel-add {
     border: 1px solid var(--sd-primary);
     background: var(--sd-primary);
-    color: var(--sd-on-primary);
+ color: var(--sd-on-primary) !important;
     border-radius: var(--sd-r);
     height: 34px;
     padding: 0 16px;
@@ -1433,7 +1433,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     height: 34px;
     padding: 0 12px;
     font-size: 12.5px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     outline: none;
     box-sizing: border-box;
@@ -1449,7 +1449,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: var(--sd-accent-deep);
+ color: var(--sd-accent-deep) !important;
     font-family: var(--sd-serif);
     margin: 18px 0 10px;
     padding-bottom: 6px;
@@ -1490,28 +1490,28 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 }
 .st-sd__pend-head {
     font-size: 12.5px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     font-weight: 600;
     margin-bottom: 6px;
 }
-.st-sd__pend-domain { font-weight: 400; color: var(--sd-accent-deep); }
+.st-sd__pend-domain { font-weight: 400; color: var(--sd-accent-deep) !important; }
 .st-sd__pend-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .st-sd__pend-actions button {
     border: 1px solid var(--sd-border-2);
     background: var(--sd-surface);
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     border-radius: var(--sd-r);
     padding: 4px 10px;
     font-size: 12px;
     cursor: pointer;
 }
-.st-sd__pend-actions button:hover { border-color: var(--sd-accent); color: var(--sd-accent-deep); }
+.st-sd__pend-actions button:hover { border-color: var(--sd-accent); color: var(--sd-accent-deep) !important; }
 .st-sd__pend-actions .st-sd__pend-new {
     border-color: var(--sd-accent-deep);
     background: var(--sd-accent-deep);
-    color: #fff;
+ color: #fff !important;
 }
-.st-sd__pend-actions .st-sd__pend-new:hover { color: #fff; }
+.st-sd__pend-actions .st-sd__pend-new:hover { color: #fff !important; }
 
 .st-sd__npc-list { margin-bottom: 4px; }
 .st-sd__npc-item {
@@ -1528,30 +1528,30 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__npc-name {
     font-size: 13px;
     font-weight: 600;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     font-family: var(--sd-serif);
 }
 .st-sd__npc-domain {
     font-size: 12px;
-    color: var(--sd-accent-deep);
+ color: var(--sd-accent-deep) !important;
     background: var(--sd-accent-bg);
     border-radius: 999px;
     padding: 1px 9px;
 }
 .st-sd__npc-age {
     font-size: 12px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     background: var(--sd-surface-2);
     border-radius: 999px;
     padding: 1px 9px;
 }
 .st-sd__npc-note {
     font-size: 12px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
 }
 .st-sd__npc-state {
     font-size: 12px;
-    color: var(--sd-text-2);
+ color: var(--sd-text-2) !important;
     background: var(--sd-surface-2);
     border-radius: var(--sd-r);
     padding: 1px 7px;
@@ -1567,7 +1567,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     height: 34px;
     padding: 0 12px;
     font-size: 12.5px;
-    color: var(--sd-text);
+ color: var(--sd-text) !important;
     background: var(--sd-surface);
     outline: none;
     box-sizing: border-box;
@@ -1620,7 +1620,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__api-box { margin-bottom: 14px; }
 .st-sd__api-toggle {
     background: none; border: none; padding: 0; cursor: pointer;
-    color: var(--sd-text); font-size: 13px; text-decoration: underline;
+ color: var(--sd-text) !important; font-size: 13px; text-decoration: underline;
     text-underline-offset: 3px; opacity: 0.75;
 }
 .st-sd__api-toggle:hover { opacity: 1; }
@@ -1633,34 +1633,34 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__api-btns { display: flex; gap: 8px; flex-wrap: wrap; }
 .st-sd__api-test, .st-sd__api-clear {
     background: transparent; border: 1px solid var(--sd-border, rgba(0,0,0,0.15));
-    color: var(--sd-text); border-radius: var(--sd-r); padding: 6px 12px; cursor: pointer; font-size: 13px;
+ color: var(--sd-text) !important; border-radius: var(--sd-r); padding: 6px 12px; cursor: pointer; font-size: 13px;
 }
-.st-sd__recall-meta { font-size: 11px; color: var(--sd-text-2); margin-bottom: 3px; }
+.st-sd__recall-meta { font-size: 11px; color: var(--sd-text-2) !important; margin-bottom: 3px; }
 .st-sd__recall-item--stale { opacity: 0.55; }
 
 /* 备份 / 恢复 */
 .st-sd__backup-export, .st-sd__backup-import {
     border: none; background: transparent; padding: 2px 0; font-size: 12px; cursor: pointer;
-    color: var(--sd-accent-deep); text-decoration: underline; text-underline-offset: 3px;
+ color: var(--sd-accent-deep) !important; text-decoration: underline; text-underline-offset: 3px;
 }
 .st-sd__backup-export:hover, .st-sd__backup-import:hover { opacity: 0.75; }
 
 /* 插件更新提醒 */
 .st-sd__chk-update {
     border: none; background: transparent; padding: 0; font-size: 11px; cursor: pointer;
-    color: var(--sd-text-3); text-decoration: underline; text-underline-offset: 3px;
+ color: var(--sd-text-3) !important; text-decoration: underline; text-underline-offset: 3px;
 }
-.st-sd__chk-update:hover { color: var(--sd-accent-deep); }
+.st-sd__chk-update:hover { color: var(--sd-accent-deep) !important; }
 .st-sd__chk-update:disabled { opacity: 0.6; cursor: default; }
 .st-sd__update {
     display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
     margin: 0; padding: 9px 40px; font-size: 12px;
-    background: var(--sd-accent-bg); color: var(--sd-text);
+    background: var(--sd-accent-bg); color: var(--sd-text) !important;
     border-bottom: 1px solid var(--sd-border);
 }
 .st-sd__update-text { flex: 1 1 auto; min-width: 0; }
 .st-sd__update-go, .st-sd__update-reload, .st-sd__update-later {
-    border: 1px solid var(--sd-border-2); background: var(--sd-surface); color: var(--sd-text);
+    border: 1px solid var(--sd-border-2); background: var(--sd-surface); color: var(--sd-text) !important;
     border-radius: var(--sd-r); padding: 3px 11px; font-size: 12px; cursor: pointer;
 }
 .st-sd__update-go, .st-sd__update-reload { border-color: var(--sd-accent-deep); }
@@ -1668,7 +1668,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__update-go:disabled { opacity: 0.6; cursor: default; }
 .st-sd-toast-actions { display: flex; gap: 8px; margin-top: 8px; }
 .st-sd-toast-btn {
-    border: 1px solid rgba(255, 255, 255, 0.6); background: rgba(255, 255, 255, 0.15); color: inherit;
+    border: 1px solid rgba(255, 255, 255, 0.6); background: rgba(255, 255, 255, 0.15); color: inherit !important;
     border-radius: 5px; padding: 3px 12px; font-size: 12px; cursor: pointer;
 }
 .st-sd-toast-btn:hover { background: rgba(255, 255, 255, 0.3); }
@@ -1679,8 +1679,8 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__jump { margin-top: 10px; padding: 8px 10px; border-radius: var(--sd-r-lg); background: var(--sd-warn-bg); border: 1px solid var(--sd-warn); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; }
 .st-sd__jump-text { font-size: 12px; line-height: 1.5; flex: 1 1 160px; }
 .st-sd__jump-btns { display: flex; gap: 6px; }
-.st-sd__jump-btns button { padding: 3px 12px; border-radius: var(--sd-r); border: 1px solid rgba(128, 128, 128, 0.5); background: transparent; color: inherit; cursor: pointer; font-size: 12px; }
-.st-sd__jump-btns .st-sd__jump-ok { background: var(--sd-warn-bg); border-color: var(--sd-warn); color: var(--sd-warn); font-weight: 600; }
+.st-sd__jump-btns button { padding: 3px 12px; border-radius: var(--sd-r); border: 1px solid rgba(128, 128, 128, 0.5); background: transparent; color: inherit !important; cursor: pointer; font-size: 12px; }
+.st-sd__jump-btns .st-sd__jump-ok { background: var(--sd-warn-bg); border-color: var(--sd-warn); color: var(--sd-warn) !important; font-weight: 600; }
 
 /* ==========================================================================
    主题系统：data-sd-theme 覆盖配色 / 字体 / 圆角 / 密度，data-sd-layout 决定排版族
@@ -1693,12 +1693,12 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     display: inline-flex; align-items: center; gap: 4px;
     padding: 1px 9px 1px 7px; height: 20px;
     border: 1px solid var(--sd-border-2); border-radius: 999px;
-    background: transparent; color: var(--sd-text-2);
+    background: transparent; color: var(--sd-text-2) !important;
     font-size: 11px; line-height: 1; cursor: pointer; flex: 0 0 auto;
     transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
 .st-sd__theme-btn svg { width: 12px; height: 12px; }
-.st-sd__theme-btn:hover, .st-sd__theme-btn.is-open { color: var(--sd-accent-deep); border-color: var(--sd-accent); background: var(--sd-accent-bg); }
+.st-sd__theme-btn:hover, .st-sd__theme-btn.is-open { color: var(--sd-accent-deep) !important; border-color: var(--sd-accent); background: var(--sd-accent-bg); }
 .st-sd__theme-pop {
     position: absolute; top: calc(100% + 10px); left: 0; z-index: 5;
     width: 330px; max-width: calc(100vw - 40px); box-sizing: border-box;
@@ -1706,11 +1706,11 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     background: var(--sd-surface); border: 1px solid var(--sd-border-2); border-radius: var(--sd-r-lg);
 }
 .st-sd__theme-pop.is-open { display: flex; }
-.st-sd__theme-pop-title { font-size: 11px; color: var(--sd-text-3); letter-spacing: 0.4px; padding: 2px 4px 4px; }
+.st-sd__theme-pop-title { font-size: 11px; color: var(--sd-text-3) !important; letter-spacing: 0.4px; padding: 2px 4px 4px; }
 .st-sd__theme-item {
     display: flex; align-items: center; gap: 12px; width: 100%; box-sizing: border-box;
     padding: 9px 10px; text-align: left; cursor: pointer;
-    border: 1px solid var(--sd-border); border-radius: var(--sd-r); background: transparent; color: var(--sd-text);
+    border: 1px solid var(--sd-border); border-radius: var(--sd-r); background: transparent; color: var(--sd-text) !important;
     transition: border-color 0.15s, background 0.15s;
 }
 .st-sd__theme-item:hover { border-color: var(--sd-accent); background: var(--sd-surface-2); }
@@ -1720,11 +1720,11 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__theme-sw i:first-child { margin-left: 0; outline: 1px solid var(--sd-border-2); }
 .st-sd__theme-txt { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .st-sd__theme-name { font-size: 13px; font-weight: 600; }
-.st-sd__theme-desc { font-size: 11px; color: var(--sd-text-2); }
-.st-sd__theme-tick { color: var(--sd-accent-deep); font-size: 14px; visibility: hidden; }
+.st-sd__theme-desc { font-size: 11px; color: var(--sd-text-2) !important; }
+.st-sd__theme-tick { color: var(--sd-accent-deep) !important; font-size: 14px; visibility: hidden; }
 .st-sd__theme-item.is-active .st-sd__theme-tick { visibility: visible; }
 
-.st-sd__title::after { content: var(--sd-orn, none); color: var(--sd-accent-deep); margin-left: 6px; font-size: 0.8em; font-family: var(--sd-sans); }
+.st-sd__title::after { content: var(--sd-orn, none); color: var(--sd-accent-deep) !important; margin-left: 6px; font-size: 0.8em; font-family: var(--sd-sans); }
 
 /* —— 蜜桃牛奶 —— */
 #st-serendipity[data-sd-theme="peach"] {
@@ -1802,7 +1802,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     padding: 7px 14px; margin-bottom: 0; border-bottom: none; border-radius: 999px;
 }
 #st-serendipity[data-sd-layout="soft"] .st-sd__tab:hover { background: var(--sd-surface-2); }
-#st-serendipity[data-sd-layout="soft"] .st-sd__tab.is-active { background: var(--sd-accent-bg); color: var(--sd-accent-deep); }
+#st-serendipity[data-sd-layout="soft"] .st-sd__tab.is-active { background: var(--sd-accent-bg); color: var(--sd-accent-deep) !important; }
 #st-serendipity[data-sd-layout="soft"] .st-sd__memory:not(.is-editing),
 #st-serendipity[data-sd-layout="soft"] .st-sd__tl-item:not(.st-sd__tl-item--edit),
 #st-serendipity[data-sd-layout="soft"] .st-sd__fore:not(.st-sd__fore--edit),
