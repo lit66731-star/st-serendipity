@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.33'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.34'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1765,15 +1765,15 @@ function hasUnsummarizedChat() {
 }
 
 const SUMMARY_TRANSCRIPT_MAX = 16000; // 单次总结发给模型的对话字数上限
-const SUMMARY_FAIL_LIMIT = 3;         // 同一聊天连续失败这么多次后跳过这段对话，避免永远卡在同一段
+const SUMMARY_FAIL_LIMIT = 3;         // 同一聊天连续失败这么多次后提醒一次（不再跳过：余额不足/接口故障时不丢记忆，恢复后自动补上）
 const summaryFailStreak = {};
 function noteSummaryFailure(st, key, lastIdx) {
     summaryFailStreak[key] = (summaryFailStreak[key] || 0) + 1;
     if (summaryFailStreak[key] < SUMMARY_FAIL_LIMIT) return;
     summaryFailStreak[key] = 0;
-    st.lastSummaryIndex = lastIdx;
-    saveSettings();
-    toastr.warning('连续 ' + SUMMARY_FAIL_LIMIT + ' 次总结失败，已跳过这段对话以免一直卡住；请检查插件 API（见「记忆」页）', undefined, { timeOut: 10000 });
+    // 不推进 lastSummaryIndex（不跳过这段对话）：余额不足/接口临时故障时，内容保留待总结，
+    // 水位线不动，API 恢复后下一次总结会自动把这段补上，避免「连续消失几条记忆」。
+    toastr.warning('记忆总结已连续失败 ' + SUMMARY_FAIL_LIMIT + ' 次（余额不足/接口故障等），内容不会写入也不会被跳过，API 恢复后会自动补上；请检查插件 API（见「记忆」页）', undefined, { timeOut: 10000 });
 }
 
 async function summarizeLastRound() {
@@ -1932,8 +1932,8 @@ async function summarizeLastRound() {
             }
             updateInjectHint();
         } else {
-            // 模型偶发返回空内容：明确提示，避免无声跳过
-            toastr.warning('本轮总结返回空内容，已跳过（未写入记忆）');
+            // 模型偶发返回空内容：明确提示，不推进水位线（不跳过），下轮会重试这一段
+            toastr.warning('本轮总结返回空内容（未写入记忆），稍后会自动重试');
             noteSummaryFailure(stBefore, keyBefore, lastIdx);
         }
     } catch (e) {
