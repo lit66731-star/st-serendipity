@@ -211,7 +211,7 @@
 
 /* ============ 按钮层级：Primary（深色）/ Secondary（透明+细线）/ Destructive（克制） ============ */
 .st-sd__summarize, .st-sd__inject-world, .st-sd__check-run, .st-sd__check-fix,
-.st-sd__add-note, .st-sd__add-word, .st-sd__add-instr, .st-sd__api-save,
+.st-sd__add-note, .st-sd__add-word, .st-sd__add-instr, .st-sd__api-save, .st-sd__embed-api-save,
 .st-sd__world-add, .st-sd__fore-add, .st-sd__axis-save {
     border: 1px solid var(--sd-primary);
     background: var(--sd-primary);
@@ -228,13 +228,13 @@
 .st-sd__summarize { margin-left: auto; }
 .st-sd__check-run { margin-left: auto; }
 .st-sd__summarize:hover, .st-sd__inject-world:hover, .st-sd__check-run:hover, .st-sd__check-fix:hover,
-.st-sd__add-note:hover, .st-sd__add-word:hover, .st-sd__add-instr:hover, .st-sd__api-save:hover,
+.st-sd__add-note:hover, .st-sd__add-word:hover, .st-sd__add-instr:hover, .st-sd__api-save:hover, .st-sd__embed-api-save:hover,
 .st-sd__world-add:hover, .st-sd__fore-add:hover, .st-sd__axis-save:hover {
     background: var(--sd-primary-hover);
     border-color: var(--sd-primary-hover);
 }
 .st-sd__summarize:active, .st-sd__inject-world:active, .st-sd__check-run:active, .st-sd__check-fix:active,
-.st-sd__add-note:active, .st-sd__add-word:active, .st-sd__add-instr:active, .st-sd__api-save:active,
+.st-sd__add-note:active, .st-sd__add-word:active, .st-sd__add-instr:active, .st-sd__api-save:active, .st-sd__embed-api-save:active,
 .st-sd__world-add:active, .st-sd__fore-add:active, .st-sd__axis-save:active {
     transform: translateY(1px);
 }
@@ -475,20 +475,6 @@
     box-sizing: border-box;
 }
 .st-sd__compress-keep:focus { border-color: var(--sd-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sd-accent) 25%, transparent); }
-.st-sd__embed-model-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.st-sd__embed-model {
-    flex: 1; min-width: 0;
-    border: 1px solid var(--sd-border-2);
-    border-radius: var(--sd-r);
-    height: 34px;
-    padding: 0 12px;
-    font-size: 12.5px;
- color: var(--sd-text) !important;
-    background: var(--sd-surface);
-    outline: none;
-    box-sizing: border-box;
-}
-.st-sd__embed-model:focus { border-color: var(--sd-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sd-accent) 25%, transparent); }
 .st-sd__compress-result { margin-top: 12px; }
 .st-sd__compress-result-item { border: 1px solid var(--sd-border); border-radius: var(--sd-r); overflow: hidden; }
 .st-sd__compress-result-item + .st-sd__compress-result-item { margin-top: 12px; }
@@ -1618,20 +1604,20 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 
 /* ============ 总结 API 设置 ============ */
 .st-sd__api-box { margin-bottom: 14px; }
-.st-sd__api-toggle {
+.st-sd__api-toggle, .st-sd__embed-api-toggle {
     background: none; border: none; padding: 0; cursor: pointer;
  color: var(--sd-text) !important; font-size: 13px; text-decoration: underline;
     text-underline-offset: 3px; opacity: 0.75;
 }
-.st-sd__api-toggle:hover { opacity: 1; }
-.st-sd__api-state { margin-left: 8px; font-size: 12px; opacity: 0.6; }
-.st-sd__api-form { display: none; margin-top: 10px; }
-.st-sd__api-form.open { display: block; }
+.st-sd__api-toggle:hover, .st-sd__embed-api-toggle:hover { opacity: 1; }
+.st-sd__api-state, .st-sd__embed-api-state { margin-left: 8px; font-size: 12px; opacity: 0.6; }
+.st-sd__api-form, .st-sd__embed-api-form { display: none; margin-top: 10px; }
+.st-sd__api-form.open, .st-sd__embed-api-form.open { display: block; }
 .st-sd__compress-api-form { display: none; margin-top: 10px; }
 .st-sd__compress-api-form.open { display: block; }
 .st-sd__api-input { display: block; width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 .st-sd__api-btns { display: flex; gap: 8px; flex-wrap: wrap; }
-.st-sd__api-test, .st-sd__api-clear {
+.st-sd__api-test, .st-sd__api-clear, .st-sd__embed-api-test, .st-sd__embed-api-clear {
     background: transparent; border: 1px solid var(--sd-border, rgba(0,0,0,0.15));
  color: var(--sd-text) !important; border-radius: var(--sd-r); padding: 6px 12px; cursor: pointer; font-size: 13px;
 }

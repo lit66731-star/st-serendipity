@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.36'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.37'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -2965,7 +2965,7 @@ function renderRecall() {
     const worldSelect = panel.find('.st-sd__recall-world');
     if (!statusEl.length) return;
     panel.find('.st-sd__vec-toggle').prop('checked', !!settings.archiveVectorized);
-    panel.find('.st-sd__embed-model').val(((extension_settings[extensionName] || {}).embedModel) || '');
+    refreshEmbedApiUi();
 
     const issue = embedIssue();
     if (issue) {
@@ -3295,24 +3295,47 @@ function embedEndpoint(url) {
     return url + '/embeddings';
 }
 
-// 语义召回用的 embeddings 模型名：优先用「向量召回」页单独填的，没填则回退用插件 API 的模型名
-function embedModelName() {
+// 语义召回用的 embeddings API 配置（地址/Key/模型）：优先用「向量召回」页单独配的 embedApi（三者全独立，比如记忆走中转、向量走硅基）；
+// 没单独配地址则回退到插件 API（老行为：地址/Key 复用，模型名用 embedApi.model 或 embedModel 或插件 API 模型）。
+function getEmbedCfg() {
     const root = extension_settings[extensionName] || {};
-    const em = String(root.embedModel || '').trim();
-    if (em) return em;
-    return String(getApiCfg().model || '').trim();
+    const main = root.api || {};
+    const e = root.embedApi || {};
+    const model = String(e.model || root.embedModel || main.model || '').trim();
+    if (e.url && String(e.url).trim()) {
+        return { url: String(e.url).trim(), key: String(e.key || '').trim(), model };
+    }
+    return { url: String(main.url || '').trim(), key: String(main.key || '').trim(), model };
 }
 
-// 向量模型签名：url + embeddings 模型名。变了就视为向量空间不兼容 → 全量重建
+// 语义召回用的 embeddings 模型名
+function embedModelName() {
+    return getEmbedCfg().model;
+}
+
+// 向量模型签名：embeddings 地址 + 模型名。变了就视为向量空间不兼容 → 全量重建
 function embedModelSignature() {
-    const c = getApiCfg();
-    return String(c.url || '').trim().replace(/\/+$/, '') + '|' + embedModelName();
+    const c = getEmbedCfg();
+    return c.url.replace(/\/+$/, '') + '|' + c.model;
 }
 
 // 自建语义召回当前不可用的原因（'' = 可用）。只检查配置；端点的真实可用性在调用失败时报错（带 HTTP 原因）
 function embedIssue() {
-    if (!apiConfigured()) return '未配置插件 API（语义召回需要它提供 embeddings 端点，绝不回退到聊天 API）';
+    const c = getEmbedCfg();
+    if (!c.url || !c.model) return '未配置 embeddings API（「向量召回」页单独配一个，或先配好插件 API；地址 + 模型都要填，绝不回退到聊天 API）';
     return '';
+}
+
+// 向量召回页 embeddings API 配置区回显（地址/Key/模型 + 状态）
+function refreshEmbedApiUi() {
+    const panel = $('#st-serendipity');
+    if (!panel.length) return;
+    const root = extension_settings[extensionName] || {};
+    const ea = root.embedApi || {};
+    panel.find('.st-sd__embed-api-url').val(ea.url || '');
+    panel.find('.st-sd__embed-api-key').val(ea.key || '');
+    panel.find('.st-sd__embed-api-model').val(ea.model || root.embedModel || '');
+    panel.find('.st-sd__embed-api-state').text(ea.url ? ('已启用：' + (ea.model || '(未填模型)')) : '未单独设置（回退用插件 API）');
 }
 
 // L2 归一化（存前/查前都归一化，余弦相似度 = 点积）
@@ -3392,7 +3415,7 @@ function clearEmbedStore(key) {
 
 // 调插件 API 的 embeddings 端点，返回与 texts 一一对应的向量数组
 async function embedTexts(texts, timeoutMs) {
-    const c = getApiCfg();
+    const c = getEmbedCfg();
     const headers = { 'Content-Type': 'application/json' };
     if (c.key) headers.Authorization = 'Bearer ' + c.key.trim();
     const ctrl = new AbortController();
@@ -3402,7 +3425,7 @@ async function embedTexts(texts, timeoutMs) {
         res = await fetch(embedEndpoint(c.url), {
             method: 'POST',
             headers,
-            body: JSON.stringify({ model: embedModelName(), input: texts }),
+            body: JSON.stringify({ model: c.model, input: texts }),
             signal: ctrl.signal,
         });
     } catch (e) {
@@ -3413,7 +3436,7 @@ async function embedTexts(texts, timeoutMs) {
     }
     if (!res.ok) {
         const t = await res.text().catch(() => '');
-        throw new Error('embeddings HTTP ' + res.status + (t ? '：' + safeErrorText(t, c.key).slice(0, 200) : '（常见原因：这个 API/中转不支持 embeddings 端点、或模型不是 embedding 模型——请到「向量召回」页单独填 embeddings 模型）'));
+        throw new Error('embeddings HTTP ' + res.status + (t ? '：' + safeErrorText(t, c.key).slice(0, 200) : '（常见原因：这个地址/中转不支持 embeddings 端点、或模型不是 embedding 模型——请到「向量召回」页单独配 embeddings API）'));
     }
     const d = await res.json();
     const data = d && Array.isArray(d.data) ? d.data : null;
@@ -4720,12 +4743,20 @@ function buildPanel() {
       <div class="st-sd__pane" data-pane="recall" style="display:none">
         <div class="st-sd__recall-status"></div>
 
-        <div class="st-sd__embed-model-row">
-          <span class="st-sd__label">embeddings 模型</span>
-          <input type="text" class="st-sd__embed-model" placeholder="如 embedding-3 / text-embedding-3-small（留空则用插件 API 的模型名）" autocomplete="off">
-          <button type="button" class="st-sd__embed-model-save">保存</button>
+        <div class="st-sd__api-box">
+          <button type="button" class="st-sd__embed-api-toggle">embeddings API 设置（可独立）</button><span class="st-sd__embed-api-state"></span>
+          <div class="st-sd__embed-api-form">
+            <input type="text" class="st-sd__api-input st-sd__embed-api-url" placeholder="embeddings 地址，如 https://api.siliconflow.cn/v1（留空则复用插件 API）" autocomplete="off">
+            <input type="password" class="st-sd__api-input st-sd__embed-api-key" placeholder="embeddings API Key（留空则复用插件 API 的 Key）" autocomplete="new-password" spellcheck="false">
+            <input type="text" class="st-sd__api-input st-sd__embed-api-model" placeholder="embedding 模型名，如 BAAI/bge-m3 / embedding-3 / text-embedding-3-small（别填对话模型）" autocomplete="off">
+            <div class="st-sd__api-btns">
+              <button type="button" class="st-sd__embed-api-save">保存</button>
+              <button type="button" class="st-sd__embed-api-test">测试</button>
+              <button type="button" class="st-sd__embed-api-clear">清除</button>
+            </div>
+            <div class="st-sd__hint">向量召回默认复用插件 API 的地址和 Key，只单独填 embedding 模型；如果你的记忆/对话走中转站、向量走硅基这类**不同服务商**，就在这里把地址、Key、模型**整套单独配一份**，向量召回只走这里，绝不回退到聊天 API。改动地址或模型会自动全量重建索引。</div>
+          </div>
         </div>
-        <div class="st-sd__hint">向量召回复用插件 API 的地址和 Key，但模型单独填 embedding 模型（智谱填 embedding-3，OpenAI 填 text-embedding-3-small 等），别填对话模型。改动模型会自动全量重建索引。</div>
 
         <div class="st-sd__section-title">注入正文（自动语义召回）</div>
         <div class="st-sd__recall-inject">
@@ -5126,15 +5157,48 @@ function bindPanelEvents() {
         if (this.checked) scheduleSemanticSync(); // 开启就立即（防抖）建索引，别等下一轮总结才建
         renderRecallIndexState();
     });
-    // embeddings 模型单独保存（url/key 复用插件 API，只有模型名独立，因为总结用对话模型、向量召回要 embedding 模型）
-    panel.find('.st-sd__embed-model-save').on('click', () => {
+    // embeddings API：可独立配置（地址/Key/模型全独立，比如记忆走中转、向量走硅基）；留空地址则回退用插件 API
+    panel.find('.st-sd__embed-api-toggle').on('click', () => panel.find('.st-sd__embed-api-form').toggleClass('open'));
+    panel.find('.st-sd__embed-api-save').on('click', () => {
         const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        const val = String(panel.find('.st-sd__embed-model').val() || '').trim();
-        if (val) root.embedModel = val; else delete root.embedModel;
+        const url = String(panel.find('.st-sd__embed-api-url').val() || '').trim();
+        const key = String(panel.find('.st-sd__embed-api-key').val() || '').trim();
+        const model = String(panel.find('.st-sd__embed-api-model').val() || '').trim();
+        if (url || key || model) root.embedApi = { url, key, model };
+        else delete root.embedApi;
         saveSettings();
-        if (settings.semanticRecall && settings.semanticRecall.enabled) scheduleSemanticSync(); // 换模型 → 自动重建索引
+        refreshEmbedApiUi();
+        if (settings.semanticRecall && settings.semanticRecall.enabled) scheduleSemanticSync(); // 换地址/模型 → 自动重建索引
         renderRecall();
-        toastr.success(val ? ('embeddings 模型已保存：' + val) : '已清除，将回退用插件 API 的模型名');
+        toastr.success(url ? ('embeddings API 已保存' + (model ? '：' + model : '')) : '未填地址，向量召回回退用插件 API');
+    });
+    panel.find('.st-sd__embed-api-clear').on('click', () => {
+        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
+        delete root.embedApi;
+        panel.find('.st-sd__embed-api-url, .st-sd__embed-api-key, .st-sd__embed-api-model').val('');
+        saveSettings();
+        refreshEmbedApiUi();
+        if (settings.semanticRecall && settings.semanticRecall.enabled) scheduleSemanticSync();
+        renderRecall();
+        toastr.info('已清除独立的 embeddings API，回退用插件 API');
+    });
+    panel.find('.st-sd__embed-api-test').on('click', async () => {
+        const url = String(panel.find('.st-sd__embed-api-url').val() || '').trim();
+        const key = String(panel.find('.st-sd__embed-api-key').val() || '').trim();
+        const model = String(panel.find('.st-sd__embed-api-model').val() || '').trim();
+        const c = url ? { url, key, model } : getEmbedCfg(); // 没填地址就测当前生效的那套（可能回退到插件 API）
+        if (!c.url || !c.model) { toastr.warning('请先填 embeddings API 地址和模型名（或先配好插件 API）'); return; }
+        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
+        const backup = root.embedApi;
+        if (url) root.embedApi = { url, key, model };
+        try {
+            const vecs = await embedTexts(['测试向量'], 20000);
+            toastr.success('embeddings 连接成功，向量维度：' + (vecs && vecs[0] ? vecs[0].length : '?'));
+        } catch (e) {
+            toastr.error('连接失败：' + safeErrorText(e, c.key) + '（这个地址/模型可能不支持 embeddings 端点，或跨域被拦）');
+        } finally {
+            if (backup) root.embedApi = backup; else delete root.embedApi;
+        }
     });
     // 注入调参（召回条数 / 候选阈值 / 候选条数）
     panel.on('change', '.st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk, .st-sd__recall-inject-budget', function () {
