@@ -1803,3 +1803,26 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     #st-serendipity[data-sd-layout="soft"] .st-sd__update { padding-left: 20px; padding-right: 20px; }
     #st-serendipity[data-sd-layout="soft"] .st-sd__tabs { padding: 8px; }
 }
+
+/* ==========================================================================
+   强制可编辑字段「黑字白底」——对抗酒馆美化把输入框文字刷白
+   面板是固定浅色底，输入框文字/底色直接锁死成固定值（不再读变量），
+   酒馆主题/美化再怎么覆盖 input/textarea/select 也刷不白、看不清。
+   ========================================================================== */
+#st-serendipity input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]):not([type="file"]),
+#st-serendipity textarea,
+#st-serendipity select {
+    color: #1a1a1a !important;
+    background-color: #ffffff !important;
+    -webkit-text-fill-color: #1a1a1a !important;
+}
+#st-serendipity input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]):not([type="file"])::placeholder,
+#st-serendipity textarea::placeholder {
+    color: #A6A19B !important;
+    opacity: 1 !important;
+    -webkit-text-fill-color: #A6A19B !important;
+}
+#st-serendipity select option {
+    color: #1a1a1a !important;
+    background-color: #ffffff !important;
+}
