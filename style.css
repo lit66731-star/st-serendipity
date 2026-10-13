@@ -382,7 +382,7 @@
 .st-sd__switch input:checked + .st-sd__switch-slider::before { transform: translateX(16px); }
 
 /* ============ 输入框（统一） ============ */
-.st-sd__every-input, .st-sd__word-input, .st-sd__note-input, .st-sd__instr-input, .st-sd__api-input,
+.st-sd__every-input, .st-sd__summary-max-input, .st-sd__word-input, .st-sd__note-input, .st-sd__instr-input, .st-sd__api-input,
 .st-sd__axis-day, .st-sd__axis-time, .st-sd__axis-loc,
 .st-sd__world-input, .st-sd__world-edit-text,
 .st-sd__fore-input, .st-sd__fore-e-title, .st-sd__fore-e-note,
@@ -407,7 +407,7 @@
     box-sizing: border-box;
     transition: border-color 0.15s, box-shadow 0.15s;
 }
-.st-sd__every-input:focus, .st-sd__word-input:focus, .st-sd__note-input:focus, .st-sd__api-input:focus,
+.st-sd__every-input:focus, .st-sd__summary-max-input:focus, .st-sd__word-input:focus, .st-sd__note-input:focus, .st-sd__api-input:focus,
 .st-sd__instr-input:focus, .st-sd__axis-day:focus, .st-sd__axis-time:focus,
 .st-sd__axis-loc:focus, .st-sd__world-input:focus, .st-sd__world-edit-text:focus,
 .st-sd__fore-input:focus, .st-sd__fore-e-title:focus, .st-sd__fore-e-note:focus,
@@ -456,6 +456,7 @@
     margin-bottom: 14px;
 }
 .st-sd__every-input { width: 64px; flex: 0 0 auto; text-align: center; }
+.st-sd__summary-max-input { width: 92px; flex: 0 0 auto; text-align: center; }
 .st-sd__compress-row {
     display: flex;
     align-items: center;

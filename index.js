@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.38'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.39'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -340,6 +340,7 @@ function freshCharSettings() {
         longMemories: [],       // 长期记忆（短期满 10 合并而来；满 10 提醒归档到世界书）
         memoryEnabled: true,    // 自动记忆开关
         summarizeEvery: 1,      // 每 N 轮总结一次（1=每轮都总结）
+        summaryTranscriptMax: 24000, // 单次总结发给模型的对话字数上限（开场白与最新两条一定保留，中间超出的省略；可在「记忆」页按模型上下文调整）
         compressKeep: 20,       // 生成摘要时保留最近多少条消息不纳入摘要（留给正文上下文）
         compressBackupDownload: false, // 生成摘要后是否自动下载 JSON 备份文件（默认关：全文已在面板归档可回看，旧楼层也已隐藏可 /unhide 恢复，手机上下载易导致页面跳走）
         summaryArchive: [],     // 剧情摘要归档 [{ id, at, from, to, text, raw, rawSize }]：原文全文归档 + 摘要替身（旧楼层隐藏、不删）
@@ -521,6 +522,8 @@ function normalizeCharSettings(cs) {
     if (cs.memoryEnabled === undefined) cs.memoryEnabled = true;
     if (!(cs.summarizeEvery >= 1)) cs.summarizeEvery = 1;
     else cs.summarizeEvery = Math.floor(cs.summarizeEvery);
+    if (!(cs.summaryTranscriptMax >= 2000)) cs.summaryTranscriptMax = 24000;
+    else cs.summaryTranscriptMax = Math.floor(cs.summaryTranscriptMax);
     cs.roundsSinceSummary = Number(cs.roundsSinceSummary) || 0;
     cs.lastSummaryIndex = (typeof cs.lastSummaryIndex === 'number' && cs.lastSummaryIndex >= 0) ? Math.floor(cs.lastSummaryIndex) : -1;
     cs.compressKeep = (Number(cs.compressKeep) >= 2 && Number(cs.compressKeep) <= 200) ? Math.floor(Number(cs.compressKeep)) : 20;
@@ -1800,7 +1803,7 @@ function hasUnsummarizedChat() {
     return false;
 }
 
-const SUMMARY_TRANSCRIPT_MAX = 16000; // 单次总结发给模型的对话字数上限
+const SUMMARY_TRANSCRIPT_MAX = 24000; // 单次总结发给模型的对话字数默认上限（可在「记忆」页按模型上下文调整）
 const SUMMARY_FAIL_LIMIT = 3;         // 同一聊天连续失败这么多次后提醒一次（不再跳过：余额不足/接口故障时不丢记忆，恢复后自动补上）
 const summaryFailStreak = {};
 function noteSummaryFailure(st, key, lastIdx) {
@@ -1846,20 +1849,26 @@ async function summarizeLastRound() {
     const lastUserMsg = ([...sel].reverse().find(x => x.m.is_user) || {}).m;
     if (!lastCharMsg || !lastUserMsg) return;
 
-    // 总结窗口上限：从最新往前取，总长超过预算就丢掉更早的（至少保留最后两条）。首次启用的老聊天、
-    // 以及连续失败后越积越长的窗口，都不会再整段发给模型
-    const lines = [];
-    let used = 0;
-    for (let k = sel.length - 1; k >= 0; k--) {
-        const x = sel[k];
+    // 总结窗口上限：最早一条（开场白/窗口起点）与最新两条一定保留，中间的从新往旧取、超预算就省略更早的。
+    // 这样开头不会被「开场白太长」整段丢掉（此前开头只总结两条），也不至于把超长窗口整段发给模型
+    const maxLen = settings.summaryTranscriptMax || SUMMARY_TRANSCRIPT_MAX;
+    const buildLine = (x) => {
         let line = '【第' + (x.i + 1) + '楼】' + (x.m.name || (x.m.is_user ? '用户' : '角色')) + '：' + x.m.mes;
-        if (line.length > SUMMARY_TRANSCRIPT_MAX) line = line.slice(0, SUMMARY_TRANSCRIPT_MAX);
-        if (lines.length >= 2 && used + line.length > SUMMARY_TRANSCRIPT_MAX) break;
+        if (line.length > maxLen) line = line.slice(0, maxLen);
+        return line;
+    };
+    const firstLine = buildLine(sel[0]);
+    const lines = [];
+    let used = firstLine.length;
+    for (let k = sel.length - 1; k >= 1; k--) {
+        const line = buildLine(sel[k]);
+        if (lines.length >= 2 && used + line.length > maxLen) break;
         lines.unshift(line);
         used += line.length;
     }
+    lines.unshift(firstLine);
     const transcript = lines.join('\n\n');
-    if (lines.length < sel.length) toastr.info('这段对话较长，本次只总结最近 ' + lines.length + ' 条（更早的 ' + (sel.length - lines.length) + ' 条未纳入记忆）', undefined, { timeOut: 6000 });
+    if (lines.length < sel.length) toastr.info('这段对话较长，本次只总结其中 ' + lines.length + ' 条（' + (sel.length - lines.length) + ' 条因过长未纳入记忆）', undefined, { timeOut: 6000 });
 
     // await 之前先记下「写给谁」和「总结的是哪条消息」，回来后核对，避免切换聊天串档、滑动后签名记错
     const keyBefore = currentDataKey();
@@ -2787,6 +2796,8 @@ function renderMemories() {
     renderWorldAlert();
     const everyInput = $('#st-serendipity .st-sd__every-input');
     if (everyInput.length) everyInput.val(settings.summarizeEvery || 1);
+    const summaryMaxInput = $('#st-serendipity .st-sd__summary-max-input');
+    if (summaryMaxInput.length) summaryMaxInput.val(settings.summaryTranscriptMax || SUMMARY_TRANSCRIPT_MAX);
 
     const hasAny = settings.memories.length || settings.longMemories.length;
     if (!hasAny) {
@@ -4682,6 +4693,11 @@ function buildPanel() {
           <input type="number" class="st-sd__every-input" min="1" max="50" title="每 N 轮自动总结一次，1=每轮都总结">
           <span class="st-sd__label">轮总结一次</span>
         </div>
+        <div class="st-sd__every-row">
+          <span class="st-sd__label">单次总结字数上限</span>
+          <input type="number" class="st-sd__summary-max-input" min="2000" max="200000" step="1000" title="单次总结发给模型的对话字数上限；开场白和最新两条一定保留，超出的中间部分会被省略，可按你模型的上下文大小调整">
+          <span class="st-sd__label">字</span>
+        </div>
         <div class="st-sd__add-row">
           <input type="text" class="st-sd__note-input" placeholder="手动补记一条记忆（立刻记下某个设定/事件，不等自动总结）">
           <button type="button" class="st-sd__add-note">补记</button>
@@ -5035,6 +5051,16 @@ function bindPanelEvents() {
         this.value = v;
         saveSettings();
         toastr.success('每 ' + v + ' 轮总结一次');
+    });
+    // 单次总结字数上限
+    panel.find('.st-sd__summary-max-input').on('change', function () {
+        let v = parseInt(this.value, 10);
+        if (isNaN(v) || v < 2000) v = 2000;
+        if (v > 200000) v = 200000;
+        settings.summaryTranscriptMax = v;
+        this.value = v;
+        saveSettings();
+        toastr.success('单次总结字数上限已设为 ' + v + ' 字');
     });
     // 摘要（压缩）API：与「插件 API」共用同一份配置（root.api），两个面板改的是同一个，压缩绝不回退到聊天 API
     const refreshCompressApiState = () => {
