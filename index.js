@@ -345,6 +345,15 @@ function freshCharSettings() {
         memoryEnabled: true,    // 自动记忆开关
         summarizeEvery: 1,      // 每 N 轮总结一次（1=每轮都总结）
         summaryTranscriptMax: 24000, // 单次总结发给模型的对话字数上限（开场白与最新两条一定保留，中间超出的省略；可在「记忆」页按模型上下文调整）
+        tokenBudget: {          // Token 预算（Phase 3）：按任务所选模型上下文计算，0=自动；未配真实 tokenizer 时用保守估算并标记 estimated
+            inputTokenBudget: 0,    // 单次任务输入预算（含历史正文），0=按模型上下文自动
+            outputTokenBudget: 0,   // 输出预算（摘要/总结结果），0=按模型上下文自动
+            reservedContextTokens: 0, // 为系统指令/提示词/服务端限制额外预留的 token，0=自动
+            summaryTriggerRatio: 0.8, // 未处理历史占「输入预算−预留」达到该比例即触发摘要
+            maxChunkTokens: 0,      // 单段分段的最大 token，0=自动
+            overlapTokens: 0,       // 相邻分段之间的上下文重叠 token，0=不重叠
+            summaryTargetTokens: 0, // 摘要/总结的目标输出 token，0=自动
+        },
         compressKeep: 20,       // 生成摘要时保留最近多少条消息不纳入摘要（留给正文上下文）
         compressBackupDownload: false, // 生成摘要后是否自动下载 JSON 备份文件（默认关：全文已在面板归档可回看，旧楼层也已隐藏可 /unhide 恢复，手机上下载易导致页面跳走）
         lastCompressToKey: '',  // 上次压缩归档到哪条消息的身份键（messageSig，独立于总结水位线；二次压缩只归档这之后的新消息，不从第1楼重来）
@@ -534,6 +543,17 @@ function normalizeCharSettings(cs) {
     else cs.summarizeEvery = Math.floor(cs.summarizeEvery);
     if (!(cs.summaryTranscriptMax >= 2000)) cs.summaryTranscriptMax = 24000;
     else cs.summaryTranscriptMax = Math.floor(cs.summaryTranscriptMax);
+    // P3：Token 预算规范化（全部非负；ratio 夹到 0~1）
+    cs.tokenBudget = (cs.tokenBudget && typeof cs.tokenBudget === 'object' && !Array.isArray(cs.tokenBudget)) ? cs.tokenBudget : {};
+    cs.tokenBudget = {
+        inputTokenBudget: Math.max(0, Math.floor(Number(cs.tokenBudget.inputTokenBudget) || 0)),
+        outputTokenBudget: Math.max(0, Math.floor(Number(cs.tokenBudget.outputTokenBudget) || 0)),
+        reservedContextTokens: Math.max(0, Math.floor(Number(cs.tokenBudget.reservedContextTokens) || 0)),
+        summaryTriggerRatio: Math.min(1, Math.max(0, (Number(cs.tokenBudget.summaryTriggerRatio) || 0.8))),
+        maxChunkTokens: Math.max(0, Math.floor(Number(cs.tokenBudget.maxChunkTokens) || 0)),
+        overlapTokens: Math.max(0, Math.floor(Number(cs.tokenBudget.overlapTokens) || 0)),
+        summaryTargetTokens: Math.max(0, Math.floor(Number(cs.tokenBudget.summaryTargetTokens) || 0)),
+    };
     cs.roundsSinceSummary = Number(cs.roundsSinceSummary) || 0;
     cs.lastSummaryIndex = (typeof cs.lastSummaryIndex === 'number' && cs.lastSummaryIndex >= 0) ? Math.floor(cs.lastSummaryIndex) : -1;
     if (typeof cs.lastCommittedMessageKey !== 'string') cs.lastCommittedMessageKey = '';
@@ -900,6 +920,106 @@ async function callLLM({ prompt, systemPrompt }) {
         throw new Error('未配置插件 API（不会回退到聊天 API）');
     }
     return callCustomApi({ prompt, systemPrompt });
+}
+
+// ---------------- Token 预算模块（Phase 3，纯逻辑，可离线测试） ----------------
+// 现在总结/压缩都按「字符数」截断，不是 token。这里落地按 token 的预算、估算、分段与触发判定。
+// 未接真实 tokenizer 前一律走保守估算并标记 estimated=true（文档要求：字符数 ≠ token 数，需区分语言/代码）。
+const TOKEN_EST = {
+    cjkPerChar: 1.0,       // 中文/全角：1 字 ≈ 1 token（真实约 1.5~2 字/token，这里往高估，宁可少发也不超预算）
+    latinPerToken: 4,      // 英文/数字/代码：约 4 字符 1 token
+    overheadPerMessage: 4, // 每条消息的 role/分隔符等固定开销
+};
+function countTokens(text) {
+    const t = String(text == null ? '' : text);
+    if (!t) return { tokens: 0, estimated: true };
+    let cjk = 0, latin = 0, other = 0;
+    for (const ch of t) {
+        const code = ch.codePointAt(0);
+        if ((code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3000 && code <= 0x30FF) || (code >= 0xFF00 && code <= 0xFFEF) || (code >= 0x3400 && code <= 0x4DBF)) cjk++;
+        else if (ch === ' ' || ch === '\n' || ch === '\t' || ch === '\r') other++;
+        else if (/[A-Za-z0-9]/.test(ch)) latin++;
+        else other++;
+    }
+    const tokens = cjk + Math.ceil(latin / TOKEN_EST.latinPerToken) + Math.ceil(other / TOKEN_EST.latinPerToken);
+    return { tokens, estimated: true };
+}
+function sumMessageTokens(items) {
+    // items: [{ text }] 或 [{ m:{ mes } }]；返回总 token（含每条消息固定开销）
+    let total = 0;
+    for (const it of items) {
+        const text = it && typeof it.text === 'string' ? it.text : (it && it.m && typeof it.m.mes === 'string' ? it.m.mes : '');
+        total += countTokens(text).tokens + TOKEN_EST.overheadPerMessage;
+    }
+    return { tokens: total, estimated: true };
+}
+// 把 0=自动 的预算字段解析成具体数字。modelContextTokens=任务模型上下文上限（未知传 0）。
+// 已知上下文时：预留 ≥ 上下文15%、输出 ≥ 上下文20%，输入 = 上下文 − 预留 − 输出；未知时 0 保持 0 且 estimated=true。
+function resolveTokenBudget(budget, modelContextTokens) {
+    const b = budget || {};
+    const ctx = Math.max(0, Math.floor(Number(modelContextTokens) || 0));
+    const hasCtx = ctx > 0;
+    const num = (v, def) => { const n = Math.floor(Number(v)); return n > 0 ? n : def; };
+    const reserved = hasCtx ? num(b.reservedContextTokens, Math.max(256, Math.floor(ctx * 0.15))) : num(b.reservedContextTokens, 0);
+    const output = hasCtx ? num(b.outputTokenBudget, Math.max(256, Math.floor(ctx * 0.2))) : num(b.outputTokenBudget, 0);
+    const available = hasCtx ? Math.max(0, ctx - reserved - output) : 0;
+    const input = hasCtx ? (Number(b.inputTokenBudget) > 0 ? Math.min(available, Math.floor(Number(b.inputTokenBudget))) : available) : num(b.inputTokenBudget, 0);
+    const maxChunk = hasCtx ? num(b.maxChunkTokens, Math.max(512, Math.floor(input * 0.5))) : num(b.maxChunkTokens, 0);
+    const target = hasCtx ? num(b.summaryTargetTokens, Math.max(200, Math.floor(ctx * 0.1))) : num(b.summaryTargetTokens, 0);
+    const overlap = Math.max(0, Math.floor(Number(b.overlapTokens) || 0));
+    return { input, output, reserved, maxChunk, overlap, target, estimated: !hasCtx, modelContext: ctx };
+}
+// 未处理历史 token 数是否达到触发摘要的阈值（占「输入预算 − 预留」的比例）
+function shouldTriggerSummary(pendingTokens, budget) {
+    const b = budget || {};
+    const input = Math.max(0, Math.floor(Number(b.inputTokenBudget) || 0));
+    const reserved = Math.max(0, Math.floor(Number(b.reservedContextTokens) || 0));
+    const usable = Math.max(0, input - reserved);
+    if (usable <= 0) return false;
+    const ratio = Math.min(1, Math.max(0, Number(b.summaryTriggerRatio) || 0.8));
+    return Math.max(0, Math.floor(Number(pendingTokens) || 0)) >= usable * ratio;
+}
+// 按 token 预算把消息切成连续、不切断单条消息的块。overlapTokens > 0 时新块开头带上上一块末尾若干条
+// 作为上下文重叠（这些条目标 overlap:true，供增量合并识别、不重复记账）。单条超预算也不切断，独占一块。
+function chunkMessagesByTokenBudget(items, opts) {
+    const max = Math.max(1, Math.floor(Number(opts.maxChunkTokens) || 0));
+    const overlap = Math.max(0, Math.floor(Number(opts.overlapTokens) || 0));
+    const tokOf = (it) => {
+        const text = it && typeof it.text === 'string' ? it.text : '';
+        return countTokens(text).tokens + TOKEN_EST.overheadPerMessage;
+    };
+    const chunks = [];
+    let cur = { items: [], tokens: 0 };
+    const push = () => { if (cur.items.length) chunks.push({ items: cur.items, tokens: cur.tokens }); };
+    for (const it of items) {
+        const tok = tokOf(it);
+        if (cur.items.length && cur.tokens + tok > max) {
+            push();
+            cur = { items: [], tokens: 0 };
+            if (overlap > 0) {
+                const prev = chunks[chunks.length - 1];
+                let o = 0;
+                const back = [];
+                for (let k = prev.items.length - 1; k >= 0 && o < overlap; k--) {
+                    const bk = prev.items[k];
+                    back.unshift({ ...bk, overlap: true });
+                    o += tokOf(bk);
+                }
+                // 整块都当重叠等于重复处理一遍，无意义——只保留真子集
+                if (back.length && back.length < prev.items.length) { cur.items = back; cur.tokens = o; }
+            }
+        }
+        cur.items.push(it);
+        cur.tokens += tok;
+    }
+    push();
+    return chunks;
+}
+// 消息内容签名：messageSig 只对重roll/删除（swipe_id/时间戳变化）敏感，检测不到「原地编辑正文」。
+// 两者一起用才能覆盖文档里 message_edited 场景（Phase 4 历史范围校验会用到）。
+function contentSignature(text) {
+    const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    return t ? String(getStringHash(t)) : '';
 }
 
 // ---------------- 记忆功能 ----------------
