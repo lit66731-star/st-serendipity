@@ -1828,3 +1828,70 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     color: #1a1a1a !important;
     background-color: #ffffff !important;
 }
+
+/* ============ 模型管理页（Phase 7） ============ */
+.st-sd__subnav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--sd-border);
+}
+.st-sd__subtab {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--sd-r);
+    padding: 5px 12px;
+    font-size: 12.5px;
+    cursor: pointer;
+    color: var(--sd-text-3) !important;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.st-sd__subtab:hover { color: var(--sd-text-2) !important; background: var(--sd-surface-2); }
+.st-sd__subtab.is-active {
+    color: var(--sd-text) !important;
+    background: var(--sd-accent-bg);
+    border-color: var(--sd-border);
+    font-weight: 600;
+}
+.st-sd__mview { max-width: 760px; }
+.st-sd__mrows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.st-sd__mrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--sd-border);
+    border-radius: var(--sd-r);
+    background: var(--sd-surface);
+}
+.st-sd__mrow-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.st-sd__mrow-name { font-size: 12.5px; font-weight: 600; color: var(--sd-text) !important; }
+.st-sd__mrow-model { font-size: 12px; color: var(--sd-text) !important; word-break: break-all; }
+.st-sd__mrow-src { font-size: 11px; color: var(--sd-text-3) !important; word-break: break-all; }
+.st-sd__mrow-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.st-sd__mrow--log .st-sd__mrow-name { font-weight: 500; color: var(--sd-text-2) !important; }
+.st-sd__mbtn {
+    border: 1px solid var(--sd-border-2);
+    background: transparent;
+    color: var(--sd-text-2) !important;
+    border-radius: var(--sd-r-sm);
+    height: 30px;
+    padding: 0 12px;
+    font-size: 12px;
+    cursor: pointer;
+    box-sizing: border-box;
+    white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.st-sd__mbtn:hover { background: var(--sd-surface-2); border-color: var(--sd-border-2); color: var(--sd-text) !important; }
+.st-sd__mbtn:disabled { opacity: 0.45; cursor: default; }
+.st-sd__mbind { background: var(--sd-primary); border-color: var(--sd-primary); color: var(--sd-on-primary) !important; }
+.st-sd__mbind:hover { background: var(--sd-primary-hover); border-color: var(--sd-primary-hover); color: var(--sd-on-primary) !important; }
+.st-sd__mform { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 8px; }
+.st-sd__mform-row { display: flex; align-items: center; gap: 10px; margin: 0; }
+.st-sd__mform-name { width: 88px; flex-shrink: 0; font-size: 12px; color: var(--sd-text-2) !important; font-weight: 500; }
+.st-sd__mform-row input, .st-sd__mform-row select { flex: 1; min-width: 0; }
+.st-sd__mform-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }

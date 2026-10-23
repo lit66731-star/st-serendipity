@@ -1174,6 +1174,127 @@ function autoSelectModel(taskId) {
     return r.taskBindings[taskId];
 }
 
+// ---------------- 模型管理页渲染（Phase 7） ----------------
+function modelBindingOf(taskId) {
+    const r = modelRoot();
+    return (r.taskBindings && r.taskBindings[taskId]) || null;
+}
+// 某任务当前生效配置：优先任务绑定（提供方+模型），否则回退旧全局 api/embedApi
+function modelEffectiveCfg(taskId) {
+    const b = modelBindingOf(taskId);
+    if (b && b.providerId && b.modelId) {
+        const p = findProvider(b.providerId);
+        if (p && p.baseUrl) return { via: 'binding', provider: p, model: b.modelId, mode: b.mode || 'manual', binding: b };
+    }
+    const c = getTaskCfg(taskId);
+    return { via: 'legacy', provider: null, model: c.model || '', mode: 'legacy', binding: null };
+}
+function renderModelOverview() {
+    const el = $('#st-serendipity .st-sd__mview[data-mview-pane="overview"]');
+    if (!el.length) return;
+    const rows = TASK_IDS.map(taskId => {
+        const eff = modelEffectiveCfg(taskId);
+        const src = eff.via === 'binding'
+            ? '提供方「' + escapeHtml(eff.provider.name || eff.provider.id) + '」' + (eff.mode === 'auto' ? '（自动）' : '')
+            : '回退旧配置（' + (taskId === 'embedding' ? 'embeddings API / 插件 API' : '插件 API') + '）';
+        return '<div class="st-sd__mrow">'
+            + '<div class="st-sd__mrow-main"><span class="st-sd__mrow-name">' + TASK_LABELS[taskId] + '</span>'
+            + '<span class="st-sd__mrow-model">' + (eff.model ? escapeHtml(eff.model) : '（未配置）') + '</span>'
+            + '<span class="st-sd__mrow-src">' + src + '</span></div>'
+            + '<button type="button" class="st-sd__mbtn st-sd__mauto" data-task="' + taskId + '">自动选择</button></div>';
+    }).join('');
+    el.html('<div class="st-sd__section-title">三个任务当前各自用哪个模型</div>'
+        + '<div class="st-sd__mrows">' + rows + '</div>'
+        + '<div class="st-sd__hint">「记忆总结」跑自动记忆、「向量」跑语义召回、「摘要」跑聊天历史压缩，三者地址/Key/模型互相独立。没单独绑定就回退旧配置。自动选择只按「能力」筛选：向量任务要 embedding 模型，对话任务排除 embedding 模型；模型列表里没有能力信息时不会臆测，只按列表顺序取首选。</div>');
+}
+function renderTaskEditor(taskId) {
+    const el = $('#st-serendipity .st-sd__mview[data-mview-pane="' + taskId + '"]');
+    if (!el.length) return;
+    const r = modelRoot();
+    const providers = Array.isArray(r.providers) ? r.providers : [];
+    const eff = modelEffectiveCfg(taskId);
+    const b = modelBindingOf(taskId);
+    const provOpts = providers.map(p => '<option value="' + escapeHtml(p.id) + '"' + (b && b.providerId === p.id ? ' selected' : '') + '>' + escapeHtml(p.name || p.id) + (p.enabled === false ? '（停用）' : '') + '</option>').join('');
+    const curProvider = b && findProvider(b.providerId) ? b.providerId : (providers[0] ? providers[0].id : '');
+    const cached = (curProvider && r.modelCache && r.modelCache[curProvider] && Array.isArray(r.modelCache[curProvider].list)) ? r.modelCache[curProvider].list : [];
+    const dlOpts = cached.map(m => '<option value="' + escapeHtml(m.id) + '"></option>').join('');
+    el.html('<div class="st-sd__section-title">' + TASK_LABELS[taskId] + '任务</div>'
+        + '<div class="st-sd__mrow"><div class="st-sd__mrow-main">'
+        + '<span class="st-sd__mrow-model">当前：' + (eff.model ? escapeHtml(eff.model) : '（未配置）') + '</span>'
+        + '<span class="st-sd__mrow-src">' + (eff.via === 'binding' ? '已绑定提供方' : '回退旧配置') + '</span></div></div>'
+        + '<div class="st-sd__mform">'
+        + '<label class="st-sd__mform-row"><span class="st-sd__mform-name">提供方</span><select class="st-sd__mprov" data-task="' + taskId + '">' + provOpts + '</select></label>'
+        + '<label class="st-sd__mform-row"><span class="st-sd__mform-name">模型</span><input type="text" class="st-sd__mmodel" data-task="' + taskId + '" list="st-sd__mmodel-dl-' + taskId + '" value="' + (b ? escapeHtml(b.modelId) : '') + '" placeholder="模型名（可手填，或先拉取列表）" autocomplete="off"><datalist id="st-sd__mmodel-dl-' + taskId + '">' + dlOpts + '</datalist></label>'
+        + '<div class="st-sd__mform-row st-sd__mform-btns">'
+        + '<button type="button" class="st-sd__mbtn st-sd__mfetch" data-task="' + taskId + '">拉取模型列表</button>'
+        + '<button type="button" class="st-sd__mbtn st-sd__mbind" data-task="' + taskId + '">绑定</button>'
+        + '<button type="button" class="st-sd__mbtn st-sd__mauto" data-task="' + taskId + '">自动选择</button>'
+        + '<button type="button" class="st-sd__mbtn st-sd__mclear" data-task="' + taskId + '"' + (b ? '' : ' disabled') + '>清除绑定</button></div></div>'
+        + '<div class="st-sd__hint">' + (taskId === 'embedding' ? '向量任务需要 embedding 模型（别填对话模型）。' : '对话类任务：别选 embedding 模型。') + '绑定后，这个任务只走这里选的提供方+模型，不再回退旧配置。</div>');
+}
+function renderModelProviders() {
+    const el = $('#st-serendipity .st-sd__mview[data-mview-pane="providers"]');
+    if (!el.length) return;
+    const r = modelRoot();
+    const providers = Array.isArray(r.providers) ? r.providers : [];
+    const rows = providers.map(p => {
+        const n = (r.modelCache && r.modelCache[p.id] && Array.isArray(r.modelCache[p.id].list)) ? r.modelCache[p.id].list.length : 0;
+        return '<div class="st-sd__mrow"><div class="st-sd__mrow-main">'
+            + '<span class="st-sd__mrow-name">' + escapeHtml(p.name || p.id) + '</span>'
+            + '<span class="st-sd__mrow-src">' + escapeHtml(p.baseUrl || '') + (p.enabled === false ? '（已停用）' : '') + (n ? ' · 已缓存 ' + n + ' 个模型' : '') + '</span></div>'
+            + '<div class="st-sd__mrow-actions"><button type="button" class="st-sd__mbtn st-sd__mprov-fetch" data-provider="' + escapeHtml(p.id) + '">拉取模型</button>'
+            + '<button type="button" class="st-sd__mbtn st-sd__mprov-del" data-provider="' + escapeHtml(p.id) + '">删除</button></div></div>';
+    }).join('');
+    el.html('<div class="st-sd__section-title">API 提供方</div>'
+        + '<div class="st-sd__mrows">' + (rows || '<div class="st-sd__hint">还没有提供方。</div>') + '</div>'
+        + '<div class="st-sd__section-title">添加提供方</div>'
+        + '<div class="st-sd__mform">'
+        + '<label class="st-sd__mform-row"><span class="st-sd__mform-name">名称</span><input type="text" class="st-sd__mprov-name" placeholder="如 中转站 / 硅基"></label>'
+        + '<label class="st-sd__mform-row"><span class="st-sd__mform-name">Base URL</span><input type="text" class="st-sd__mprov-url" placeholder="https://api.example.com/v1（OpenAI 兼容，地址到 /v1）" autocomplete="off"></label>'
+        + '<label class="st-sd__mform-row"><span class="st-sd__mform-name">API Key</span><input type="password" class="st-sd__mprov-key" placeholder="可选" autocomplete="new-password" spellcheck="false"></label>'
+        + '<div class="st-sd__mform-row st-sd__mform-btns"><button type="button" class="st-sd__mbtn st-sd__mprov-add">添加</button></div></div>'
+        + '<div class="st-sd__hint">Key 明文存在酒馆设置里（所有角色共用），不会写进备份文件；共用/公开的酒馆实例请不要填你自己的 Key。首次跑新版本会自动把旧的「插件 API / embeddings API」播种成 legacy_chat / legacy_embed 两个提供方。</div>');
+}
+function renderModelBudget() {
+    const el = $('#st-serendipity .st-sd__mview[data-mview-pane="budget"]');
+    if (!el.length) return;
+    const b = settings.tokenBudget || {};
+    const f = (k, def) => (b[k] != null && b[k] !== '' ? b[k] : def);
+    const cell = (name, k, def, sub, step, min, max) => '<label class="st-sd__tune-cell"><span class="st-sd__tune-name">' + name + '</span>'
+        + '<input type="number" class="st-sd__mbudget" data-k="' + k + '" min="' + min + '"' + (max ? ' max="' + max + '"' : '') + ' step="' + step + '" value="' + f(k, def) + '"><span class="st-sd__tune-sub">' + sub + '</span></label>';
+    el.html('<div class="st-sd__section-title">Token 预算（0 = 自动，按任务模型上下文估算）</div>'
+        + '<div class="st-sd__tune">'
+        + cell('输入预算', 'inputTokenBudget', 0, '发给模型的上限', '1000', '0')
+        + cell('输出预算', 'outputTokenBudget', 0, '留给模型输出的', '1000', '0')
+        + cell('预留上下文', 'reservedContextTokens', 0, '不动的安全余量', '1000', '0')
+        + cell('触发比例', 'summaryTriggerRatio', 0.8, '占输入预算达此比例才总结', '0.05', '0', '1')
+        + cell('单块上限', 'maxChunkTokens', 0, '分段时每块最多多少 token', '500', '0')
+        + cell('重叠', 'overlapTokens', 0, '新块开头带上上一块末尾', '100', '0')
+        + cell('摘要目标', 'summaryTargetTokens', 0, '目标输出长度', '100', '0')
+        + '</div>'
+        + '<div class="st-sd__hint">这些预算目前是「估算」口径（未接真实 tokenizer，中文 1 字 ≈ 1 token、英文 4 字符 ≈ 1 token，往高估）。0 表示交给系统按任务模型上下文自动补全。</div>');
+}
+function renderModelLogs() {
+    const el = $('#st-serendipity .st-sd__mview[data-mview-pane="logs"]');
+    if (!el.length) return;
+    const row = (tx) => {
+        if (!tx) return '';
+        const err = tx.error ? ' · ' + escapeHtml(tx.error) : '';
+        return '<div class="st-sd__mrow st-sd__mrow--log"><div class="st-sd__mrow-main">'
+            + '<span class="st-sd__mrow-name">' + escapeHtml(tx.batchId || '') + '</span>'
+            + '<span class="st-sd__mrow-src">' + escapeHtml(tx.status || '') + ' · ' + escapeHtml(fmtTime(tx.at || Date.now())) + (tx.count != null ? ' · ' + tx.count + ' 条' : '') + err + '</span></div></div>';
+    };
+    const sTxs = (Array.isArray(settings.summaryTransactions) ? settings.summaryTransactions.slice(-20).reverse() : []).map(row).join('');
+    const cTxs = (Array.isArray(settings.compressionTransactions) ? settings.compressionTransactions.slice(-20).reverse() : []).map(row).join('');
+    el.html('<div class="st-sd__section-title">连接测试</div>'
+        + '<div class="st-sd__mform-btns">' + TASK_IDS.map(t => '<button type="button" class="st-sd__mbtn st-sd__mtest" data-task="' + t + '">测试' + TASK_LABELS[t] + '</button>').join('') + '</div>'
+        + '<div class="st-sd__hint">点「测试」会用该任务当前生效的模型发一句「请回复 OK」验证连通性（向量任务走 /embeddings）。</div>'
+        + '<div class="st-sd__section-title">总结事务日志（最近 20 条）</div>'
+        + '<div class="st-sd__mrows">' + (sTxs || '<div class="st-sd__hint">暂无总结事务。</div>') + '</div>'
+        + '<div class="st-sd__section-title">压缩事务日志（最近 20 条）</div>'
+        + '<div class="st-sd__mrows">' + (cTxs || '<div class="st-sd__hint">暂无压缩事务。</div>') + '</div>');
+}
+
 // ---------------- 记忆功能 ----------------
 const TIMELINE_ANCHOR_MAX = 12; // 回传给总结模型的最近时间线条数
 const TIMELINE_JUMP_WARN = 3;   // 相邻时间线条目天数跳跃超过该值视为可疑
@@ -5120,6 +5241,7 @@ function buildPanel() {
         <button type="button" class="st-sd__tab" data-tab="people">人物</button>
         <button type="button" class="st-sd__tab" data-tab="fore">伏笔</button>
         <button type="button" class="st-sd__tab" data-tab="check">检查</button>
+        <button type="button" class="st-sd__tab" data-tab="model">模型</button>
       </div>
 
       <div class="st-sd__pane" data-pane="memory">
@@ -5407,6 +5529,25 @@ function buildPanel() {
         <div class="st-sd__hint">让模型对照「当前时间轴 + 已有时间线/世界状态/记忆」排查矛盾（如：记忆里第12天发生的事、当前才第10天；某人已离开却仍出场）。只在点按钮时调用一次模型；开启上方开关后，已发现的冲突会注入每轮正文提醒模型避免重犯。</div>
         <div class="st-sd__check-list"></div>
       </div>
+
+      <div class="st-sd__pane" data-pane="model" style="display:none">
+        <div class="st-sd__subnav">
+          <button type="button" class="st-sd__subtab is-active" data-mview="overview">总览</button>
+          <button type="button" class="st-sd__subtab" data-mview="memory_summary">记忆总结</button>
+          <button type="button" class="st-sd__subtab" data-mview="embedding">向量</button>
+          <button type="button" class="st-sd__subtab" data-mview="incremental_digest">摘要</button>
+          <button type="button" class="st-sd__subtab" data-mview="providers">API 提供方</button>
+          <button type="button" class="st-sd__subtab" data-mview="budget">Token 预算</button>
+          <button type="button" class="st-sd__subtab" data-mview="logs">测试与日志</button>
+        </div>
+        <div class="st-sd__mview" data-mview-pane="overview"></div>
+        <div class="st-sd__mview" data-mview-pane="memory_summary" style="display:none"></div>
+        <div class="st-sd__mview" data-mview-pane="embedding" style="display:none"></div>
+        <div class="st-sd__mview" data-mview-pane="incremental_digest" style="display:none"></div>
+        <div class="st-sd__mview" data-mview-pane="providers" style="display:none"></div>
+        <div class="st-sd__mview" data-mview-pane="budget" style="display:none"></div>
+        <div class="st-sd__mview" data-mview-pane="logs" style="display:none"></div>
+      </div>
     </div>`;
     $('body').append(html);
     bindPanelEvents();
@@ -5433,6 +5574,20 @@ function bindPanelEvents() {
     // 关闭
     panel.find('.st-sd__close').on('click', () => togglePanel(false));
 
+    // 模型管理页：子导航切换（视图重建式渲染，切换时按子视图刷一次）
+    const showModelView = (name) => {
+        panel.find('.st-sd__subtab').removeClass('is-active');
+        panel.find('.st-sd__subtab[data-mview="' + name + '"]').addClass('is-active');
+        panel.find('.st-sd__mview').hide();
+        panel.find('.st-sd__mview[data-mview-pane="' + name + '"]').show();
+        if (name === 'overview') renderModelOverview();
+        else if (name === 'providers') renderModelProviders();
+        else if (name === 'budget') renderModelBudget();
+        else if (name === 'logs') renderModelLogs();
+        else renderTaskEditor(name);
+    };
+    panel.find('.st-sd__subtab').on('click', function () { showModelView($(this).data('mview')); });
+
     // tab 切换
     panel.find('.st-sd__tab').on('click', function () {
         const name = $(this).data('tab');
@@ -5441,6 +5596,7 @@ function bindPanelEvents() {
         panel.find('.st-sd__pane').hide();
         panel.find(`.st-sd__pane[data-pane="${name}"]`).show();
         if (name === 'recall') renderRecall();
+        else if (name === 'model') showModelView('overview');
     });
 
     // 立即总结
@@ -5725,6 +5881,129 @@ function bindPanelEvents() {
     panel.find('.st-sd__update-reload').on('click', () => location.reload());
     panel.find('.st-sd__update-later').on('click', () => { updateCache().notifiedAt = Date.now(); saveSettings(); panel.find('.st-sd__update').hide(); });
     renderUpdateState();
+
+    // ---------------- 模型管理页操作（事件委托：视图重建后仍生效） ----------------
+    panel.on('click', '.st-sd__mauto', async function () {
+        const taskId = String($(this).data('task'));
+        const btn = $(this).prop('disabled', true);
+        try {
+            const r = modelRoot();
+            const hasCache = (Array.isArray(r.providers) ? r.providers : []).some(p => r.modelCache && r.modelCache[p.id] && Array.isArray(r.modelCache[p.id].list) && r.modelCache[p.id].list.length);
+            if (!hasCache) { toastr.warning('还没有任何提供方的模型列表缓存，请先到「API 提供方」拉取模型'); return; }
+            const picked = autoSelectModel(taskId);
+            if (picked) { toastr.success('已为「' + TASK_LABELS[taskId] + '」自动选择：' + picked.modelId); renderTaskEditor(taskId); renderModelOverview(); }
+            else toastr.warning('没有合适候选（' + (taskId === 'embedding' ? '需要 embedding 模型' : '对话任务没有非 embedding 模型') + '），请手动绑定');
+        } finally { btn.prop('disabled', false); }
+    });
+    panel.on('click', '.st-sd__mfetch', async function () {
+        const taskId = String($(this).data('task'));
+        const providerId = String(panel.find('.st-sd__mprov[data-task="' + taskId + '"]').val() || '');
+        if (!providerId) { toastr.warning('请先选择提供方'); return; }
+        const btn = $(this).prop('disabled', true);
+        try {
+            const list = await fetchModelList(providerId);
+            toastr.success('已拉取 ' + list.length + ' 个模型');
+            renderTaskEditor(taskId);
+        } catch (e) { toastr.error('拉取失败：' + safeErrorText(e, (findProvider(providerId) || {}).key)); }
+        finally { btn.prop('disabled', false); }
+    });
+    panel.on('change', '.st-sd__mprov', function () {
+        const taskId = String($(this).data('task'));
+        const providerId = String(this.value);
+        const r = modelRoot();
+        const cached = (providerId && r.modelCache && r.modelCache[providerId] && Array.isArray(r.modelCache[providerId].list)) ? r.modelCache[providerId].list : [];
+        panel.find('#st-sd__mmodel-dl-' + taskId).html(cached.map(m => '<option value="' + escapeHtml(m.id) + '"></option>').join(''));
+    });
+    panel.on('click', '.st-sd__mbind', function () {
+        const taskId = String($(this).data('task'));
+        const providerId = String(panel.find('.st-sd__mprov[data-task="' + taskId + '"]').val() || '');
+        const modelId = String(panel.find('.st-sd__mmodel[data-task="' + taskId + '"]').val() || '').trim();
+        if (!providerId) { toastr.warning('请先选择提供方'); return; }
+        if (!modelId) { toastr.warning('请填写模型名（或先拉取模型列表）'); return; }
+        const r = modelRoot();
+        r.taskBindings = r.taskBindings || {};
+        r.taskBindings[taskId] = { providerId, modelId, mode: 'manual', reason: '手动绑定', capabilities: detectCapabilities({ id: modelId }), updatedAt: Date.now() };
+        saveSettings();
+        renderTaskEditor(taskId);
+        renderModelOverview();
+        toastr.success('已绑定：' + modelId);
+    });
+    panel.on('click', '.st-sd__mclear', function () {
+        const taskId = String($(this).data('task'));
+        const r = modelRoot();
+        if (r.taskBindings) delete r.taskBindings[taskId];
+        saveSettings();
+        renderTaskEditor(taskId);
+        renderModelOverview();
+        toastr.info('已清除绑定，回退旧配置');
+    });
+    panel.on('click', '.st-sd__mprov-add', function () {
+        const name = String(panel.find('.st-sd__mprov-name').val() || '').trim();
+        const baseUrl = String(panel.find('.st-sd__mprov-url').val() || '').trim();
+        const key = String(panel.find('.st-sd__mprov-key').val() || '').trim();
+        if (!name || !baseUrl) { toastr.warning('请填写名称和 Base URL'); return; }
+        const r = modelRoot();
+        r.providers = r.providers || [];
+        r.providers.push({ id: 'prov_' + uid(), name, baseUrl, key, protocol: 'openai', modelListEndpoint: '', requestEndpoint: '', embeddingEndpoint: '', timeout: 0, retryPolicy: {}, enabled: true });
+        saveSettings();
+        panel.find('.st-sd__mprov-name, .st-sd__mprov-url, .st-sd__mprov-key').val('');
+        renderModelProviders();
+        renderModelOverview();
+        toastr.success('已添加提供方：' + name);
+    });
+    panel.on('click', '.st-sd__mprov-fetch', async function () {
+        const providerId = String($(this).data('provider'));
+        const btn = $(this).prop('disabled', true);
+        try {
+            const list = await fetchModelList(providerId);
+            toastr.success('已拉取 ' + list.length + ' 个模型');
+            renderModelProviders();
+        } catch (e) { toastr.error('拉取失败：' + safeErrorText(e, (findProvider(providerId) || {}).key)); }
+        finally { btn.prop('disabled', false); }
+    });
+    panel.on('click', '.st-sd__mprov-del', function () {
+        const providerId = String($(this).data('provider'));
+        const r = modelRoot();
+        let touched = false;
+        for (const taskId of TASK_IDS) {
+            const b = r.taskBindings && r.taskBindings[taskId];
+            if (b && b.providerId === providerId) { delete r.taskBindings[taskId]; touched = true; }
+        }
+        r.providers = (r.providers || []).filter(p => p.id !== providerId);
+        if (r.modelCache) delete r.modelCache[providerId];
+        saveSettings();
+        renderModelProviders();
+        renderModelOverview();
+        toastr.info('已删除提供方' + (touched ? '（相关绑定已解绑）' : ''));
+    });
+    panel.on('change', '.st-sd__mbudget', function () {
+        const k = String($(this).data('k'));
+        let v = parseFloat(this.value);
+        if (isNaN(v) || v < 0) v = 0;
+        if (k === 'summaryTriggerRatio') v = Math.min(1, Math.max(0, v));
+        settings.tokenBudget = settings.tokenBudget || {};
+        settings.tokenBudget[k] = Math.floor(v);
+        this.value = settings.tokenBudget[k];
+        saveSettings();
+    });
+    panel.on('click', '.st-sd__mtest', async function () {
+        const taskId = String($(this).data('task'));
+        const btn = $(this).prop('disabled', true);
+        try {
+            if (taskId === 'embedding') {
+                const issue = embedIssue();
+                if (issue) { toastr.warning(issue); return; }
+                const vecs = await embedTexts(['测试向量'], 20000);
+                toastr.success('向量连接成功，维度：' + (vecs && vecs[0] ? vecs[0].length : '?'));
+            } else {
+                const cfg = getTaskCfg(taskId);
+                if (!cfg.url || !cfg.model) { toastr.warning('该任务还没配好模型'); return; }
+                const out = await callCustomApi({ prompt: '请回复"OK"两个字母。', cfg });
+                toastr.success('连接成功：' + String(out).trim().slice(0, 30));
+            }
+        } catch (e) { toastr.error('连接失败：' + safeErrorText(e)); }
+        finally { btn.prop('disabled', false); }
+    });
 
     // 添加屏蔽词
     const addWord = () => {
