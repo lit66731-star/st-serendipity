@@ -141,6 +141,10 @@
 /* ============ 导航（不是按钮，用细线 + 字重 + 少量强调色表达选中态） ============ */
 .st-sd__tabs {
     display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
     padding: 0 22px;
     border-bottom: 1px solid var(--sd-border);
 }
@@ -1832,7 +1836,10 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 /* ============ 模型管理页（Phase 7） ============ */
 .st-sd__subnav {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
     gap: 4px;
     margin-bottom: 16px;
     padding-bottom: 10px;
@@ -1926,6 +1933,13 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     font-size: var(--sd-fs, 13px) !important;
     line-height: var(--sd-lh, 1.65) !important;
     font-family: var(--sd-sans) !important;
+}
+/* 文字兜底：面板内所有文本默认继承根文字色（深灰），抵御酒馆全局 `body * {color:#fff}` 一类美化把
+   没显式上色的文字刷成纯白。次级色/强调色/按钮白字都在上面用「ID 前缀 + !important」显式声明过，
+   优先级更高，不受这条兜底影响。 */
+#st-serendipity,
+#st-serendipity * {
+    color: var(--sd-text);
 }
 /* 标题/区块题头保留衬线字，并显式 !important 抵御美化覆盖 */
 #st-serendipity .st-sd__title,

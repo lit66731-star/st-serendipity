@@ -64,12 +64,11 @@ function chunkMessagesByTokenBudget(items, opts) {
 
 function shouldTriggerSummary(pendingTokens, budget) {
     const b = budget || {};
-    const input = Math.max(0, Math.floor(Number(b.inputTokenBudget) || 0));
-    const reserved = Math.max(0, Math.floor(Number(b.reservedContextTokens) || 0));
-    const usable = Math.max(0, input - reserved);
-    if (usable <= 0) return false;
-    const ratio = Math.min(1, Math.max(0, Number(b.summaryTriggerRatio) || 0.8));
-    return Math.max(0, Math.floor(Number(pendingTokens) || 0)) >= usable * ratio;
+    if (b.estimated !== false) return false;
+    const input = Math.max(0, Math.floor(Number(b.input) || 0));
+    if (input <= 0) return false;
+    const ratio = Math.min(1, Math.max(0, Number(b.ratio) || 0.8));
+    return Math.max(0, Math.floor(Number(pendingTokens) || 0)) >= input * ratio;
 }
 
 function resolveTokenBudget(budget, modelContextTokens) {
@@ -84,7 +83,8 @@ function resolveTokenBudget(budget, modelContextTokens) {
     const maxChunk = hasCtx ? num(b.maxChunkTokens, Math.max(512, Math.floor(input * 0.5))) : num(b.maxChunkTokens, 0);
     const target = hasCtx ? num(b.summaryTargetTokens, Math.max(200, Math.floor(ctx * 0.1))) : num(b.summaryTargetTokens, 0);
     const overlap = Math.max(0, Math.floor(Number(b.overlapTokens) || 0));
-    return { input, output, reserved, maxChunk, overlap, target, estimated: !hasCtx, modelContext: ctx };
+    const ratio = Math.min(1, Math.max(0, Number(b.summaryTriggerRatio) || 0.8));
+    return { input, output, reserved, maxChunk, overlap, target, ratio, estimated: !hasCtx, modelContext: ctx };
 }
 
 function contentSignature(text) {
@@ -208,15 +208,19 @@ t('chunkMessages 重叠标记 overlap，不整块重复', () => {
     assert.ok(ownItems.length > 0, '第二块仍有自己的新内容');
 });
 
-// shouldTriggerSummary：占输入预算比例达阈值才触发；预留会压缩可用预算
-t('shouldTriggerSummary 按比例阈值 + 预留预算', () => {
-    const b = { inputTokenBudget: 1000, reservedContextTokens: 200, summaryTriggerRatio: 0.8 };
-    // 可用 = 1000-200 = 800，阈值 = 640
-    assert.equal(shouldTriggerSummary(639, b), false);
-    assert.equal(shouldTriggerSummary(640, b), true);
-    assert.equal(shouldTriggerSummary(5000, b), true);
-    assert.equal(shouldTriggerSummary(100, { inputTokenBudget: 0, reservedContextTokens: 0, summaryTriggerRatio: 0.8 }), false, '无输入预算不触发');
-    assert.equal(shouldTriggerSummary(100, { inputTokenBudget: 100, reservedContextTokens: 100, summaryTriggerRatio: 0.8 }), false, '预留吃掉全部预算不触发');
+// shouldTriggerSummary：按解析后的输入预算比例触发；未知上下文一律不触发（退回每 N 轮）
+t('shouldTriggerSummary 按输入预算比例触发、未知上下文不触发', () => {
+    const resolved = resolveTokenBudget({ summaryTriggerRatio: 0.8 }, 1000);
+    assert.equal(resolved.estimated, false);
+    assert.equal(resolved.ratio, 0.8);
+    const threshold = resolved.input * 0.8;
+    assert.equal(shouldTriggerSummary(Math.floor(threshold) - 1, resolved), false);
+    assert.equal(shouldTriggerSummary(Math.ceil(threshold), resolved), true);
+    assert.equal(shouldTriggerSummary(999999, resolved), true);
+    // 未知上下文（estimated=true）一律不触发，退回每 N 轮
+    assert.equal(shouldTriggerSummary(999999, { estimated: true, input: 0, ratio: 0.8 }), false);
+    // 输入预算为 0 不触发
+    assert.equal(shouldTriggerSummary(100, { estimated: false, input: 0, ratio: 0.8 }), false);
 });
 
 // resolveTokenBudget：已知上下文时自动补默认（输入=上下文−预留−输出），未知时保持 0 且 estimated

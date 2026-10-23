@@ -861,10 +861,6 @@ function getApiCfg() {
     const r = extension_settings[extensionName] || {};
     return r.api || {};
 }
-function apiConfigured() {
-    const c = getApiCfg();
-    return !!(c.url && c.model);
-}
 function apiEndpoint(url) {
     url = String(url || '').trim().replace(/\/+$/, '');
     if (/\/chat\/completions$/i.test(url)) return url;
@@ -922,10 +918,10 @@ async function callCustomApi({ prompt, systemPrompt, cfg }) {
     return out;
 }
 async function callLLM({ prompt, systemPrompt }) {
-    if (!apiConfigured()) {
-        throw new Error('未配置插件 API（不会回退到聊天 API）');
+    if (!taskConfigured('memory_summary')) {
+        throw new Error('未配置「记忆总结」模型（不会回退到聊天 API）');
     }
-    return callCustomApi({ prompt, systemPrompt });
+    return callCustomApi({ prompt, systemPrompt, cfg: getTaskCfg('memory_summary') });
 }
 
 // ---------------- Token 预算模块（Phase 3，纯逻辑，可离线测试） ----------------
@@ -973,17 +969,18 @@ function resolveTokenBudget(budget, modelContextTokens) {
     const maxChunk = hasCtx ? num(b.maxChunkTokens, Math.max(512, Math.floor(input * 0.5))) : num(b.maxChunkTokens, 0);
     const target = hasCtx ? num(b.summaryTargetTokens, Math.max(200, Math.floor(ctx * 0.1))) : num(b.summaryTargetTokens, 0);
     const overlap = Math.max(0, Math.floor(Number(b.overlapTokens) || 0));
-    return { input, output, reserved, maxChunk, overlap, target, estimated: !hasCtx, modelContext: ctx };
+    const ratio = Math.min(1, Math.max(0, Number(b.summaryTriggerRatio) || 0.8));
+    return { input, output, reserved, maxChunk, overlap, target, ratio, estimated: !hasCtx, modelContext: ctx };
 }
-// 未处理历史 token 数是否达到触发摘要的阈值（占「输入预算 − 预留」的比例）
+// 未处理历史 token 数是否达到触发摘要的阈值：pendingTokens ≥ 可用输入预算 input × 触发比例。
+// budget 是 resolveTokenBudget 的结果（已把输入预算按上下文补全）；未知上下文（estimated）一律 false，退回每 N 轮。
 function shouldTriggerSummary(pendingTokens, budget) {
     const b = budget || {};
-    const input = Math.max(0, Math.floor(Number(b.inputTokenBudget) || 0));
-    const reserved = Math.max(0, Math.floor(Number(b.reservedContextTokens) || 0));
-    const usable = Math.max(0, input - reserved);
-    if (usable <= 0) return false;
-    const ratio = Math.min(1, Math.max(0, Number(b.summaryTriggerRatio) || 0.8));
-    return Math.max(0, Math.floor(Number(pendingTokens) || 0)) >= usable * ratio;
+    if (b.estimated !== false) return false; // 未知上下文：token 触发不可用，退回每 N 轮
+    const input = Math.max(0, Math.floor(Number(b.input) || 0));
+    if (input <= 0) return false;
+    const ratio = Math.min(1, Math.max(0, Number(b.ratio) || 0.8));
+    return Math.max(0, Math.floor(Number(pendingTokens) || 0)) >= input * ratio;
 }
 // 按 token 预算把消息切成连续、不切断单条消息的块。overlapTokens > 0 时新块开头带上上一块末尾若干条
 // 作为上下文重叠（这些条目标 overlap:true，供增量合并识别、不重复记账）。单条超预算也不切断，独占一块。
@@ -2097,7 +2094,7 @@ function refreshLocalChecks() {
 // 手动「立即检查」：调一次模型，对照时间轴/时间线/世界状态/记忆排查矛盾（不往每轮正文里塞）
 async function runConsistencyCheck() {
     if (isSummarizing) return; // 复用并发锁，防止连点/与总结抢跑
-    if (!apiConfigured()) { toastr.warning('请先在「记忆」页配置插件 API（一致性检查不回退聊天 API）'); return; }
+    if (!taskConfigured('memory_summary')) { toastr.warning('请先在「模型」页给「记忆总结」任务配好模型（一致性检查不回退聊天 API）'); return; }
     activateCharacter();
     const keyBefore = currentDataKey();
     const stBefore = settings;
@@ -2369,6 +2366,13 @@ function hasUnsummarizedChat() {
     return false;
 }
 
+// 水位线之后未处理历史的累计 token（token 触发判定用；含每条消息固定开销）。无未处理内容时为 0。
+function pendingSummaryTokens() {
+    if (!Array.isArray(chat) || chat.length < 2) return 0;
+    const start = summaryBoundaryIndex();
+    return sumMessageTokens(chat.slice(Math.max(0, start)).map(m => ({ m })).filter(x => x.m && typeof x.m.mes === 'string' && x.m.mes.trim() && !x.m.is_system));
+}
+
 const SUMMARY_TRANSCRIPT_MAX = 24000; // 单次总结发给模型的对话字数默认上限（可在「记忆」页按模型上下文调整）
 const SUMMARY_FAIL_LIMIT = 3;         // 同一聊天连续失败这么多次后提醒一次（不再跳过：余额不足/接口故障时不丢记忆，恢复后自动补上）
 const summaryFailStreak = {};
@@ -2378,7 +2382,7 @@ function noteSummaryFailure(st, key, lastIdx) {
     summaryFailStreak[key] = 0;
     // 不推进 lastSummaryIndex（不跳过这段对话）：余额不足/接口临时故障时，内容保留待总结，
     // 水位线不动，API 恢复后下一次总结会自动把这段补上，避免「连续消失几条记忆」。
-    toastr.warning('记忆总结已连续失败 ' + SUMMARY_FAIL_LIMIT + ' 次（余额不足/接口故障等），内容不会写入也不会被跳过，API 恢复后会自动补上；请检查插件 API（见「记忆」页）', undefined, { timeOut: 10000 });
+    toastr.warning('记忆总结已连续失败 ' + SUMMARY_FAIL_LIMIT + ' 次（余额不足/接口故障等），内容不会写入也不会被跳过，API 恢复后会自动补上；请检查 API（模型页 → API 提供方）', undefined, { timeOut: 10000 });
 }
 
 async function summarizeLastRound() {
@@ -2673,7 +2677,7 @@ async function compressChatHistory() {
     if (isCompressing) { toastr.info('正在生成摘要，请稍候…'); return; }
     if (selected_group) { toastr.warning('群聊暂不支持生成摘要'); return; }
     if (!taskConfigured('incremental_digest')) {
-        toastr.warning('请先在「摘要」页配置插件 API（生成摘要不回退到聊天 API）');
+        toastr.warning('请先在「模型」页给「摘要」任务配好模型（生成摘要不回退到聊天 API）');
         return;
     }
     if (!Array.isArray(chat) || chat.length < 3) { toastr.warning('聊天消息太少，无需生成摘要'); return; }
@@ -3590,7 +3594,6 @@ function renderRecall() {
     const worldSelect = panel.find('.st-sd__recall-world');
     if (!statusEl.length) return;
     panel.find('.st-sd__vec-toggle').prop('checked', !!settings.archiveVectorized);
-    refreshEmbedApiUi();
 
     const issue = embedIssue();
     if (issue) {
@@ -3955,20 +3958,8 @@ function embedModelSignature() {
 // 自建语义召回当前不可用的原因（'' = 可用）。只检查配置；端点的真实可用性在调用失败时报错（带 HTTP 原因）
 function embedIssue() {
     const c = getEmbedCfg();
-    if (!c.url || !c.model) return '未配置 embeddings API（「向量召回」页单独配一个，或先配好插件 API；地址 + 模型都要填，绝不回退到聊天 API）';
+    if (!c.url || !c.model) return '未配置 embeddings（「模型」页给「向量」任务配好提供方+模型；地址 + 模型都要填，绝不回退到聊天 API）';
     return '';
-}
-
-// 向量召回页 embeddings API 配置区回显（地址/Key/模型 + 状态）
-function refreshEmbedApiUi() {
-    const panel = $('#st-serendipity');
-    if (!panel.length) return;
-    const root = extension_settings[extensionName] || {};
-    const ea = root.embedApi || {};
-    panel.find('.st-sd__embed-api-url').val(ea.url || '');
-    panel.find('.st-sd__embed-api-key').val(ea.key || '');
-    panel.find('.st-sd__embed-api-model').val(ea.model || root.embedModel || '');
-    panel.find('.st-sd__embed-api-state').text(ea.url ? ('已启用：' + (ea.model || '(未填模型)')) : '未单独设置（回退用插件 API）');
 }
 
 // L2 归一化（存前/查前都归一化，余弦相似度 = 点积）
@@ -4069,7 +4060,7 @@ async function embedTexts(texts, timeoutMs) {
     }
     if (!res.ok) {
         const t = await res.text().catch(() => '');
-        throw new Error('embeddings HTTP ' + res.status + (t ? '：' + safeErrorText(t, c.key).slice(0, 200) : '（常见原因：这个地址/中转不支持 embeddings 端点、或模型不是 embedding 模型——请到「向量召回」页单独配 embeddings API）'));
+        throw new Error('embeddings HTTP ' + res.status + (t ? '：' + safeErrorText(t, c.key).slice(0, 200) : '（常见原因：这个地址/中转不支持 embeddings 端点、或模型不是 embedding 模型——请到「模型」页给「向量」任务配好提供方+模型）'));
     }
     const d = await res.json();
     const data = d && Array.isArray(d.data) ? d.data : null;
@@ -5276,7 +5267,8 @@ function buildPanel() {
         <button type="button" class="st-sd__update-later">稍后</button>
       </div>
       <div class="st-sd__tabs">
-        <button type="button" class="st-sd__tab is-active" data-tab="memory">记忆</button>
+        <button type="button" class="st-sd__tab is-active" data-tab="model">模型</button>
+        <button type="button" class="st-sd__tab" data-tab="memory">记忆</button>
         <button type="button" class="st-sd__tab" data-tab="summary">摘要</button>
         <button type="button" class="st-sd__tab" data-tab="recall">向量召回</button>
         <button type="button" class="st-sd__tab" data-tab="censor">屏蔽词</button>
@@ -5286,30 +5278,15 @@ function buildPanel() {
         <button type="button" class="st-sd__tab" data-tab="people">人物</button>
         <button type="button" class="st-sd__tab" data-tab="fore">伏笔</button>
         <button type="button" class="st-sd__tab" data-tab="check">检查</button>
-        <button type="button" class="st-sd__tab" data-tab="model">模型</button>
       </div>
 
-      <div class="st-sd__pane" data-pane="memory">
+      <div class="st-sd__pane" data-pane="memory" style="display:none">
         <div class="st-sd__story-time"></div>
         <div class="st-sd__toolbar">
           <span class="st-sd__label">自动记忆</span>
           <label class="st-sd__switch"><input type="checkbox" class="st-sd__mem-toggle"><span class="st-sd__switch-slider"></span></label>
           <button type="button" class="st-sd__summarize">立即总结</button>
           <button type="button" class="st-sd__export">导出</button>
-        </div>
-        <div class="st-sd__api-box">
-          <button type="button" class="st-sd__api-toggle">插件 API 设置</button><span class="st-sd__api-state"></span>
-          <div class="st-sd__api-form">
-            <input type="text" class="st-sd__api-input st-sd__api-url" placeholder="API 地址，如 https://api.openai.com/v1" autocomplete="off">
-            <input type="password" class="st-sd__api-input st-sd__api-key" placeholder="API Key" autocomplete="new-password" spellcheck="false">
-            <input type="text" class="st-sd__api-input st-sd__api-model" placeholder="模型名，如 gpt-4o-mini" autocomplete="off">
-            <div class="st-sd__api-btns">
-              <button type="button" class="st-sd__api-save">保存</button>
-              <button type="button" class="st-sd__api-test">测试</button>
-              <button type="button" class="st-sd__api-clear">清除</button>
-            </div>
-            <div class="st-sd__hint">填 OpenAI 兼容接口（地址到 /v1 即可）。设置后，自动总结、剧情一致性检查、长期记忆压缩、聊天历史压缩全都只走这个 API，不会再回退到酒馆的聊天 API。Key 以明文保存在酒馆的设置文件里（所有角色共用），不会写进备份文件；共用/公开的酒馆实例请不要填你自己的 Key。</div>
-          </div>
         </div>
         <div class="st-sd__every-row">
           <span class="st-sd__label">每</span>
@@ -5349,20 +5326,6 @@ function buildPanel() {
       </div>
 
       <div class="st-sd__pane" data-pane="summary" style="display:none">
-        <div class="st-sd__api-box">
-          <button type="button" class="st-sd__compress-api-toggle">插件 API 设置</button><span class="st-sd__compress-api-state"></span>
-          <div class="st-sd__compress-api-form">
-            <input type="text" class="st-sd__api-input st-sd__compress-api-url" placeholder="API 地址，如 https://api.openai.com/v1" autocomplete="off">
-            <input type="password" class="st-sd__api-input st-sd__compress-api-key" placeholder="API Key（可选）" autocomplete="new-password" spellcheck="false">
-            <input type="text" class="st-sd__api-input st-sd__compress-api-model" placeholder="模型名，如 gemini-flash / gpt-4o-mini" autocomplete="off">
-            <div class="st-sd__api-btns">
-              <button type="button" class="st-sd__compress-api-save">保存</button>
-              <button type="button" class="st-sd__compress-api-test">测试</button>
-              <button type="button" class="st-sd__compress-api-clear">清除</button>
-            </div>
-            <div class="st-sd__hint">与「记忆」页的插件 API 是同一份配置（两处改的是同一个）。OpenAI 兼容接口，地址到 /v1 即可；建议填一个便宜模型。未配置时点「生成剧情摘要」只会提示、不会回退到聊天 API。Key 明文存在酒馆设置里，共用酒馆实例请勿填自己的 Key。</div>
-          </div>
-        </div>
         <div class="st-sd__compress-row">
           <span class="st-sd__label">摘要聊天</span>
           <input type="number" class="st-sd__compress-keep" min="2" max="200" step="1" title="生成摘要时保留最近多少条消息不纳入">
@@ -5381,21 +5344,6 @@ function buildPanel() {
 
       <div class="st-sd__pane" data-pane="recall" style="display:none">
         <div class="st-sd__recall-status"></div>
-
-        <div class="st-sd__api-box">
-          <button type="button" class="st-sd__embed-api-toggle">embeddings API 设置（可独立）</button><span class="st-sd__embed-api-state"></span>
-          <div class="st-sd__embed-api-form">
-            <input type="text" class="st-sd__api-input st-sd__embed-api-url" placeholder="embeddings 地址，如 https://api.siliconflow.cn/v1（留空则复用插件 API）" autocomplete="off">
-            <input type="password" class="st-sd__api-input st-sd__embed-api-key" placeholder="embeddings API Key（留空则复用插件 API 的 Key）" autocomplete="new-password" spellcheck="false">
-            <input type="text" class="st-sd__api-input st-sd__embed-api-model" placeholder="embedding 模型名，如 BAAI/bge-m3 / embedding-3 / text-embedding-3-small（别填对话模型）" autocomplete="off">
-            <div class="st-sd__api-btns">
-              <button type="button" class="st-sd__embed-api-save">保存</button>
-              <button type="button" class="st-sd__embed-api-test">测试</button>
-              <button type="button" class="st-sd__embed-api-clear">清除</button>
-            </div>
-            <div class="st-sd__hint">向量召回默认复用插件 API 的地址和 Key，只单独填 embedding 模型；如果你的记忆/对话走中转站、向量走硅基这类**不同服务商**，就在这里把地址、Key、模型**整套单独配一份**，向量召回只走这里，绝不回退到聊天 API。改动地址或模型会自动全量重建索引。</div>
-          </div>
-        </div>
 
         <div class="st-sd__section-title">注入正文（自动语义召回）</div>
         <div class="st-sd__recall-inject">
@@ -5575,7 +5523,7 @@ function buildPanel() {
         <div class="st-sd__check-list"></div>
       </div>
 
-      <div class="st-sd__pane" data-pane="model" style="display:none">
+      <div class="st-sd__pane" data-pane="model">
         <div class="st-sd__subnav">
           <button type="button" class="st-sd__subtab is-active" data-mview="overview">总览</button>
           <button type="button" class="st-sd__subtab" data-mview="memory_summary">记忆总结</button>
@@ -5598,6 +5546,7 @@ function buildPanel() {
     bindPanelEvents();
     bindThemeEvents();
     applyTheme();
+    renderModelOverview(); // 模型页现在是默认首页：进来先看到三个任务各自用哪个模型，未配置就引导去接 API
 }
 
 function bindPanelEvents() {
@@ -5646,59 +5595,11 @@ function bindPanelEvents() {
 
     // 立即总结
     panel.find('.st-sd__summarize').on('click', () => {
-        if (!taskConfigured('memory_summary')) { toastr.warning('请先给「记忆总结」任务配好模型（模型管理页或「记忆」页插件 API，不回退聊天 API）'); return; }
+        if (!taskConfigured('memory_summary')) { toastr.warning('请先给「记忆总结」任务配好模型（模型页 → API 提供方，不回退聊天 API）'); return; }
         summarizeLastRound();
     });
     // 导出记忆
     panel.find('.st-sd__export').on('click', exportMemories);
-    // 插件 API 设置
-    const refreshApiState = () => {
-        const c = getApiCfg();
-        panel.find('.st-sd__api-state').text(apiConfigured() ? '已启用：' + c.model : '未设置（不会用聊天 API）');
-    };
-    {
-        const c = getApiCfg();
-        panel.find('.st-sd__api-url').val(c.url || '');
-        panel.find('.st-sd__api-key').val(c.key || '');
-        panel.find('.st-sd__api-model').val(c.model || '');
-        refreshApiState();
-    }
-    panel.find('.st-sd__api-toggle').on('click', () => panel.find('.st-sd__api-form').toggleClass('open'));
-    panel.find('.st-sd__api-save').on('click', () => {
-        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        root.api = {
-            url: String(panel.find('.st-sd__api-url').val() || '').trim(),
-            key: String(panel.find('.st-sd__api-key').val() || '').trim(),
-            model: String(panel.find('.st-sd__api-model').val() || '').trim(),
-        };
-        saveSettings();
-        refreshApiState();
-        toastr.success(apiConfigured() ? '插件 API 已保存' : '地址或模型为空，所有需要 API 的功能将跳过/提示');
-    });
-    panel.find('.st-sd__api-clear').on('click', () => {
-        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        delete root.api;
-        panel.find('.st-sd__api-url, .st-sd__api-key, .st-sd__api-model').val('');
-        saveSettings();
-        refreshApiState();
-        toastr.info('已清除插件 API');
-    });
-    panel.find('.st-sd__api-test').on('click', async () => {
-        const url = String(panel.find('.st-sd__api-url').val() || '').trim();
-        const model = String(panel.find('.st-sd__api-model').val() || '').trim();
-        if (!url || !model) { toastr.warning('请先填写 API 地址和模型名'); return; }
-        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        const backup = root.api;
-        root.api = { url, key: String(panel.find('.st-sd__api-key').val() || '').trim(), model };
-        try {
-            const out = await callCustomApi({ prompt: '请回复"OK"两个字母。' });
-            toastr.success('连接成功：' + String(out).trim().slice(0, 30));
-        } catch (e) {
-            toastr.error('连接失败：' + safeErrorText(e, root.api && root.api.key) + '（若是跨域/CORS 报错，换一个允许浏览器直连的中转地址）');
-        } finally {
-            if (backup) root.api = backup; else delete root.api;
-        }
-    });
     // 每 N 轮总结一次
     panel.find('.st-sd__every-input').on('change', function () {
         let v = parseInt(this.value, 10);
@@ -5719,59 +5620,12 @@ function bindPanelEvents() {
         saveSettings();
         toastr.success('单次总结字数上限已设为 ' + v + ' 字');
     });
-    // 摘要（压缩）API：与「插件 API」共用同一份配置（root.api），两个面板改的是同一个，压缩绝不回退到聊天 API
-    const refreshCompressApiState = () => {
-        const c = getApiCfg();
-        panel.find('.st-sd__compress-api-state').text(apiConfigured() ? '已启用：' + c.model : '未设置（不会用聊天 API）');
-    };
+    // 摘要页：压缩保留条数 + 自动下载备份开关的初始回显
     {
-        const c = getApiCfg();
-        panel.find('.st-sd__compress-api-url').val(c.url || '');
-        panel.find('.st-sd__compress-api-key').val(c.key || '');
-        panel.find('.st-sd__compress-api-model').val(c.model || '');
         panel.find('.st-sd__compress-keep').val(settings.compressKeep || COMPRESS_KEEP_DEFAULT);
         panel.find('.st-sd__backup-download-toggle').prop('checked', !!settings.compressBackupDownload);
-        refreshCompressApiState();
         renderCompressResult();
     }
-    panel.find('.st-sd__compress-api-toggle').on('click', () => panel.find('.st-sd__compress-api-form').toggleClass('open'));
-    panel.find('.st-sd__compress-api-save').on('click', () => {
-        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        root.api = {
-            url: String(panel.find('.st-sd__compress-api-url').val() || '').trim(),
-            key: String(panel.find('.st-sd__compress-api-key').val() || '').trim(),
-            model: String(panel.find('.st-sd__compress-api-model').val() || '').trim(),
-        };
-        saveSettings();
-        refreshApiState();
-        refreshCompressApiState();
-        toastr.success(apiConfigured() ? '插件 API 已保存' : '地址或模型为空，压缩将只提示、不调用任何 API');
-    });
-    panel.find('.st-sd__compress-api-clear').on('click', () => {
-        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        delete root.api;
-        panel.find('.st-sd__compress-api-url, .st-sd__compress-api-key, .st-sd__compress-api-model').val('');
-        saveSettings();
-        refreshApiState();
-        refreshCompressApiState();
-        toastr.info('已清除插件 API');
-    });
-    panel.find('.st-sd__compress-api-test').on('click', async () => {
-        const url = String(panel.find('.st-sd__compress-api-url').val() || '').trim();
-        const model = String(panel.find('.st-sd__compress-api-model').val() || '').trim();
-        if (!url || !model) { toastr.warning('请先填写 API 地址和模型名'); return; }
-        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        const backup = root.api;
-        root.api = { url, key: String(panel.find('.st-sd__compress-api-key').val() || '').trim(), model };
-        try {
-            const out = await callCustomApi({ prompt: '请回复"OK"两个字母。', cfg: root.api });
-            toastr.success('连接成功：' + String(out).trim().slice(0, 30));
-        } catch (e) {
-            toastr.error('连接失败：' + safeErrorText(e, root.api && root.api.key) + '（若是跨域/CORS 报错，换一个允许浏览器直连的中转地址）');
-        } finally {
-            if (backup) root.api = backup; else delete root.api;
-        }
-    });
     // 压缩聊天历史：按钮触发 + 保留条数
     panel.find('.st-sd__compress').on('click', compressChatHistory);
     panel.find('.st-sd__compress-keep').on('change', function () {
@@ -5839,49 +5693,6 @@ function bindPanelEvents() {
         updatePromptInjection();
         if (this.checked) scheduleSemanticSync(); // 开启就立即（防抖）建索引，别等下一轮总结才建
         renderRecallIndexState();
-    });
-    // embeddings API：可独立配置（地址/Key/模型全独立，比如记忆走中转、向量走硅基）；留空地址则回退用插件 API
-    panel.find('.st-sd__embed-api-toggle').on('click', () => panel.find('.st-sd__embed-api-form').toggleClass('open'));
-    panel.find('.st-sd__embed-api-save').on('click', () => {
-        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        const url = String(panel.find('.st-sd__embed-api-url').val() || '').trim();
-        const key = String(panel.find('.st-sd__embed-api-key').val() || '').trim();
-        const model = String(panel.find('.st-sd__embed-api-model').val() || '').trim();
-        if (url || key || model) root.embedApi = { url, key, model };
-        else delete root.embedApi;
-        saveSettings();
-        refreshEmbedApiUi();
-        if (settings.semanticRecall && settings.semanticRecall.enabled) scheduleSemanticSync(); // 换地址/模型 → 自动重建索引
-        renderRecall();
-        toastr.success(url ? ('embeddings API 已保存' + (model ? '：' + model : '')) : '未填地址，向量召回回退用插件 API');
-    });
-    panel.find('.st-sd__embed-api-clear').on('click', () => {
-        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        delete root.embedApi;
-        panel.find('.st-sd__embed-api-url, .st-sd__embed-api-key, .st-sd__embed-api-model').val('');
-        saveSettings();
-        refreshEmbedApiUi();
-        if (settings.semanticRecall && settings.semanticRecall.enabled) scheduleSemanticSync();
-        renderRecall();
-        toastr.info('已清除独立的 embeddings API，回退用插件 API');
-    });
-    panel.find('.st-sd__embed-api-test').on('click', async () => {
-        const url = String(panel.find('.st-sd__embed-api-url').val() || '').trim();
-        const key = String(panel.find('.st-sd__embed-api-key').val() || '').trim();
-        const model = String(panel.find('.st-sd__embed-api-model').val() || '').trim();
-        const c = url ? { url, key, model } : getEmbedCfg(); // 没填地址就测当前生效的那套（可能回退到插件 API）
-        if (!c.url || !c.model) { toastr.warning('请先填 embeddings API 地址和模型名（或先配好插件 API）'); return; }
-        const root = (extension_settings[extensionName] = extension_settings[extensionName] || {});
-        const backup = root.embedApi;
-        if (url) root.embedApi = { url, key, model };
-        try {
-            const vecs = await embedTexts(['测试向量'], 20000);
-            toastr.success('embeddings 连接成功，向量维度：' + (vecs && vecs[0] ? vecs[0].length : '?'));
-        } catch (e) {
-            toastr.error('连接失败：' + safeErrorText(e, c.key) + '（这个地址/模型可能不支持 embeddings 端点，或跨域被拦）');
-        } finally {
-            if (backup) root.embedApi = backup; else delete root.embedApi;
-        }
     });
     // 注入调参（召回条数 / 候选阈值 / 候选条数）
     panel.on('change', '.st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk, .st-sd__recall-inject-budget', function () {
@@ -5995,7 +5806,7 @@ function bindPanelEvents() {
         panel.find('.st-sd__mprov-name, .st-sd__mprov-url, .st-sd__mprov-key, .st-sd__mprov-ctx').val('');
         renderModelProviders();
         renderModelOverview();
-        toastr.success('已添加提供方：' + name);
+        toastr.success('已添加提供方：' + name + '，点它右边的「拉取模型」获取模型列表');
     });
     panel.on('click', '.st-sd__mprov-fetch', async function () {
         const providerId = String($(this).data('provider'));
@@ -7119,7 +6930,10 @@ jQuery(async () => {
             if (!hasUnsummarizedChat()) return; // 没有新对话（重新进入聊天等触发的生成结束事件）不计轮、不总结
             settings.roundsSinceSummary = (settings.roundsSinceSummary || 0) + 1;
             const every = settings.summarizeEvery || 1;
-            if (settings.roundsSinceSummary >= every) {
+            const roundReady = settings.roundsSinceSummary >= every;
+            // 并列触发：每 N 轮 或 未处理历史 token 达到（输入预算 × 触发比例）都总结。未知上下文时 token 触发自动失效，退回纯轮数。
+            const tokenReady = shouldTriggerSummary(pendingSummaryTokens(), resolveTokenBudget(settings.tokenBudget, getTaskModelContext('memory_summary')));
+            if (roundReady || tokenReady) {
                 settings.roundsSinceSummary = 0;
                 summarizeLastRound();
             }
