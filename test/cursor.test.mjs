@@ -163,4 +163,15 @@ t('hasUnsummarized：有新回复/从未总结 → true', () => {
     assert.equal(hasUnsummarizedCore(chat, '', -1), true, '从未总结视为有');
 });
 
+// messageSig 缺字段：gen_started/swipe_id 缺失时仍能生成稳定且不冲突的键（禁止捷径里要求的缺字段测试）
+t('messageSig 缺字段：缺失字段不影响稳定性', () => {
+    const bare = messageSig({ mes: 'x' });
+    assert.equal(bare, '||0');
+    assert.equal(messageSig({ mes: 'x' }), bare, '同一条缺字段消息重载后键一致');
+    assert.notEqual(messageSig({ gen_started: 1, send_date: 1, swipe_id: 0 }), bare, '完整消息与缺字段消息不冲突');
+    const a = messageSig({ gen_started: 100, send_date: 100, swipe_id: 0 });
+    const b = messageSig({ gen_started: 100, send_date: 100, swipe_id: 1 });
+    assert.notEqual(a, b, '重roll（swipe_id 变化）键必须变化');
+});
+
 console.log('全部通过：' + passed + ' 项');

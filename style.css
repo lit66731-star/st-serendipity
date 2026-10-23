@@ -480,6 +480,7 @@
 .st-sd__compress-result-item { border: 1px solid var(--sd-border); border-radius: var(--sd-r); overflow: hidden; }
 .st-sd__compress-result-item + .st-sd__compress-result-item { margin-top: 12px; }
 .st-sd__compress-result-head { padding: 8px 10px; font-size: 12px; color: var(--sd-text-2) !important; background: var(--sd-surface-2); border-bottom: 1px solid var(--sd-border); }
+.st-sd__compress-review { margin-left: 8px; padding: 1px 6px; border-radius: 8px; font-size: 11px; color: #9a5b00 !important; background: rgba(230, 150, 40, 0.18); border: 1px solid rgba(200, 130, 30, 0.4); white-space: nowrap; }
 .st-sd__compress-result-body { padding: 10px; font-size: 13px; line-height: 1.6; color: var(--sd-text) !important; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
 .st-sd__compress-result-raw { border-top: 1px solid var(--sd-border); }
 .st-sd__compress-result-raw summary { padding: 8px 10px; font-size: 12px; color: var(--sd-text-2) !important; cursor: pointer; user-select: none; }

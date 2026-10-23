@@ -336,6 +336,7 @@ let isInjecting = false;     // 世界书注入进行中标记（防连点/并�
 // 每张角色卡独立的干净数据
 function freshCharSettings() {
     return {
+        schemaVersion: 1,      // 数据结构版本号（迁移/校验用，M01/M06）
         memories: [],           // 短期记忆（详细总结）[{ id, time, text }]
         longMemories: [],       // 长期记忆（短期满 10 合并而来；满 10 提醒归档到世界书）
         memoryEnabled: true,    // 自动记忆开关
@@ -530,6 +531,20 @@ function normalizeCharSettings(cs) {
     cs.lastSummaryIndex = (typeof cs.lastSummaryIndex === 'number' && cs.lastSummaryIndex >= 0) ? Math.floor(cs.lastSummaryIndex) : -1;
     if (typeof cs.lastCommittedMessageKey !== 'string') cs.lastCommittedMessageKey = '';
     if (typeof cs.lastCompressToKey !== 'string') cs.lastCompressToKey = '';
+    cs.schemaVersion = (typeof cs.schemaVersion === 'number' && cs.schemaVersion >= 1) ? Math.floor(cs.schemaVersion) : 1;
+    // M06：归档条目校验（from/to 数字、text/raw 字符串、srcKeys 字符串数组、needsReview 布尔），
+    // 旧归档没有 srcKeys 时保留空数组（不判失效、不清空原文）
+    cs.summaryArchive = cs.summaryArchive.filter(e => e && e.id && typeof e.text === 'string' && e.text.trim()).map(e => ({
+        id: e.id,
+        at: Number(e.at) || Date.now(),
+        from: (e.from == null || isNaN(e.from)) ? null : Number(e.from),
+        to: (e.to == null || isNaN(e.to)) ? null : Number(e.to),
+        text: e.text,
+        raw: typeof e.raw === 'string' ? e.raw : '',
+        rawSize: Number(e.rawSize) || 0,
+        srcKeys: Array.isArray(e.srcKeys) ? e.srcKeys.filter(k => typeof k === 'string' && k).slice(0, 2000) : [],
+        needsReview: !!e.needsReview,
+    }));
     cs.compressKeep = (Number(cs.compressKeep) >= 2 && Number(cs.compressKeep) <= 200) ? Math.floor(Number(cs.compressKeep)) : 20;
     if (cs.compressBackupDownload === undefined) cs.compressBackupDownload = false;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
@@ -1787,21 +1802,38 @@ function reconcileWithChat() {
     };
     dropStale(settings.memories);
     dropStale(settings.timeline);
-    if (!changed) return false;
-    // 水位线退回到最早失效来源之前，让被重roll/删除的消息按新内容重新总结
-    if (minSrcIdx !== Infinity) {
-        settings.lastSummaryIndex = Math.max(-1, minSrcIdx - 1);
-        settings.lastCommittedMessageKey = ''; // 身份键作废，按新内容重新总结时重算
+    // C05/M07：归档来源消息被重roll/删除 → 标记「待核对」（保留原文，不自动删归档）；
+    // 旧归档没有 srcKeys 的一律保留不判，避免误伤历史数据
+    let archChanged = false;
+    if (Array.isArray(settings.summaryArchive)) {
+        for (const a of settings.summaryArchive) {
+            if (!a || !Array.isArray(a.srcKeys) || !a.srcKeys.length) continue;
+            if (!a.needsReview && a.srcKeys.some(k => !live.has(k))) {
+                a.needsReview = true;
+                archChanged = true;
+            }
+        }
     }
-    settings.roundsSinceSummary = Math.max(0, (settings.summarizeEvery || 1) - 1); // 下一次生成结束立即重新总结
+    if (!changed && !archChanged) return false;
+    if (changed) {
+        // 水位线退回到最早失效来源之前，让被重roll/删除的消息按新内容重新总结
+        if (minSrcIdx !== Infinity) {
+            settings.lastSummaryIndex = Math.max(-1, minSrcIdx - 1);
+            settings.lastCommittedMessageKey = ''; // 身份键作废，按新内容重新总结时重算
+        }
+        settings.roundsSinceSummary = Math.max(0, (settings.summarizeEvery || 1) - 1); // 下一次生成结束立即重新总结
+    }
     refreshLocalChecks();
     updatePromptInjection();
     renderMemories();
     renderTimeAxis();
     renderPeople();
     renderStorylines();
+    renderCompressResult(); // 归档「待核对」标记要立刻反映到面板
     saveSettings(); // 失效防抖落盘，别只存在内存里等下一次防抖保存（刷新/更新前由 reloadOnUpdate 兜底）
-    toastr.info('检测到消息被重新生成/删除，已撤销对应来源的记忆与时间轴，将按新内容重新总结');
+    if (changed && archChanged) toastr.info('检测到消息被重新生成/删除：已撤销对应来源的记忆/时间轴，并把受影响的剧情摘要标记为待核对');
+    else if (changed) toastr.info('检测到消息被重新生成/删除，已撤销对应来源的记忆与时间轴，将按新内容重新总结');
+    else toastr.warning('检测到消息被重新生成/删除，且与已归档的剧情摘要范围重叠：相关摘要已标记待核对（原文仍可回看）');
     return true;
 }
 
@@ -1817,6 +1849,8 @@ function summaryBoundaryIndex() {
     }
     const w = settings.lastSummaryIndex;
     if (w == null || w < 0) return 0;
+    // M02：旧下标只当候选边界，越界（消息被删后旧下标超出当前长度）则视为「无进度」，交给调用方回退到最近一轮
+    if (w >= chat.length) return chat.length;
     return w + 1;
 }
 
@@ -1911,6 +1945,7 @@ async function summarizeLastRound() {
     const stBefore = settings;
     const lastIdx = sel[sel.length - 1].i;
     const sigBefore = messageSig(lastMsg);
+    const batchId = uid(); // P08：本次总结批次 ID，失败日志里带上，便于定位影响范围
     isSummarizing = true;
     try {
         const { systemPrompt, prompt } = buildSummaryPrompt(transcript, lastUserMsg.name || '用户', lastCharMsg.name || '角色', settings.storyTime);
@@ -1996,7 +2031,15 @@ async function summarizeLastRound() {
             summaryFailStreak[keyBefore] = 0;
             const promoted = promoteMemories();
             if (settings.autoFixTime) repairTimeData();
-            saveSettings(); // 防抖落盘即可；刷新/自动更新前的丢保存由 reloadOnUpdate 的强制落盘兜底
+            // P03/S04：先落盘成功，再报「成功」；保存失败时仍保留内存内结果（当前会话继续有效），
+            // 但不误导为已持久化——刷新/重启后可能重试本轮（记忆与游标一起回退，不会重复写入）
+            let persisted = false;
+            try {
+                await saveSettingsImmediate();
+                persisted = true;
+            } catch (e) {
+                console.warn('[Serendipity] 记忆保存失败：', e);
+            }
             refreshLocalChecks(); // 先重算本地时间冲突，再注入正文，保证本轮就提醒模型
             updatePromptInjection();
             renderMemories();
@@ -2008,7 +2051,8 @@ async function summarizeLastRound() {
             const parts = [];
             if (promoted.toLong) parts.push('短期已满十轮，自动放入长期记忆');
             if (parts.length) msg += '；' + parts.join('；');
-            toastr.success(msg);
+            if (persisted) toastr.success(msg);
+            else toastr.warning(msg + '（但保存失败，刷新/重启后可能需要重新总结本轮，请检查存储空间）');
             if (promoted.toLong) compressLongMemory(promoted.longId, promoted.sources, keyBefore, stBefore);
 
             // 长期记忆满 10 条：提醒归档到世界书（只提醒一次，归档后重置）
@@ -2024,7 +2068,7 @@ async function summarizeLastRound() {
             noteSummaryFailure(stBefore, keyBefore, lastIdx);
         }
     } catch (e) {
-        console.error('[Serendipity] 记忆总结失败：', e);
+        console.error('[Serendipity] 记忆总结失败（阶段=总结，batch=' + batchId + '，来源=第' + (lastIdx + 1) + '楼，可重试）：', e);
         toastr.error('本轮记忆总结失败');
         noteSummaryFailure(stBefore, keyBefore, lastIdx);
     } finally {
@@ -2149,6 +2193,7 @@ async function compressChatHistory() {
     if (indexedOld.length < 2) { toastr.info('没有足够的旧消息可总结（上次压缩后还没有新的对话）'); return; }
 
     isCompressing = true;
+    const batchId = uid(); // P08：本次压缩批次 ID，失败日志里带上，便于定位影响范围
     try {
         // map：把旧消息切成小段，并行总结；reduce：多段摘要分批合并成最终摘要
         // 带上原始楼层下标，摘要里能标出「第几楼」
@@ -2211,11 +2256,16 @@ async function compressChatHistory() {
             at: Date.now(),
             from,
             to,
+            srcKeys: indexedOld.map(x => messageSig(x.m)), // 来源消息身份键：重roll/删除与已压缩范围重叠时据此标记「待核对」（不删归档、保留原文）
             text: summary,
             raw,
             rawSize: raw.length,
         });
-        saveSettings();
+        try {
+            await saveSettingsImmediate(); // C02/C03：归档必须先落盘成功，才允许隐藏源消息
+        } catch (e) {
+            throw new Error('归档保存失败，已放弃隐藏旧消息：' + safeErrorText(e));
+        }
 
         // 同步写一份摘要到世界书（关键词按需召回），失败不阻断归档
         let worldBook = '';
@@ -2249,7 +2299,7 @@ async function compressChatHistory() {
 
         // 记录压缩游标：二次压缩只归档这之后的新消息，不从第1楼重来；不动总结水位线（两者独立）
         settings.lastCompressToKey = messageSig(indexedOld[indexedOld.length - 1].m);
-        saveSettings();
+        await saveSettingsImmediate(); // C06：压缩游标即时落盘，二次压缩才不重复归档
 
         await saveChatConditional();
         await reloadCurrentChat();
@@ -2268,10 +2318,10 @@ async function compressChatHistory() {
 
         toastr.success('已把第 ' + from + '–' + to + ' 楼共 ' + indexedOld.length + ' 条压缩为一段摘要并隐藏旧楼层（原文已归档 + 备份下载，可 /unhide 恢复），保留最近 ' + keep + ' 条');
     } catch (e) {
-        console.error('[Serendipity] 生成剧情摘要失败：', e);
+        console.error('[Serendipity] 生成剧情摘要失败（阶段=压缩，batch=' + batchId + '，来源=第' + (indexedOld.length ? indexedOld[0].i + 1 : '?') + '–' + (indexedOld.length ? indexedOld[indexedOld.length - 1].i + 1 : '?') + '楼，可重试）：', e);
         // 中途失败时内存里的 chat 可能已被改过（is_system 标记），重新从磁盘读回原样
         try { await reloadCurrentChat(); } catch (_) { /* 忽略 */ }
-        toastr.error('生成摘要失败：' + safeErrorText(e) + '（旧消息未改动，原文已归档/备份，可找回）');
+        toastr.error('生成摘要失败：' + safeErrorText(e) + '（旧消息未改动，可重试）');
     } finally {
         isCompressing = false;
     }
@@ -2310,12 +2360,13 @@ function renderCompressResult() {
     if (!list.length) { box.hide().html(''); return; }
     const html = list.map(s => {
         const head = '剧情摘要：第 ' + (s.from || '?') + '–' + (s.to || '?') + ' 楼 · ' + (s.at ? new Date(s.at).toLocaleString() : '');
+        const reviewBadge = s.needsReview ? '<span class="st-sd__compress-review">⚠ 待核对</span>' : '';
         const rawText = String(s.raw || '').trim();
         const rawHtml = rawText
             ? '<details class="st-sd__compress-result-raw"><summary>查看原文（约 ' + (s.rawSize != null ? s.rawSize : rawText.length) + ' 字）</summary><pre>' + escapeHtml(rawText) + '</pre></details>'
             : '';
         return '<div class="st-sd__compress-result-item">' +
-            '<div class="st-sd__compress-result-head">' + escapeHtml(head) + '</div>' +
+            '<div class="st-sd__compress-result-head">' + escapeHtml(head) + reviewBadge + '</div>' +
             '<div class="st-sd__compress-result-body">' + escapeHtml(String(s.text || '')) + '</div>' +
             rawHtml +
             '</div>';

@@ -140,4 +140,45 @@ t('时间线：来源被替换的时间线条目同样失效', () => {
     assert.deepEqual(timeline.map(e => e.id), ['tB']);
 });
 
+// 复刻 index.js reconcileWithChat 里「归档待核对」的核心（纯函数，C05/M07）：
+// 归档来源消息（srcKeys）被重roll/删除后标记 needsReview，绝不删归档；无 srcKeys 的旧归档一律不判
+function markStaleArchiveCore(chat, archive) {
+    const live = new Set();
+    for (const m of chat) { const s = messageSig(m); if (s) live.add(s); }
+    let changed = false;
+    for (const a of archive) {
+        if (!a || !Array.isArray(a.srcKeys) || !a.srcKeys.length) continue;
+        if (!a.needsReview && a.srcKeys.some(k => !live.has(k))) {
+            a.needsReview = true;
+            changed = true;
+        }
+    }
+    return { changed, archive };
+}
+
+// C05：归档来源消息被重roll → 标记待核对，不删归档、无关归档不动
+t('C05 归档来源被重roll：标记待核对、不删归档', () => {
+    const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复'), user(3, '再聊'), ai(4, '收尾')];
+    const arch = [
+        { id: 'A1', srcKeys: [messageSig(chat[2]), messageSig(chat[4])], needsReview: false },
+        { id: 'A2', srcKeys: [messageSig(chat[0])], needsReview: false },
+    ];
+    chat[4] = ai(4, '收尾 v2', { send_date: 9999, gen_started: 9999, swipe_id: 1 });
+    const r = markStaleArchiveCore(chat, arch);
+    assert.equal(r.changed, true);
+    assert.equal(arch.length, 2, '归档不被删除');
+    assert.equal(arch[0].needsReview, true, '来源命中的归档标记待核对');
+    assert.equal(arch[1].needsReview, false, '无关归档不动');
+});
+
+// C05：无 srcKeys 的旧归档 → 永不判、永不删
+t('C05 旧归档（无 srcKeys）：保留不判', () => {
+    const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复')];
+    const arch = [{ id: 'OLD', from: 1, to: 2, needsReview: false }];
+    chat[2] = ai(2, '回复 v2', { send_date: 9999, gen_started: 9999, swipe_id: 1 });
+    const r = markStaleArchiveCore(chat, arch);
+    assert.equal(r.changed, false);
+    assert.equal(arch[0].needsReview, false);
+});
+
 console.log('全部通过：' + passed + ' 项');
