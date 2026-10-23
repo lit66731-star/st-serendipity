@@ -181,4 +181,54 @@ t('C05 旧归档（无 srcKeys）：保留不判', () => {
     assert.equal(arch[0].needsReview, false);
 });
 
+// 内容签名（复刻 index.js contentSignature 的归一化 + 简单哈希；测试只关心「正文变了签名就变」）
+function contentSigCore(text) {
+    const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    let h = 0;
+    for (let i = 0; i < t.length; i++) { h = ((h << 5) - h + t.charCodeAt(i)) | 0; }
+    return String(h >>> 0);
+}
+
+// 复刻 index.js reconcileWithChat 的内容感知失效核心（重roll/删除 + 原地编辑正文）
+function reconcileWithContentCore(chat, memories) {
+    const live = new Set();
+    const contentBySig = new Map();
+    for (const m of chat) {
+        const s = messageSig(m);
+        if (s) { live.add(s); contentBySig.set(s, contentSigCore(m.mes)); }
+    }
+    let changed = false;
+    for (let i = memories.length - 1; i >= 0; i--) {
+        const e = memories[i];
+        if (!e || typeof e.src !== 'string' || !e.src) continue;
+        const edited = typeof e.srcSig === 'string' && e.srcSig && contentBySig.get(e.src) !== e.srcSig;
+        if (!live.has(e.src) || edited) { memories.splice(i, 1); changed = true; }
+    }
+    return changed;
+}
+
+// 原地编辑正文（swipe_id/时间戳不变、只改 mes）→ 来源记忆同样失效（cursor_policy 的「消息内容改变」）
+t('原地编辑正文：签名不变、内容变 → 只失效来源记忆', () => {
+    const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '第一次回复')];
+    const sig2 = messageSig(chat[2]);
+    const memories = [{ ...mem('A', sig2, 2), srcSig: contentSigCore(chat[2].mes) }];
+    // 原地编辑：不改时间戳/swipe_id，只改正文 → messageSig 不变、内容签名变
+    chat[2] = ai(2, '第一次回复（改了正文）');
+    assert.equal(messageSig(chat[2]), sig2, '前提：签名确实没变（纯正文编辑）');
+    const r = reconcileWithContentCore(chat, memories);
+    assert.equal(r, true);
+    assert.equal(memories.length, 0, '正文被原地编辑，来源记忆失效');
+});
+
+// 无 srcSig 的旧记忆：只按签名是否在 live 判断，不因内容签名为空被误删
+t('无 srcSig 的旧记忆：不受内容签名逻辑影响', () => {
+    const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复')];
+    const memories = [{ ...mem('A', messageSig(chat[2]), 2) }]; // 无 srcSig
+    chat[2] = ai(2, '回复（正文改了）'); // 同签名、正文改，但旧记忆没有 srcSig，不判内容
+    const r = reconcileWithContentCore(chat, memories);
+    assert.equal(r, false);
+    assert.equal(memories.length, 1, '无 srcSig 的旧记忆保留（迁移安全）');
+});
+
 console.log('全部通过：' + passed + ' 项');

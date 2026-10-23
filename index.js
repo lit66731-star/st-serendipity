@@ -361,6 +361,7 @@ function freshCharSettings() {
         roundsSinceSummary: 0,  // 距上次总结已过的轮数
         lastSummaryIndex: -1,   // 上次总结到的聊天消息下标（-1=尚未总结），用于跨轮总结窗口不丢剧情
         lastCommittedMessageKey: '', // 上次总结锁定的消息身份键（messageSig，重roll/删除后据此精确退回水位线，比下标更稳定）
+        summaryVersion: 0,      // 摘要结构版本号（每次成功总结 +1，随记忆/归档记录存，用于追溯与内容改动校验）
         summaryState: { status: 'idle', pendingBatchId: '', lastSuccessfulAt: 0 }, // 总结事务状态机（P08）：status∈idle/requesting，pendingBatchId=当前待处理批次
         summaryTransactions: [],   // 逐批次总结记录（有界）[{ batchId, status, at, fromKey, toKey, count, error, retryable }]
         compressionState: { status: 'idle', lastCommittedArchiveId: '' }, // 压缩事务状态机（P08），独立于总结
@@ -433,6 +434,9 @@ function normalizeCharSettings(cs) {
         event: typeof e.event === 'string' ? e.event : '',
         period: typeof e.period === 'string' ? e.period : '',
         origDay: (e.origDay == null || isNaN(e.origDay)) ? null : Number(e.origDay), // 被自动修复前的原始天数
+        src: typeof e.src === 'string' ? e.src : '',      // 来源消息身份键（对账失效用，必须随档保留）
+        srcIdx: (e.srcIdx == null || isNaN(e.srcIdx)) ? null : Number(e.srcIdx),
+        srcSig: typeof e.srcSig === 'string' ? e.srcSig : '', // 来源消息内容签名（原地编辑也能检出）
     }));
     cs.timeFixLog = cs.timeFixLog.filter(e => e && typeof e.text === 'string').slice(-30);
     cs.checks = cs.checks.filter(e => e && e.id && typeof e.text === 'string' && e.text.trim()).map(e => ({
@@ -558,6 +562,7 @@ function normalizeCharSettings(cs) {
     cs.lastSummaryIndex = (typeof cs.lastSummaryIndex === 'number' && cs.lastSummaryIndex >= 0) ? Math.floor(cs.lastSummaryIndex) : -1;
     if (typeof cs.lastCommittedMessageKey !== 'string') cs.lastCommittedMessageKey = '';
     if (typeof cs.lastCompressToKey !== 'string') cs.lastCompressToKey = '';
+    cs.summaryVersion = Math.max(0, Math.floor(Number(cs.summaryVersion) || 0));
     cs.schemaVersion = (typeof cs.schemaVersion === 'number' && cs.schemaVersion >= 1) ? Math.floor(cs.schemaVersion) : 1;
     // P08：事务状态机字段规范化（总结/压缩各自独立、状态枚举白名单、逐批次记录有界只留最近若干条）
     cs.summaryState = (cs.summaryState && typeof cs.summaryState === 'object' && !Array.isArray(cs.summaryState)) ? cs.summaryState : {};
@@ -1021,6 +1026,19 @@ function contentSignature(text) {
     const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
     return t ? String(getStringHash(t)) : '';
 }
+// 组装 summary_structure 的来源/签名/模型/token 元数据（随记忆与归档记录存，用于追溯与内容改动校验）
+function summaryMeta(sel, result) {
+    const keys = (sel || []).map(x => messageSig(x.m));
+    const joined = (sel || []).map(x => (x.m && typeof x.m.mes === 'string' ? x.m.mes : '')).join('\n');
+    const cfg = getApiCfg();
+    return {
+        sourceMessageKeys: keys,
+        sourceSignature: contentSignature(joined),
+        modelId: (cfg && cfg.model ? String(cfg.model) : ''),
+        inputTokenCount: sumMessageTokens((sel || []).map(x => ({ text: x.m && typeof x.m.mes === 'string' ? x.m.mes : '' }))).tokens,
+        outputTokenCount: countTokens(String(result || '')).tokens,
+    };
+}
 
 // ---------------- 记忆功能 ----------------
 const TIMELINE_ANCHOR_MAX = 12; // 回传给总结模型的最近时间线条数
@@ -1193,7 +1211,7 @@ function applyPendingJump() {
 
 // 时间线列表：叠加新场景（第X天/年月日几时几分/地点/重要事情）
 // 去重：同一天里描述相同的事件只记一次（不只比对最后一条，避免重新总结/回滚重做后出现重复）；返回新增的条目，重复返回 null
-function pushTimelineEntry(day, time, location, event, period, src, srcIdx) {
+function pushTimelineEntry(day, time, location, event, period, src, srcIdx, srcSig) {
     if (day == null && !time && !location && !event) return null;
     const norm = t => String(t || '').replace(/\s+/g, '');
     const ev = norm(event);
@@ -1204,6 +1222,7 @@ function pushTimelineEntry(day, time, location, event, period, src, srcIdx) {
     const entry = { id: uid(), day, time, location, event, period: period || '', origDay: null };
     if (src) entry.src = src;
     if (srcIdx != null) entry.srcIdx = srcIdx;
+    if (srcSig) entry.srcSig = srcSig; // 来源消息内容签名：原地编辑正文（不改 swipe_id）也能被对账检出
     settings.timeline.push(entry);
     return entry;
 }
@@ -1950,11 +1969,12 @@ function settleCompressionTx(tx, status, error) {
 // 对照当前聊天：失效「来源消息已不在/已被替换」的记忆与时间线条目，返回是否有变动
 function reconcileWithChat() {
     if (!settings || isSummarizing || !Array.isArray(chat) || !chat.length) return false;
-    // 当前仍在聊天里的消息签名集合（含被压缩隐藏的楼层：它们仍在 chat 中，来源仍有效）
+    // 当前仍在聊天里的消息签名集合 + 每条消息的内容签名（含被压缩隐藏的楼层：它们仍在 chat 中，来源仍有效）
     const live = new Set();
+    const contentBySig = new Map();
     for (const m of chat) {
         const s = messageSig(m);
-        if (s) live.add(s);
+        if (s) { live.add(s); contentBySig.set(s, contentSignature(m && m.mes)); }
     }
     let changed = false;
     let minSrcIdx = Infinity;
@@ -1962,7 +1982,10 @@ function reconcileWithChat() {
         if (!Array.isArray(arr)) return;
         for (let i = arr.length - 1; i >= 0; i--) {
             const e = arr[i];
-            if (e && typeof e.src === 'string' && e.src && !live.has(e.src)) {
+            if (!e || typeof e.src !== 'string' || !e.src) continue;
+            // 来源失效两种情况：① 消息被重roll/删除（签名不在 live）；② 消息原地编辑正文（签名在 live，但内容签名变了）
+            const edited = typeof e.srcSig === 'string' && e.srcSig && contentBySig.get(e.src) !== e.srcSig;
+            if (!live.has(e.src) || edited) {
                 if (typeof e.srcIdx === 'number' && e.srcIdx < minSrcIdx) minSrcIdx = e.srcIdx;
                 arr.splice(i, 1);
                 changed = true;
@@ -2114,6 +2137,7 @@ async function summarizeLastRound() {
     const stBefore = settings;
     const lastIdx = sel[sel.length - 1].i;
     const sigBefore = messageSig(lastMsg);
+    const srcSig = contentSignature(lastMsg.mes); // 来源消息内容签名：对账时能检出「原地编辑正文」（不改 swipe_id）
     const batchId = uid(); // P08：本次总结批次 ID，失败日志里带上，便于定位影响范围
     const summaryTx = { batchId, status: 'requesting', at: Date.now(), fromKey: messageSig(sel[0].m), toKey: sigBefore, count: sel.length, error: '', retryable: true };
     recordSummaryTx(summaryTx);
@@ -2181,7 +2205,7 @@ async function summarizeLastRound() {
                 if (axis.location) settings.storyLocation = axis.location;
                 // 时间轴列表：叠加本段场景（第X天/年月日几时几分/地点/重要事情）；时间取【时间】里的具体时间
                 if (recollection) logTimeFix('时间轴事件「' + axis.event + '」看起来是回忆，没有记成第' + settings.storyDay + '天的当前场景');
-                else pushTimelineEntry(axis.day, newStoryTime, axis.location, axis.event, axis.period, sigBefore, lastIdx);
+                else pushTimelineEntry(axis.day, newStoryTime, axis.location, axis.event, axis.period, sigBefore, lastIdx, srcSig);
             }
             // 世界状态：解析并按类别快照合并（「无」保留、「空」清空、有新内容替换）
             applyWorldState(extractWorldState(result));
@@ -2199,7 +2223,9 @@ async function summarizeLastRound() {
             const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').replace(/【剧情线】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
             const newMemId = uid();
-            settings.memories.push({ id: newMemId, time: Date.now(), src: sigBefore, srcIdx: lastIdx, storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
+            settings.summaryVersion = (settings.summaryVersion || 0) + 1; // 摘要版本 +1，随记录存，便于追溯
+            const meta = summaryMeta(sel, result); // 来源键/内容签名/模型/token 元数据（summary_structure）
+            settings.memories.push({ id: newMemId, time: Date.now(), src: sigBefore, srcIdx: lastIdx, srcSig, storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText, sourceMessageKeys: meta.sourceMessageKeys, sourceSignature: meta.sourceSignature, summaryVersion: settings.summaryVersion, modelId: meta.modelId, inputTokenCount: meta.inputTokenCount, outputTokenCount: meta.outputTokenCount, status: 'committed', characterId: currentCharKey(), chatId: currentChatId(), createdAt: Date.now() });
             if (jump && settings.pendingJump) settings.pendingJump.memIds.push(newMemId);
             settings.lastSummaryIndex = lastIdx; // 记录已总结到的消息下标，下次只总结新增部分（用总结时的位置，期间新到的消息留给下一次）
             settings.lastCommittedMessageKey = sigBefore; // 稳定身份键：重roll/删除后据此精确退回，不依赖易漂移的下标
@@ -2433,12 +2459,23 @@ async function compressChatHistory() {
 
         // 存进面板归档（含摘要 + 原文全文，可回看）
         const archiveId = uid();
+        const meta = summaryMeta(indexedOld, summary); // 来源键/内容签名/模型/token 元数据（summary_structure）
+        settings.summaryVersion = (settings.summaryVersion || 0) + 1;
         settings.summaryArchive.push({
             id: archiveId,
             at: Date.now(),
             from,
             to,
             srcKeys: indexedOld.map(x => messageSig(x.m)), // 来源消息身份键：重roll/删除与已压缩范围重叠时据此标记「待核对」（不删归档、保留原文）
+            sourceSignature: meta.sourceSignature,
+            summaryVersion: settings.summaryVersion,
+            modelId: meta.modelId,
+            inputTokenCount: meta.inputTokenCount,
+            outputTokenCount: meta.outputTokenCount,
+            status: 'committed',
+            characterId: currentCharKey(),
+            chatId: currentChatId(),
+            createdAt: Date.now(),
             text: summary,
             raw,
             rawSize: raw.length,
