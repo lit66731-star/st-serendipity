@@ -592,6 +592,17 @@ function normalizeCharSettings(cs) {
         rawSize: Number(e.rawSize) || 0,
         srcKeys: Array.isArray(e.srcKeys) ? e.srcKeys.filter(k => typeof k === 'string' && k).slice(0, 2000) : [],
         needsReview: !!e.needsReview,
+        // 归档元数据必须随档保留（P1/R008/T011）：压缩写入的这些字段此前在重载时被白名单 map 丢掉，
+        // 导致 modelId/token/版本/来源签名/归属身份永久缺失。旧归档缺字段给安全默认值，不判失效、不清空原文。
+        sourceSignature: typeof e.sourceSignature === 'string' ? e.sourceSignature : '',
+        summaryVersion: Math.max(0, Math.floor(Number(e.summaryVersion) || 0)),
+        modelId: typeof e.modelId === 'string' ? e.modelId : '',
+        inputTokenCount: Math.max(0, Math.floor(Number(e.inputTokenCount) || 0)),
+        outputTokenCount: Math.max(0, Math.floor(Number(e.outputTokenCount) || 0)),
+        status: typeof e.status === 'string' ? e.status : 'committed',
+        characterId: typeof e.characterId === 'string' ? e.characterId : '',
+        chatId: typeof e.chatId === 'string' ? e.chatId : '',
+        createdAt: Number(e.createdAt) || (Number(e.at) || Date.now()),
     }));
     cs.compressKeep = (Number(cs.compressKeep) >= 2 && Number(cs.compressKeep) <= 200) ? Math.floor(Number(cs.compressKeep)) : 20;
     if (cs.compressBackupDownload === undefined) cs.compressBackupDownload = false;
