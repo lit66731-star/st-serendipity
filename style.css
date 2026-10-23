@@ -143,6 +143,7 @@
     display: flex;
     flex-wrap: nowrap;
     overflow-x: auto;
+    overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: thin;
     padding: 0 22px;
@@ -1838,6 +1839,7 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
     display: flex;
     flex-wrap: nowrap;
     overflow-x: auto;
+    overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: thin;
     gap: 4px;
