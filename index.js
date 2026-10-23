@@ -842,6 +842,7 @@ function loadSettings() {
         }
     }
     ensureGlobalPrefs(s);
+    ensureModelLayer(s);
     return s;
 }
 function saveSettings() { saveSettingsDebounced(); }
@@ -1027,10 +1028,10 @@ function contentSignature(text) {
     return t ? String(getStringHash(t)) : '';
 }
 // 组装 summary_structure 的来源/签名/模型/token 元数据（随记忆与归档记录存，用于追溯与内容改动校验）
-function summaryMeta(sel, result) {
+function summaryMeta(sel, result, taskId) {
     const keys = (sel || []).map(x => messageSig(x.m));
     const joined = (sel || []).map(x => (x.m && typeof x.m.mes === 'string' ? x.m.mes : '')).join('\n');
-    const cfg = getApiCfg();
+    const cfg = getTaskCfg(taskId || 'memory_summary');
     return {
         sourceMessageKeys: keys,
         sourceSignature: contentSignature(joined),
@@ -1038,6 +1039,139 @@ function summaryMeta(sel, result) {
         inputTokenCount: sumMessageTokens((sel || []).map(x => ({ text: x.m && typeof x.m.mes === 'string' ? x.m.mes : '' }))).tokens,
         outputTokenCount: countTokens(String(result || '')).tokens,
     };
+}
+
+// ---------------- 模型管理（Phase 5+6）：独立提供方 + 模型发现 + 任务级自动选择 ----------------
+const TASK_IDS = ['memory_summary', 'embedding', 'incremental_digest'];
+const TASK_LABELS = { memory_summary: '记忆总结', embedding: '向量', incremental_digest: '摘要' };
+const MODEL_LIST_TTL = 15 * 60 * 1000; // 模型列表缓存 15 分钟
+const EMBED_HINT = /embed|bge|e5-|text-embedding|jina|m3e|gte-|sentence/i;
+const CAP_KEYS = ['chatCompletion', 'longContext', 'structuredOutput', 'embedding', 'tokenCounting', 'streaming'];
+
+function modelRoot() { return extension_settings[extensionName] || {}; }
+function findProvider(id) { const r = modelRoot(); return (Array.isArray(r.providers) ? r.providers : []).find(p => p && p.id === id) || null; }
+
+// 全局设置层（区别于每个角色档的 cs.schemaVersion）：首次跑新代码时从旧 api/embedApi 播种提供方，并标记版本 2
+function ensureModelLayer(s) {
+    if (!s || typeof s !== 'object') return;
+    if (!Array.isArray(s.providers)) {
+        s.providers = [];
+        const api = s.api || {};
+        if (api && api.url) s.providers.push({ id: 'legacy_chat', name: '插件 API', baseUrl: api.url, key: api.key || '', protocol: 'openai', modelListEndpoint: '', requestEndpoint: '', embeddingEndpoint: '', timeout: 0, retryPolicy: {}, enabled: true });
+        const ea = s.embedApi || {};
+        if (ea && ea.url) s.providers.push({ id: 'legacy_embed', name: 'embeddings API', baseUrl: ea.url, key: ea.key || '', protocol: 'openai', modelListEndpoint: '', requestEndpoint: '', embeddingEndpoint: '', timeout: 0, retryPolicy: {}, enabled: true });
+    }
+    if (!s.taskBindings || typeof s.taskBindings !== 'object') s.taskBindings = {};
+    if (!s.modelCache || typeof s.modelCache !== 'object') s.modelCache = {};
+    if (!(s.schemaVersion >= 2)) s.schemaVersion = 2;
+}
+
+// 任务 → 解析后的 API 配置（有任务绑定用绑定，否则回退旧全局 api/embedApi，向后兼容）
+function getTaskCfg(taskId) {
+    const r = modelRoot();
+    const b = r.taskBindings && r.taskBindings[taskId];
+    if (b && b.providerId && b.modelId) {
+        const p = findProvider(b.providerId);
+        if (p && p.baseUrl) {
+            const base = taskId === 'embedding' ? (p.embeddingEndpoint || p.baseUrl) : (p.requestEndpoint || p.baseUrl);
+            return { url: base, key: p.key || '', model: b.modelId, providerId: p.id };
+        }
+    }
+    if (taskId === 'embedding') return getEmbedCfg();
+    return getApiCfg();
+}
+
+// 任务是否已配齐可调用（地址 + 模型）。有任务绑定看绑定，否则回退旧全局配置。
+function taskConfigured(taskId) {
+    const c = getTaskCfg(taskId);
+    return !!(c && c.url && c.model);
+}
+
+// 能力检测：只认服务端明确返回的能力或 id 明确暗示 embedding；其余一律 unknown（不得臆测为支持）
+function detectCapabilities(model) {
+    const id = String((model && (model.id || model.model)) || '').toLowerCase();
+    const c = {};
+    for (const k of CAP_KEYS) c[k] = 'unknown';
+    if (EMBED_HINT.test(id)) c.embedding = 'confirmed';
+    const caps = model && (model.capabilities || model.caps || model.supports);
+    if (Array.isArray(caps)) { for (const k of caps) if (CAP_KEYS.includes(k)) c[k] = 'confirmed'; }
+    else if (caps && typeof caps === 'object') { for (const k of CAP_KEYS) if (caps[k] === true) c[k] = 'confirmed'; }
+    return c;
+}
+
+// 纯打分（可测）：无能力数据时只做「embedding 任务要 embedding 模型、对话任务排除 embedding 模型」的弱过滤，
+// 不凭模型名/厂商/参数量论优劣（文档明确禁止）。
+function scoreModelForTask(modelId, capabilities, taskId) {
+    const caps = capabilities || {};
+    const id = String(modelId || '').toLowerCase();
+    if (taskId === 'embedding') {
+        if (caps.embedding === 'confirmed') return 2;
+        if (EMBED_HINT.test(id)) return 1;
+        return 0;
+    }
+    if (caps.embedding === 'confirmed') return 0; // embedding 模型不适合对话类任务
+    return 1;
+}
+
+// 拉取提供方的完整模型列表：去重、校验、保留原始 id，缓存（含来源/更新时间/失效），失败抛错但不改现有配置
+async function fetchModelList(providerId) {
+    const p = findProvider(providerId);
+    if (!p || !p.baseUrl) throw new Error('提供方未配置地址');
+    const base = String(p.baseUrl).trim().replace(/\/+$/, '');
+    const endpoint = String(p.modelListEndpoint || (base + '/models')).trim();
+    const headers = {};
+    if (p.key) headers.Authorization = 'Bearer ' + String(p.key).trim();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    let res;
+    try { res = await fetch(endpoint, { headers, signal: ctrl.signal }); }
+    catch (e) { clearTimeout(timer); throw new Error(safeErrorText(e, p.key) || '拉取模型列表失败'); }
+    clearTimeout(timer);
+    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error('HTTP ' + res.status + (t ? ' ' + safeErrorText(t, p.key) : '')); }
+    const d = await res.json().catch(() => ({}));
+    const raw = (d && Array.isArray(d.data)) ? d.data : (Array.isArray(d) ? d : []);
+    const seen = new Set();
+    const list = raw.map(m => {
+        const id = (m && typeof m.id === 'string') ? m.id : (m && typeof m === 'string' ? m : '');
+        if (!id) return null;
+        return { id, capabilities: detectCapabilities(m && typeof m === 'object' ? m : { id }) };
+    }).filter(Boolean).filter(m => { if (seen.has(m.id)) return false; seen.add(m.id); return true; });
+    const r = modelRoot();
+    r.modelCache = r.modelCache || {};
+    r.modelCache[providerId] = { list, updatedAt: Date.now(), source: endpoint, expiresAt: Date.now() + MODEL_LIST_TTL };
+    saveSettings();
+    return list;
+}
+
+// 任务级自动选型：在已缓存的候选里按分数选最高，记录 provider/model/原因/能力证据/更新时间；
+// 无合适候选（如对话任务只剩 embedding 模型）返回 null，不臆造。手动覆盖 = 不自动调用本函数即可。
+function autoSelectModel(taskId) {
+    const r = modelRoot();
+    const providers = Array.isArray(r.providers) ? r.providers : [];
+    const candidates = [];
+    for (const p of providers) {
+        if (p.enabled === false) continue;
+        const cached = r.modelCache && r.modelCache[p.id];
+        const list = (cached && Array.isArray(cached.list)) ? cached.list : [];
+        for (const m of list) candidates.push({ providerId: p.id, modelId: m.id, capabilities: m.capabilities || detectCapabilities({ id: m.id }) });
+    }
+    let best = null;
+    for (const c of candidates) {
+        const s = scoreModelForTask(c.modelId, c.capabilities, taskId);
+        if (!best || s > best.score) best = { ...c, score: s };
+    }
+    if (!best || best.score <= 0) return null;
+    r.taskBindings = r.taskBindings || {};
+    r.taskBindings[taskId] = {
+        providerId: best.providerId,
+        modelId: best.modelId,
+        mode: 'auto',
+        reason: taskId === 'embedding' ? '按 embedding 能力筛选' : '按对话能力筛选（能力数据未知，取列表首选）',
+        capabilities: best.capabilities,
+        updatedAt: Date.now(),
+    };
+    saveSettings();
+    return r.taskBindings[taskId];
 }
 
 // ---------------- 记忆功能 ----------------
@@ -2085,7 +2219,7 @@ async function summarizeLastRound() {
     if (!settings.memoryEnabled) return;
     if (!currentDataKey()) return; // 没有选中角色/群组，没有可写入的档案
     if (!Array.isArray(chat) || chat.length < 2) return;
-    if (!apiConfigured()) return; // 未配置插件 API：跳过本次总结，不回退聊天 API
+    if (!taskConfigured('memory_summary')) return; // 未配置记忆总结模型：跳过本次总结，不回退聊天 API
 
     // 取「上次总结以来」的新消息窗口：每 N 轮才总结时，把中间跳过的几轮一并带上，避免漏剧情
     const indexed = chat.map((m, i) => ({ m, i })).filter(x => x.m && typeof x.m.mes === 'string' && x.m.mes.trim() && !x.m.is_system);
@@ -2145,7 +2279,7 @@ async function summarizeLastRound() {
     isSummarizing = true;
     try {
         const { systemPrompt, prompt } = buildSummaryPrompt(transcript, lastUserMsg.name || '用户', lastCharMsg.name || '角色', settings.storyTime);
-        const raw = await callLLM({ prompt, systemPrompt });
+        const raw = await callCustomApi({ prompt, systemPrompt, cfg: getTaskCfg('memory_summary') });
         if (currentDataKey() !== keyBefore || settings !== stBefore) {
             console.warn('[Serendipity] 总结期间切换了聊天/角色，本次结果已丢弃，不会写入当前聊天');
             settleSummaryTx(summaryTx, 'invalidated', '切换聊天/角色');
@@ -2224,7 +2358,7 @@ async function summarizeLastRound() {
             // 只追加，绝不覆盖或删除已有记忆
             const newMemId = uid();
             settings.summaryVersion = (settings.summaryVersion || 0) + 1; // 摘要版本 +1，随记录存，便于追溯
-            const meta = summaryMeta(sel, result); // 来源键/内容签名/模型/token 元数据（summary_structure）
+            const meta = summaryMeta(sel, result, 'memory_summary'); // 来源键/内容签名/模型/token 元数据（summary_structure）
             settings.memories.push({ id: newMemId, time: Date.now(), src: sigBefore, srcIdx: lastIdx, srcSig, storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText, sourceMessageKeys: meta.sourceMessageKeys, sourceSignature: meta.sourceSignature, summaryVersion: settings.summaryVersion, modelId: meta.modelId, inputTokenCount: meta.inputTokenCount, outputTokenCount: meta.outputTokenCount, status: 'committed', characterId: currentCharKey(), chatId: currentChatId(), createdAt: Date.now() });
             if (jump && settings.pendingJump) settings.pendingJump.memIds.push(newMemId);
             settings.lastSummaryIndex = lastIdx; // 记录已总结到的消息下标，下次只总结新增部分（用总结时的位置，期间新到的消息留给下一次）
@@ -2326,7 +2460,7 @@ async function compressChunk(text) {
         '3. 压缩掉寒暄、日常琐事、重复内容。',
         '4. 用中文、第三人称叙述，按时间先后顺序；若输入本身是摘要，请合并成一段完整、不重复、时间线连贯的摘要。',
     ].join('\n');
-    const raw = await callCustomApi({ prompt: text, systemPrompt, cfg: getApiCfg() });
+    const raw = await callCustomApi({ prompt: text, systemPrompt, cfg: getTaskCfg('incremental_digest') });
     const out = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
     if (!out) throw new Error('压缩总结返回空内容');
     return out;
@@ -2373,7 +2507,7 @@ async function compressChatHistory() {
     activateCharacter();
     if (isCompressing) { toastr.info('正在生成摘要，请稍候…'); return; }
     if (selected_group) { toastr.warning('群聊暂不支持生成摘要'); return; }
-    if (!apiConfigured()) {
+    if (!taskConfigured('incremental_digest')) {
         toastr.warning('请先在「摘要」页配置插件 API（生成摘要不回退到聊天 API）');
         return;
     }
@@ -2459,7 +2593,7 @@ async function compressChatHistory() {
 
         // 存进面板归档（含摘要 + 原文全文，可回看）
         const archiveId = uid();
-        const meta = summaryMeta(indexedOld, summary); // 来源键/内容签名/模型/token 元数据（summary_structure）
+        const meta = summaryMeta(indexedOld, summary, 'incremental_digest'); // 来源键/内容签名/模型/token 元数据（summary_structure）
         settings.summaryVersion = (settings.summaryVersion || 0) + 1;
         settings.summaryArchive.push({
             id: archiveId,
@@ -3624,6 +3758,14 @@ function embedEndpoint(url) {
 // 没单独配地址则回退到插件 API（老行为：地址/Key 复用，模型名用 embedApi.model 或 embedModel 或插件 API 模型）。
 function getEmbedCfg() {
     const root = extension_settings[extensionName] || {};
+    // 任务级绑定优先：模型管理页给「向量」任务单独选了模型时，走它（地址/Key/模型三者独立）
+    const b = root.taskBindings && root.taskBindings.embedding;
+    if (b && b.providerId && b.modelId) {
+        const p = findProvider(b.providerId);
+        if (p && p.baseUrl) {
+            return { url: String(p.embeddingEndpoint || p.baseUrl).trim(), key: String(p.key || '').trim(), model: String(b.modelId).trim() };
+        }
+    }
     const main = root.api || {};
     const e = root.embedApi || {};
     const model = String(e.model || root.embedModel || main.model || '').trim();
