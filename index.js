@@ -1021,6 +1021,54 @@ function chunkMessagesByTokenBudget(items, opts) {
     push();
     return chunks;
 }
+// 文本按 token 预算截断（单条消息超预算时的兜底，不整条丢弃）。二分定位最长可装前缀，保守高估。
+function truncateTextToTokens(text, maxTokens) {
+    const t = String(text == null ? '' : text);
+    if (!maxTokens || maxTokens <= 0) return t;
+    if (countTokens(t).tokens <= maxTokens) return t;
+    let lo = 0, hi = t.length;
+    while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (countTokens(t.slice(0, mid)).tokens <= maxTokens) lo = mid;
+        else hi = mid - 1;
+    }
+    return t.slice(0, lo);
+}
+// 总结窗口按预算拼正文：最早一条 + 最新两条一定保留，中间从新往旧取、超预算省略更早的。
+// budgetTokens=可用输入 token 预算；传 0（未知上下文）退化为按 maxChars 字符截断（旧行为）。
+function buildSummaryWindowBudgeted(sel, budgetTokens, maxChars) {
+    const tokMode = budgetTokens > 0;
+    const cap = tokMode ? budgetTokens : Math.max(1, Math.floor(Number(maxChars) || 1));
+    const buildLine = (x) => {
+        const text = (x.m && typeof x.m.mes === 'string') ? x.m.mes : '';
+        const head = '【第' + (x.i + 1) + '楼】' + (x.m.name || (x.m.is_user ? '用户' : '角色')) + '：';
+        const bodyCap = Math.max(1, cap - countTokens(head).tokens - (tokMode ? TOKEN_EST.overheadPerMessage : 0));
+        const body = tokMode ? truncateTextToTokens(text, bodyCap) : (text.length > bodyCap ? text.slice(0, bodyCap) : text);
+        return head + body;
+    };
+    const costOf = (line) => tokMode ? countTokens(line).tokens + TOKEN_EST.overheadPerMessage : line.length;
+    const firstLine = buildLine(sel[0]);
+    const lines = [];
+    let used = costOf(firstLine);
+    for (let k = sel.length - 1; k >= 1; k--) {
+        const line = buildLine(sel[k]);
+        const cost = costOf(line);
+        if (lines.length >= 2 && used + cost > cap) break;
+        lines.unshift(line);
+        used += cost;
+    }
+    lines.unshift(firstLine);
+    return { transcript: lines.join('\n\n'), count: lines.length, total: sel.length };
+}
+// 某任务当前所选模型的上下文上限（0=未知）。取任务绑定提供方的 contextTokens（用户自填），旧配置无此信息回 0。
+function getTaskModelContext(taskId) {
+    const b = modelBindingOf(taskId);
+    if (b && b.providerId) {
+        const p = findProvider(b.providerId);
+        if (p && p.baseUrl) return Math.max(0, Math.floor(Number(p.contextTokens) || 0));
+    }
+    return 0;
+}
 // 消息内容签名：messageSig 只对重roll/删除（swipe_id/时间戳变化）敏感，检测不到「原地编辑正文」。
 // 两者一起用才能覆盖文档里 message_edited 场景（Phase 4 历史范围校验会用到）。
 function contentSignature(text) {
@@ -1057,9 +1105,9 @@ function ensureModelLayer(s) {
     if (!Array.isArray(s.providers)) {
         s.providers = [];
         const api = s.api || {};
-        if (api && api.url) s.providers.push({ id: 'legacy_chat', name: '插件 API', baseUrl: api.url, key: api.key || '', protocol: 'openai', modelListEndpoint: '', requestEndpoint: '', embeddingEndpoint: '', timeout: 0, retryPolicy: {}, enabled: true });
+        if (api && api.url) s.providers.push({ id: 'legacy_chat', name: '插件 API', baseUrl: api.url, key: api.key || '', protocol: 'openai', modelListEndpoint: '', requestEndpoint: '', embeddingEndpoint: '', contextTokens: 0, timeout: 0, retryPolicy: {}, enabled: true });
         const ea = s.embedApi || {};
-        if (ea && ea.url) s.providers.push({ id: 'legacy_embed', name: 'embeddings API', baseUrl: ea.url, key: ea.key || '', protocol: 'openai', modelListEndpoint: '', requestEndpoint: '', embeddingEndpoint: '', timeout: 0, retryPolicy: {}, enabled: true });
+        if (ea && ea.url) s.providers.push({ id: 'legacy_embed', name: 'embeddings API', baseUrl: ea.url, key: ea.key || '', protocol: 'openai', modelListEndpoint: '', requestEndpoint: '', embeddingEndpoint: '', contextTokens: 0, timeout: 0, retryPolicy: {}, enabled: true });
     }
     if (!s.taskBindings || typeof s.taskBindings !== 'object') s.taskBindings = {};
     if (!s.modelCache || typeof s.modelCache !== 'object') s.modelCache = {};
@@ -1241,7 +1289,7 @@ function renderModelProviders() {
         const n = (r.modelCache && r.modelCache[p.id] && Array.isArray(r.modelCache[p.id].list)) ? r.modelCache[p.id].list.length : 0;
         return '<div class="st-sd__mrow"><div class="st-sd__mrow-main">'
             + '<span class="st-sd__mrow-name">' + escapeHtml(p.name || p.id) + '</span>'
-            + '<span class="st-sd__mrow-src">' + escapeHtml(p.baseUrl || '') + (p.enabled === false ? '（已停用）' : '') + (n ? ' · 已缓存 ' + n + ' 个模型' : '') + '</span></div>'
+            + '<span class="st-sd__mrow-src">' + escapeHtml(p.baseUrl || '') + (p.enabled === false ? '（已停用）' : '') + (n ? ' · 已缓存 ' + n + ' 个模型' : '') + ((p.contextTokens | 0) > 0 ? ' · 上下文 ' + (p.contextTokens | 0) : '') + '</span></div>'
             + '<div class="st-sd__mrow-actions"><button type="button" class="st-sd__mbtn st-sd__mprov-fetch" data-provider="' + escapeHtml(p.id) + '">拉取模型</button>'
             + '<button type="button" class="st-sd__mbtn st-sd__mprov-del" data-provider="' + escapeHtml(p.id) + '">删除</button></div></div>';
     }).join('');
@@ -1252,6 +1300,7 @@ function renderModelProviders() {
         + '<label class="st-sd__mform-row"><span class="st-sd__mform-name">名称</span><input type="text" class="st-sd__mprov-name" placeholder="如 中转站 / 硅基"></label>'
         + '<label class="st-sd__mform-row"><span class="st-sd__mform-name">Base URL</span><input type="text" class="st-sd__mprov-url" placeholder="https://api.example.com/v1（OpenAI 兼容，地址到 /v1）" autocomplete="off"></label>'
         + '<label class="st-sd__mform-row"><span class="st-sd__mform-name">API Key</span><input type="password" class="st-sd__mprov-key" placeholder="可选" autocomplete="new-password" spellcheck="false"></label>'
+        + '<label class="st-sd__mform-row"><span class="st-sd__mform-name">上下文上限</span><input type="number" class="st-sd__mprov-ctx" placeholder="可选，如 8192 / 128000（0=未知）" min="0" step="1"></label>'
         + '<div class="st-sd__mform-row st-sd__mform-btns"><button type="button" class="st-sd__mbtn st-sd__mprov-add">添加</button></div></div>'
         + '<div class="st-sd__hint">Key 明文存在酒馆设置里（所有角色共用），不会写进备份文件；共用/公开的酒馆实例请不要填你自己的 Key。首次跑新版本会自动把旧的「插件 API / embeddings API」播种成 legacy_chat / legacy_embed 两个提供方。</div>');
 }
@@ -2367,25 +2416,13 @@ async function summarizeLastRound() {
     if (!lastCharMsg || !lastUserMsg) return;
 
     // 总结窗口上限：最早一条（开场白/窗口起点）与最新两条一定保留，中间的从新往旧取、超预算就省略更早的。
-    // 这样开头不会被「开场白太长」整段丢掉（此前开头只总结两条），也不至于把超长窗口整段发给模型
+    // 这样开头不会被「开场白太长」整段丢掉（此前开头只总结两条），也不至于把超长窗口整段发给模型。
+    // 任务模型有上下文信息时按 token 预算截断；未知上下文（0）退回原来的按字符上限截断，行为不变。
     const maxLen = settings.summaryTranscriptMax || SUMMARY_TRANSCRIPT_MAX;
-    const buildLine = (x) => {
-        let line = '【第' + (x.i + 1) + '楼】' + (x.m.name || (x.m.is_user ? '用户' : '角色')) + '：' + x.m.mes;
-        if (line.length > maxLen) line = line.slice(0, maxLen);
-        return line;
-    };
-    const firstLine = buildLine(sel[0]);
-    const lines = [];
-    let used = firstLine.length;
-    for (let k = sel.length - 1; k >= 1; k--) {
-        const line = buildLine(sel[k]);
-        if (lines.length >= 2 && used + line.length > maxLen) break;
-        lines.unshift(line);
-        used += line.length;
-    }
-    lines.unshift(firstLine);
-    const transcript = lines.join('\n\n');
-    if (lines.length < sel.length) toastr.info('这段对话较长，本次只总结其中 ' + lines.length + ' 条（' + (sel.length - lines.length) + ' 条因过长未纳入记忆）', undefined, { timeOut: 6000 });
+    const winBudget = resolveTokenBudget(settings.tokenBudget, getTaskModelContext('memory_summary'));
+    const win = buildSummaryWindowBudgeted(sel, winBudget.input, maxLen);
+    const transcript = win.transcript;
+    if (win.count < win.total) toastr.info('这段对话较长，本次只总结其中 ' + win.count + ' 条（' + (win.total - win.count) + ' 条因过长未纳入记忆）', undefined, { timeOut: 6000 });
 
     // await 之前先记下「写给谁」和「总结的是哪条消息」，回来后核对，避免切换聊天串档、滑动后签名记错
     const keyBefore = currentDataKey();
@@ -2551,21 +2588,28 @@ const COMPRESS_CONCURRENCY = 4;   // 并行总结的并发数（串行太慢，�
 const COMPRESS_REDUCE_BATCH = 6;  // 合并摘要时每批最多合并几段（控制合并输入的字符数，避免又超长）
 const COMPRESS_KEEP_DEFAULT = 20; // 压缩时默认保留最近多少条消息
 
-// 把一组消息拼成可读对话文本，按 chunkMax 切成多段（太长时 map-reduce 分段总结）
-function buildCompressTranscript(items, chunkMax) {
+// 把一组消息拼成可读对话文本，切成多段（太长时 map-reduce 分段总结）。
+// chunkMaxTokens>0 时按 token 预算分段；否则退回按 chunkMax 字符分段（旧行为）。
+function buildCompressTranscript(items, chunkMax, chunkMaxTokens) {
+    const tokMode = chunkMaxTokens > 0;
+    const cap = tokMode ? chunkMaxTokens : Math.max(1, Math.floor(Number(chunkMax) || 1));
     const chunks = [];
     let cur = [];
     let used = 0;
     const flush = () => { if (cur.length) { chunks.push(cur.join('\n\n')); cur = []; used = 0; } };
+    const costOf = (line) => tokMode ? countTokens(line).tokens + TOKEN_EST.overheadPerMessage : line.length;
     for (const it of items) {
         const m = it && it.m;
         if (!m || typeof m.mes !== 'string') continue;
         const label = m.is_system ? '系统' : (m.name || (m.is_user ? '用户' : '角色'));
-        let line = '【第' + ((it.i != null ? it.i : 0) + 1) + '楼】' + label + '：' + m.mes.trim();
-        if (line.length > chunkMax) line = line.slice(0, chunkMax);
-        if (cur.length && used + line.length > chunkMax) flush();
+        const head = '【第' + ((it.i != null ? it.i : 0) + 1) + '楼】' + label + '：';
+        const text = m.mes.trim();
+        const bodyCap = Math.max(1, cap - countTokens(head).tokens - (tokMode ? TOKEN_EST.overheadPerMessage : 0));
+        const line = head + (tokMode ? truncateTextToTokens(text, bodyCap) : (text.length > bodyCap ? text.slice(0, bodyCap) : text));
+        const cost = costOf(line);
+        if (cur.length && used + cost > cap) flush();
         cur.push(line);
-        used += line.length;
+        used += cost;
     }
     flush();
     return chunks;
@@ -2658,8 +2702,9 @@ async function compressChatHistory() {
     if (settings.compressionState) settings.compressionState.status = 'requesting';
     try {
         // map：把旧消息切成小段，并行总结；reduce：多段摘要分批合并成最终摘要
-        // 带上原始楼层下标，摘要里能标出「第几楼」
-        const chunks = buildCompressTranscript(indexedOld, COMPRESS_CHUNK_MAX);
+        // 带上原始楼层下标，摘要里能标出「第几楼」。有任务模型上下文时按 token 预算分段，否则按字符上限分段。
+        const compBudget = resolveTokenBudget(settings.tokenBudget, getTaskModelContext('incremental_digest'));
+        const chunks = buildCompressTranscript(indexedOld, COMPRESS_CHUNK_MAX, compBudget.maxChunk);
         toastr.info('开始生成摘要，共 ' + chunks.length + ' 段（并行处理，请稍候…）', undefined, { timeOut: 3000 });
         let done = 0;
         const parts = await runCompressPool(chunks.map((c) => async () => {
@@ -5941,12 +5986,13 @@ function bindPanelEvents() {
         const name = String(panel.find('.st-sd__mprov-name').val() || '').trim();
         const baseUrl = String(panel.find('.st-sd__mprov-url').val() || '').trim();
         const key = String(panel.find('.st-sd__mprov-key').val() || '').trim();
+        const contextTokens = Math.max(0, Math.floor(Number(panel.find('.st-sd__mprov-ctx').val()) || 0));
         if (!name || !baseUrl) { toastr.warning('请填写名称和 Base URL'); return; }
         const r = modelRoot();
         r.providers = r.providers || [];
-        r.providers.push({ id: 'prov_' + uid(), name, baseUrl, key, protocol: 'openai', modelListEndpoint: '', requestEndpoint: '', embeddingEndpoint: '', timeout: 0, retryPolicy: {}, enabled: true });
+        r.providers.push({ id: 'prov_' + uid(), name, baseUrl, key, protocol: 'openai', modelListEndpoint: '', requestEndpoint: '', embeddingEndpoint: '', contextTokens, timeout: 0, retryPolicy: {}, enabled: true });
         saveSettings();
-        panel.find('.st-sd__mprov-name, .st-sd__mprov-url, .st-sd__mprov-key').val('');
+        panel.find('.st-sd__mprov-name, .st-sd__mprov-url, .st-sd__mprov-key, .st-sd__mprov-ctx').val('');
         renderModelProviders();
         renderModelOverview();
         toastr.success('已添加提供方：' + name);

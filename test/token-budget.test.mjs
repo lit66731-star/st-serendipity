@@ -96,6 +96,69 @@ function contentSignature(text) {
     return String(h >>> 0);
 }
 
+function truncateTextToTokens(text, maxTokens) {
+    const t = String(text == null ? '' : text);
+    if (!maxTokens || maxTokens <= 0) return t;
+    if (countTokens(t).tokens <= maxTokens) return t;
+    let lo = 0, hi = t.length;
+    while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (countTokens(t.slice(0, mid)).tokens <= maxTokens) lo = mid;
+        else hi = mid - 1;
+    }
+    return t.slice(0, lo);
+}
+
+function buildSummaryWindowBudgeted(sel, budgetTokens, maxChars) {
+    const tokMode = budgetTokens > 0;
+    const cap = tokMode ? budgetTokens : Math.max(1, Math.floor(Number(maxChars) || 1));
+    const buildLine = (x) => {
+        const text = (x.m && typeof x.m.mes === 'string') ? x.m.mes : '';
+        const head = '【第' + (x.i + 1) + '楼】' + (x.m.name || (x.m.is_user ? '用户' : '角色')) + '：';
+        const bodyCap = Math.max(1, cap - countTokens(head).tokens - (tokMode ? TOKEN_EST.overheadPerMessage : 0));
+        const body = tokMode ? truncateTextToTokens(text, bodyCap) : (text.length > bodyCap ? text.slice(0, bodyCap) : text);
+        return head + body;
+    };
+    const costOf = (line) => tokMode ? countTokens(line).tokens + TOKEN_EST.overheadPerMessage : line.length;
+    const firstLine = buildLine(sel[0]);
+    const lines = [];
+    let used = costOf(firstLine);
+    for (let k = sel.length - 1; k >= 1; k--) {
+        const line = buildLine(sel[k]);
+        const cost = costOf(line);
+        if (lines.length >= 2 && used + cost > cap) break;
+        lines.unshift(line);
+        used += cost;
+    }
+    lines.unshift(firstLine);
+    return { transcript: lines.join('\n\n'), count: lines.length, total: sel.length };
+}
+
+function buildCompressTranscript(items, chunkMax, chunkMaxTokens) {
+    const tokMode = chunkMaxTokens > 0;
+    const cap = tokMode ? chunkMaxTokens : Math.max(1, Math.floor(Number(chunkMax) || 1));
+    const chunks = [];
+    let cur = [];
+    let used = 0;
+    const flush = () => { if (cur.length) { chunks.push(cur.join('\n\n')); cur = []; used = 0; } };
+    const costOf = (line) => tokMode ? countTokens(line).tokens + TOKEN_EST.overheadPerMessage : line.length;
+    for (const it of items) {
+        const m = it && it.m;
+        if (!m || typeof m.mes !== 'string') continue;
+        const label = m.is_system ? '系统' : (m.name || (m.is_user ? '用户' : '角色'));
+        const head = '【第' + ((it.i != null ? it.i : 0) + 1) + '楼】' + label + '：';
+        const text = m.mes.trim();
+        const bodyCap = Math.max(1, cap - countTokens(head).tokens - (tokMode ? TOKEN_EST.overheadPerMessage : 0));
+        const line = head + (tokMode ? truncateTextToTokens(text, bodyCap) : (text.length > bodyCap ? text.slice(0, bodyCap) : text));
+        const cost = costOf(line);
+        if (cur.length && used + cost > cap) flush();
+        cur.push(line);
+        used += cost;
+    }
+    flush();
+    return chunks;
+}
+
 let passed = 0;
 function t(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
 
@@ -185,6 +248,40 @@ t('contentSignature 归一化空白、确定、可检出编辑', () => {
     assert.equal(contentSignature(''), '');
     assert.equal(contentSignature(null), '');
     assert.equal(contentSignature('你好，世界'), a, '同一文本签名确定');
+});
+
+// truncateTextToTokens：按 token 预算截断，不整条丢弃，超预算时结果不超上限
+t('truncateTextToTokens 二分截断，不超预算、不足预算不截', () => {
+    assert.equal(truncateTextToTokens('你好世界', 2), '你好', '4 CJK 截到 2 token');
+    assert.ok(countTokens(truncateTextToTokens('hello world', 2)).tokens <= 2, '拉丁截断不超预算');
+    assert.equal(truncateTextToTokens('你好', 100), '你好', '不足预算原样返回');
+    assert.equal(truncateTextToTokens('你好', 0), '你好', '预算 0（未知）不截');
+    assert.equal(truncateTextToTokens('', 5), '');
+});
+
+// buildSummaryWindowBudgeted：最早一条 + 最新两条保留，中间按预算省略更早的；token 模式与字符回退都成立
+t('buildSummaryWindowBudgeted 最早+最新两条保留、超预算省略更早', () => {
+    const mk = (i) => ({ m: { name: 'A', is_user: false, mes: '很'.repeat(6) }, i });
+    const sel = [0, 1, 2, 3, 4, 5, 6, 7].map(mk);
+    const charWin = buildSummaryWindowBudgeted(sel, 0, 40);
+    assert.equal(charWin.transcript.indexOf('【第1楼】'), 0, '最早一条始终打头');
+    assert.ok(charWin.transcript.includes('【第8楼】'), '最新一条保留');
+    const tokWin = buildSummaryWindowBudgeted(sel, 100, 40);
+    assert.equal(tokWin.transcript.indexOf('【第1楼】'), 0);
+    assert.ok(tokWin.transcript.includes('【第8楼】'));
+    assert.ok(tokWin.count >= 3 && tokWin.count < tokWin.total, '首尾都在、中间被省略');
+});
+
+// buildCompressTranscript：token 模式按预算分段，字符模式（不传 token 预算）回退旧行为
+t('buildCompressTranscript token 模式按预算分段、字符模式回退', () => {
+    const mk = (i) => ({ m: { name: 'B', is_user: false, mes: '你好世界' }, i });
+    const items = [0, 1, 2, 3, 4].map(mk);
+    const charChunks = buildCompressTranscript(items, 60, 0);
+    assert.ok(charChunks.length >= 1, '字符模式能分段');
+    const tokChunks = buildCompressTranscript(items, 60, 12);
+    assert.ok(tokChunks.length > 1, '小 token 预算应切成多段');
+    const joined = tokChunks.join('\n\n');
+    assert.ok(joined.includes('【第1楼】') && joined.includes('【第5楼】'), '分段不丢首尾消息');
 });
 
 console.log('全部通过：' + passed + ' 项');
