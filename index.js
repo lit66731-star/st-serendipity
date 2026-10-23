@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.39'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.3.40'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -361,7 +361,7 @@ function freshCharSettings() {
         ignoredChecks: [],      // 用户忽略/删除过的本地时间检查文本（不再重复提示；情况消失后自动清除）
         timeFixLog: [],         // 时间数据修复记录 [{ time, text }]（只记录对结构化时间数据做过的修正，不改模型生成的文本）
         autoFixTime: false,     // 每轮总结后是否自动修复时间数据（默认关：只检测提醒）
-        summaryJournal: [],     // 总结回滚日志 [{ idx, sig, snap }]：每次总结前的状态快照，用户重新生成/滑动/删除对应消息时据此回滚
+        summaryJournal: [],     // 已废弃：旧版整批快照回滚日志。现在改用记忆/时间线条目的 src 来源做定向失效，此字段仅保留兼容旧数据、不再写入
         foreshadows: [],        // 伏笔/未完成事项 [{ id, title, status, note, day }]
         storylines: [],         // 剧情线/多线关联 [{ id, title, kind, status, summary, goal, startDay, lastDay }]（kind:主线/支线/感情线/伏笔线；status:进行中/已结束/搁置）
         injectForeshadows: false, // 是否把未完成伏笔注入正文提醒模型（默认关，以本地管理为主）
@@ -1031,7 +1031,7 @@ function applyPendingJump() {
 
 // 时间线列表：叠加新场景（第X天/年月日几时几分/地点/重要事情）
 // 去重：同一天里描述相同的事件只记一次（不只比对最后一条，避免重新总结/回滚重做后出现重复）；返回新增的条目，重复返回 null
-function pushTimelineEntry(day, time, location, event, period) {
+function pushTimelineEntry(day, time, location, event, period, src, srcIdx) {
     if (day == null && !time && !location && !event) return null;
     const norm = t => String(t || '').replace(/\s+/g, '');
     const ev = norm(event);
@@ -1040,6 +1040,8 @@ function pushTimelineEntry(day, time, location, event, period) {
         : (e.time === time && e.location === location && !e.event)));
     if (dup) return null;
     const entry = { id: uid(), day, time, location, event, period: period || '', origDay: null };
+    if (src) entry.src = src;
+    if (srcIdx != null) entry.srcIdx = srcIdx;
     settings.timeline.push(entry);
     return entry;
 }
@@ -1748,37 +1750,42 @@ async function compressLongMemory(longId, sources, key, st) {
     }
 }
 
-// ---------------- 重新生成/滑动/删除 → 记忆回滚 ----------------
-// 每次总结前给「会被总结改动的状态」拍快照，连同被总结的那条 AI 消息的签名存进日志；
-// 之后若那条消息被重新生成 / 滑动换版本 / 删除，就回滚到快照，让下一次总结按新内容重做
-const JOURNAL_MAX = 3;
-const JOURNAL_KEYS = ['storyTime', 'storyDay', 'storyPeriod', 'storyLocation', 'pendingJump', 'memories', 'longMemories', 'timeline', 'worldState', 'entities', 'pendingEntityAssignments', 'relationshipLines', 'storylines', 'lastSummaryIndex'];
+// ---------------- 重新生成/滑动/删除 → 按来源定向失效（不再整批回滚） ----------------
+// 记忆/时间线条目带上「来源消息签名 src + 下标提示 srcIdx」。来源消息被重roll/删除后，
+// 只失效来源命中的条目；绝不因任意签名不匹配整批恢复旧快照（那会让无关记忆连带消失）。
+// 无法确定来源的旧条目一律保留（宁可多留一条，也不静默清空）。
 
 function messageSig(m) {
     if (!m) return '';
     return [m.gen_started || '', m.send_date || '', m.swipe_id == null ? 0 : m.swipe_id].join('|');
 }
-function takeStateSnapshot() {
-    const snap = {};
-    for (const k of JOURNAL_KEYS) snap[k] = JSON.parse(JSON.stringify(settings[k] === undefined ? null : settings[k]));
-    return snap;
-}
-function pushSummaryJournal(idx, snap, sig) {
-    settings.summaryJournal.push({ idx, sig: sig != null ? sig : messageSig(chat[idx]), snap });
-    if (settings.summaryJournal.length > JOURNAL_MAX) settings.summaryJournal.splice(0, settings.summaryJournal.length - JOURNAL_MAX);
-}
-// 对照当前聊天：日志里被总结过的消息不在了/被换了 → 回滚到最早失效条目的快照，返回是否发生回滚
+// 对照当前聊天：失效「来源消息已不在/已被替换」的记忆与时间线条目，返回是否有变动
 function reconcileWithChat() {
     if (!settings || isSummarizing || !Array.isArray(chat) || !chat.length) return false;
-    const j = settings.summaryJournal;
-    if (!Array.isArray(j) || !j.length) return false;
-    const bad = j.findIndex(e => !chat[e.idx] || messageSig(chat[e.idx]) !== e.sig);
-    if (bad < 0) return false;
-    const snap = j[bad].snap;
-    for (const k of JOURNAL_KEYS) {
-        if (snap[k] !== undefined) settings[k] = JSON.parse(JSON.stringify(snap[k]));
+    // 当前仍在聊天里的消息签名集合（含被压缩隐藏的楼层：它们仍在 chat 中，来源仍有效）
+    const live = new Set();
+    for (const m of chat) {
+        const s = messageSig(m);
+        if (s) live.add(s);
     }
-    settings.summaryJournal = j.slice(0, bad);
+    let changed = false;
+    let minSrcIdx = Infinity;
+    const dropStale = (arr) => {
+        if (!Array.isArray(arr)) return;
+        for (let i = arr.length - 1; i >= 0; i--) {
+            const e = arr[i];
+            if (e && typeof e.src === 'string' && e.src && !live.has(e.src)) {
+                if (typeof e.srcIdx === 'number' && e.srcIdx < minSrcIdx) minSrcIdx = e.srcIdx;
+                arr.splice(i, 1);
+                changed = true;
+            }
+        }
+    };
+    dropStale(settings.memories);
+    dropStale(settings.timeline);
+    if (!changed) return false;
+    // 水位线退回到最早失效来源之前，让被重roll/删除的消息按新内容重新总结
+    if (minSrcIdx !== Infinity) settings.lastSummaryIndex = Math.max(-1, minSrcIdx - 1);
     settings.roundsSinceSummary = Math.max(0, (settings.summarizeEvery || 1) - 1); // 下一次生成结束立即重新总结
     refreshLocalChecks();
     updatePromptInjection();
@@ -1786,8 +1793,8 @@ function reconcileWithChat() {
     renderTimeAxis();
     renderPeople();
     renderStorylines();
-    saveSettings(); // 回滚防抖落盘，别只存在内存里等下一次防抖保存（刷新/更新前由 reloadOnUpdate 兜底）
-    toastr.info('检测到消息被重新生成/删除，已回滚对应的记忆与时间轴，将按新内容重新总结');
+    saveSettings(); // 失效防抖落盘，别只存在内存里等下一次防抖保存（刷新/更新前由 reloadOnUpdate 兜底）
+    toastr.info('检测到消息被重新生成/删除，已撤销对应来源的记忆与时间轴，将按新内容重新总结');
     return true;
 }
 
@@ -1892,8 +1899,6 @@ async function summarizeLastRound() {
         const result = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
         if (result && result.trim()) {
             // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
-            // 总结前先拍快照入日志，供重新生成/滑动/删除时回滚
-            pushSummaryJournal(lastIdx, takeStateSnapshot(), sigBefore);
             let newStoryTime = extractStoryTime(result) || settings.storyTime;
             // 解析结构化时间轴（第X天/地点/重要事情），解析失败则沿用上一次，保证时间轴不倒退
             const axis = extractTimeAxis(result);
@@ -1937,7 +1942,7 @@ async function summarizeLastRound() {
                 if (axis.location) settings.storyLocation = axis.location;
                 // 时间轴列表：叠加本段场景（第X天/年月日几时几分/地点/重要事情）；时间取【时间】里的具体时间
                 if (recollection) logTimeFix('时间轴事件「' + axis.event + '」看起来是回忆，没有记成第' + settings.storyDay + '天的当前场景');
-                else pushTimelineEntry(axis.day, newStoryTime, axis.location, axis.event, axis.period);
+                else pushTimelineEntry(axis.day, newStoryTime, axis.location, axis.event, axis.period, sigBefore, lastIdx);
             }
             // 世界状态：解析并按类别快照合并（「无」保留、「空」清空、有新内容替换）
             applyWorldState(extractWorldState(result));
@@ -1955,7 +1960,7 @@ async function summarizeLastRound() {
             const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').replace(/【剧情线】[^\n]*\n?/, '').trim();
             // 只追加，绝不覆盖或删除已有记忆
             const newMemId = uid();
-            settings.memories.push({ id: newMemId, time: Date.now(), storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
+            settings.memories.push({ id: newMemId, time: Date.now(), src: sigBefore, srcIdx: lastIdx, storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
             if (jump && settings.pendingJump) settings.pendingJump.memIds.push(newMemId);
             settings.lastSummaryIndex = lastIdx; // 记录已总结到的消息下标，下次只总结新增部分（用总结时的位置，期间新到的消息留给下一次）
             summaryFailStreak[keyBefore] = 0;
