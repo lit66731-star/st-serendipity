@@ -2670,14 +2670,16 @@ async function summarizeLastRound() {
             updateInjectHint();
         } else {
             // 模型偶发返回空内容：明确提示，不推进水位线（不跳过），下轮会重试这一段
-            toastr.warning('本轮总结返回空内容（未写入记忆），稍后会自动重试');
-            settleSummaryTx(summaryTx, 'failed_retryable', '空响应');
+            const rawLen = String(raw || '').length;
+            console.warn('[Serendipity] 总结返回空内容：raw=' + rawLen + ' 字符，原始返回前 300 字符：', String(raw || '').slice(0, 300));
+            toastr.warning('本轮总结返回空内容（模型返回 ' + rawLen + ' 字符，未写入记忆），稍后会自动重试');
+            settleSummaryTx(summaryTx, 'failed_retryable', '空响应(raw=' + rawLen + ')');
             noteSummaryFailure(stBefore, keyBefore, lastIdx);
         }
     } catch (e) {
         console.error('[Serendipity] 记忆总结失败（阶段=总结，batch=' + batchId + '，来源=第' + (lastIdx + 1) + '楼，可重试）：', e);
         settleSummaryTx(summaryTx, 'failed_retryable', safeErrorText(e));
-        toastr.error('本轮记忆总结失败');
+        toastr.error('本轮记忆总结失败：' + safeErrorText(e));
         noteSummaryFailure(stBefore, keyBefore, lastIdx);
     } finally {
         isSummarizing = false;
