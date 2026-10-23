@@ -333,6 +333,9 @@ let storyEditing = false;    // 当前剧情时间锚点（标题）是否处于
 let isInjecting = false;     // 世界书注入进行中标记（防连点/并发注入）
 
 // ---------------- 设置 ----------------
+// 事务状态机（P08）：总结/压缩各自独立、可追踪、幂等；状态见 TX_STATUS
+const TX_STATUS = ['pending', 'requesting', 'validated', 'committed', 'failed_retryable', 'invalidated'];
+const TX_LIMIT = 50; // 每类事务记录最多保留条数（只留最近做诊断，不无限增长）
 // 每张角色卡独立的干净数据
 function freshCharSettings() {
     return {
@@ -349,6 +352,10 @@ function freshCharSettings() {
         roundsSinceSummary: 0,  // 距上次总结已过的轮数
         lastSummaryIndex: -1,   // 上次总结到的聊天消息下标（-1=尚未总结），用于跨轮总结窗口不丢剧情
         lastCommittedMessageKey: '', // 上次总结锁定的消息身份键（messageSig，重roll/删除后据此精确退回水位线，比下标更稳定）
+        summaryState: { status: 'idle', pendingBatchId: '', lastSuccessfulAt: 0 }, // 总结事务状态机（P08）：status∈idle/requesting，pendingBatchId=当前待处理批次
+        summaryTransactions: [],   // 逐批次总结记录（有界）[{ batchId, status, at, fromKey, toKey, count, error, retryable }]
+        compressionState: { status: 'idle', lastCommittedArchiveId: '' }, // 压缩事务状态机（P08），独立于总结
+        compressionTransactions: [], // 逐批次压缩记录（有界）[{ batchId, status, at, archiveId, fromKey, toKey, count, error, retryable }]
         storyTime: '',          // 当前剧情时间（AI 接力维护，每次总结时更新）
         storyDay: null,         // 结构化时间轴：第X天（null=尚未建立）
         storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
@@ -532,6 +539,22 @@ function normalizeCharSettings(cs) {
     if (typeof cs.lastCommittedMessageKey !== 'string') cs.lastCommittedMessageKey = '';
     if (typeof cs.lastCompressToKey !== 'string') cs.lastCompressToKey = '';
     cs.schemaVersion = (typeof cs.schemaVersion === 'number' && cs.schemaVersion >= 1) ? Math.floor(cs.schemaVersion) : 1;
+    // P08：事务状态机字段规范化（总结/压缩各自独立、状态枚举白名单、逐批次记录有界只留最近若干条）
+    cs.summaryState = (cs.summaryState && typeof cs.summaryState === 'object' && !Array.isArray(cs.summaryState)) ? cs.summaryState : {};
+    cs.summaryState = {
+        status: TX_STATUS.includes(cs.summaryState.status) ? cs.summaryState.status : 'idle',
+        pendingBatchId: typeof cs.summaryState.pendingBatchId === 'string' ? cs.summaryState.pendingBatchId : '',
+        lastSuccessfulAt: Number(cs.summaryState.lastSuccessfulAt) || 0,
+    };
+    cs.compressionState = (cs.compressionState && typeof cs.compressionState === 'object' && !Array.isArray(cs.compressionState)) ? cs.compressionState : {};
+    cs.compressionState = {
+        status: TX_STATUS.includes(cs.compressionState.status) ? cs.compressionState.status : 'idle',
+        lastCommittedArchiveId: typeof cs.compressionState.lastCommittedArchiveId === 'string' ? cs.compressionState.lastCommittedArchiveId : '',
+    };
+    if (!Array.isArray(cs.summaryTransactions)) cs.summaryTransactions = [];
+    cs.summaryTransactions = cs.summaryTransactions.filter(t => t && typeof t.batchId === 'string' && t.batchId).slice(-TX_LIMIT);
+    if (!Array.isArray(cs.compressionTransactions)) cs.compressionTransactions = [];
+    cs.compressionTransactions = cs.compressionTransactions.filter(t => t && typeof t.batchId === 'string' && t.batchId).slice(-TX_LIMIT);
     // M06：归档条目校验（from/to 数字、text/raw 字符串、srcKeys 字符串数组、needsReview 布尔），
     // 旧归档没有 srcKeys 时保留空数组（不判失效、不清空原文）
     cs.summaryArchive = cs.summaryArchive.filter(e => e && e.id && typeof e.text === 'string' && e.text.trim()).map(e => ({
@@ -1778,6 +1801,32 @@ function messageSig(m) {
     if (!m) return '';
     return [m.gen_started || '', m.send_date || '', m.swipe_id == null ? 0 : m.swipe_id].join('|');
 }
+// ---------------- 事务状态机（P08）：逐批次记录有界，总结/压缩各自独立，失败不改已提交边界 ----------------
+function recordSummaryTx(tx) {
+    if (!settings || !Array.isArray(settings.summaryTransactions)) return;
+    settings.summaryTransactions.push(tx);
+    if (settings.summaryTransactions.length > TX_LIMIT) settings.summaryTransactions.splice(0, settings.summaryTransactions.length - TX_LIMIT);
+}
+function recordCompressionTx(tx) {
+    if (!settings || !Array.isArray(settings.compressionTransactions)) return;
+    settings.compressionTransactions.push(tx);
+    if (settings.compressionTransactions.length > TX_LIMIT) settings.compressionTransactions.splice(0, settings.compressionTransactions.length - TX_LIMIT);
+}
+// 收敛一次总结事务：只有 committed 更新 lastSuccessfulAt；failed_retryable/invalidated 一律回到 idle、清 pendingBatchId，
+// 且绝不推进 lastCommittedMessageKey/lastSummaryIndex（那些游标只在 summarizeLastRound 的成功路径里写）
+function settleSummaryTx(tx, status, error) {
+    if (tx) { tx.status = status; tx.error = error || ''; }
+    if (settings && settings.summaryState) {
+        settings.summaryState.status = 'idle';
+        settings.summaryState.pendingBatchId = '';
+        if (status === 'committed') settings.summaryState.lastSuccessfulAt = Date.now();
+    }
+}
+// 收敛一次压缩事务：失败/中止回到 idle；lastCommittedArchiveId 只在压缩成功路径写
+function settleCompressionTx(tx, status, error) {
+    if (tx) { tx.status = status; tx.error = error || ''; }
+    if (settings && settings.compressionState) settings.compressionState.status = 'idle';
+}
 // 对照当前聊天：失效「来源消息已不在/已被替换」的记忆与时间线条目，返回是否有变动
 function reconcileWithChat() {
     if (!settings || isSummarizing || !Array.isArray(chat) || !chat.length) return false;
@@ -1946,22 +1995,28 @@ async function summarizeLastRound() {
     const lastIdx = sel[sel.length - 1].i;
     const sigBefore = messageSig(lastMsg);
     const batchId = uid(); // P08：本次总结批次 ID，失败日志里带上，便于定位影响范围
+    const summaryTx = { batchId, status: 'requesting', at: Date.now(), fromKey: messageSig(sel[0].m), toKey: sigBefore, count: sel.length, error: '', retryable: true };
+    recordSummaryTx(summaryTx);
+    if (settings.summaryState) { settings.summaryState.status = 'requesting'; settings.summaryState.pendingBatchId = batchId; }
     isSummarizing = true;
     try {
         const { systemPrompt, prompt } = buildSummaryPrompt(transcript, lastUserMsg.name || '用户', lastCharMsg.name || '角色', settings.storyTime);
         const raw = await callLLM({ prompt, systemPrompt });
         if (currentDataKey() !== keyBefore || settings !== stBefore) {
             console.warn('[Serendipity] 总结期间切换了聊天/角色，本次结果已丢弃，不会写入当前聊天');
+            settleSummaryTx(summaryTx, 'invalidated', '切换聊天/角色');
             return;
         }
         if (!chat[lastIdx] || messageSig(chat[lastIdx]) !== sigBefore) {
             settings.roundsSinceSummary = Math.max(0, (settings.summarizeEvery || 1) - 1);
             toastr.info('总结期间那条消息被重新生成/删除，本次结果已丢弃，将按新内容重新总结');
+            settleSummaryTx(summaryTx, 'invalidated', '消息被重roll/删除');
             return;
         }
         // 去掉思维链块，避免推理过程被当成记忆存进去
         const result = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
         if (result && result.trim()) {
+            summaryTx.status = 'validated'; // 结果非空、通过验证：可进入提交阶段（P08）
             // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
             let newStoryTime = extractStoryTime(result) || settings.storyTime;
             // 解析结构化时间轴（第X天/地点/重要事情），解析失败则沿用上一次，保证时间轴不倒退
@@ -2040,6 +2095,7 @@ async function summarizeLastRound() {
             } catch (e) {
                 console.warn('[Serendipity] 记忆保存失败：', e);
             }
+            settleSummaryTx(summaryTx, persisted ? 'committed' : 'failed_retryable', persisted ? '' : '保存失败');
             refreshLocalChecks(); // 先重算本地时间冲突，再注入正文，保证本轮就提醒模型
             updatePromptInjection();
             renderMemories();
@@ -2065,10 +2121,12 @@ async function summarizeLastRound() {
         } else {
             // 模型偶发返回空内容：明确提示，不推进水位线（不跳过），下轮会重试这一段
             toastr.warning('本轮总结返回空内容（未写入记忆），稍后会自动重试');
+            settleSummaryTx(summaryTx, 'failed_retryable', '空响应');
             noteSummaryFailure(stBefore, keyBefore, lastIdx);
         }
     } catch (e) {
         console.error('[Serendipity] 记忆总结失败（阶段=总结，batch=' + batchId + '，来源=第' + (lastIdx + 1) + '楼，可重试）：', e);
+        settleSummaryTx(summaryTx, 'failed_retryable', safeErrorText(e));
         toastr.error('本轮记忆总结失败');
         noteSummaryFailure(stBefore, keyBefore, lastIdx);
     } finally {
@@ -2194,6 +2252,9 @@ async function compressChatHistory() {
 
     isCompressing = true;
     const batchId = uid(); // P08：本次压缩批次 ID，失败日志里带上，便于定位影响范围
+    const compressionTx = { batchId, status: 'requesting', at: Date.now(), archiveId: '', fromKey: messageSig(indexedOld[0].m), toKey: messageSig(indexedOld[indexedOld.length - 1].m), count: indexedOld.length, error: '', retryable: true };
+    recordCompressionTx(compressionTx);
+    if (settings.compressionState) settings.compressionState.status = 'requesting';
     try {
         // map：把旧消息切成小段，并行总结；reduce：多段摘要分批合并成最终摘要
         // 带上原始楼层下标，摘要里能标出「第几楼」
@@ -2251,8 +2312,9 @@ async function compressChatHistory() {
         }
 
         // 存进面板归档（含摘要 + 原文全文，可回看）
+        const archiveId = uid();
         settings.summaryArchive.push({
-            id: uid(),
+            id: archiveId,
             at: Date.now(),
             from,
             to,
@@ -2300,6 +2362,9 @@ async function compressChatHistory() {
         // 记录压缩游标：二次压缩只归档这之后的新消息，不从第1楼重来；不动总结水位线（两者独立）
         settings.lastCompressToKey = messageSig(indexedOld[indexedOld.length - 1].m);
         await saveSettingsImmediate(); // C06：压缩游标即时落盘，二次压缩才不重复归档
+        compressionTx.archiveId = archiveId;
+        if (settings.compressionState) settings.compressionState.lastCommittedArchiveId = archiveId;
+        settleCompressionTx(compressionTx, 'committed');
 
         await saveChatConditional();
         await reloadCurrentChat();
@@ -2319,6 +2384,7 @@ async function compressChatHistory() {
         toastr.success('已把第 ' + from + '–' + to + ' 楼共 ' + indexedOld.length + ' 条压缩为一段摘要并隐藏旧楼层（原文已归档 + 备份下载，可 /unhide 恢复），保留最近 ' + keep + ' 条');
     } catch (e) {
         console.error('[Serendipity] 生成剧情摘要失败（阶段=压缩，batch=' + batchId + '，来源=第' + (indexedOld.length ? indexedOld[0].i + 1 : '?') + '–' + (indexedOld.length ? indexedOld[indexedOld.length - 1].i + 1 : '?') + '楼，可重试）：', e);
+        settleCompressionTx(compressionTx, 'failed_retryable', safeErrorText(e));
         // 中途失败时内存里的 chat 可能已被改过（is_system 标记），重新从磁盘读回原样
         try { await reloadCurrentChat(); } catch (_) { /* 忽略 */ }
         toastr.error('生成摘要失败：' + safeErrorText(e) + '（旧消息未改动，可重试）');
