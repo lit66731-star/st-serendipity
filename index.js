@@ -425,7 +425,15 @@ function normalizeCharSettings(cs) {
         cs.longMemories = [...cs.permanentMemories, ...cs.longMemories];
     }
     delete cs.permanentMemories;
-    cs.worldState = cs.worldState.filter(e => e && typeof e.cat === 'string' && typeof e.text === 'string').map(e => ({ id: e.id || uid(), cat: e.cat, text: e.text }));
+    cs.worldState = cs.worldState.filter(e => e && typeof e.cat === 'string' && typeof e.text === 'string').map(e => ({
+        id: e.id || uid(),
+        cat: e.cat,
+        text: e.text,
+        src: typeof e.src === 'string' ? e.src : '',
+        srcIdx: (e.srcIdx == null || isNaN(e.srcIdx)) ? null : Number(e.srcIdx),
+        srcSig: typeof e.srcSig === 'string' ? e.srcSig : '',
+        needsReview: !!e.needsReview,
+    }));
     cs.timeline = cs.timeline.filter(e => e && e.id).map(e => ({
         id: e.id,
         day: (e.day == null || isNaN(e.day)) ? null : Number(e.day),
@@ -649,6 +657,10 @@ function normalizeCharSettings(cs) {
         goal: typeof sl.goal === 'string' ? sl.goal : '',
         startDay: (sl.startDay != null && Number.isFinite(Number(sl.startDay))) ? Number(sl.startDay) : (cs.storyDay != null ? cs.storyDay : null),
         lastDay: (sl.lastDay != null && Number.isFinite(Number(sl.lastDay))) ? Number(sl.lastDay) : (cs.storyDay != null ? cs.storyDay : null),
+        src: typeof sl.src === 'string' ? sl.src : '',
+        srcIdx: (sl.srcIdx == null || isNaN(sl.srcIdx)) ? null : Number(sl.srcIdx),
+        srcSig: typeof sl.srcSig === 'string' ? sl.srcSig : '',
+        needsReview: !!sl.needsReview,
     })).filter(sl => sl.title);
     if (!cs.semanticRecall || typeof cs.semanticRecall !== 'object' || Array.isArray(cs.semanticRecall)) cs.semanticRecall = {};
     cs.semanticRecall = {
@@ -1659,7 +1671,7 @@ function extractWorldState(text) {
     return { entries, clearCats };
 }
 // 快照式合并：某类别本次有输出就替换整类；「空」则清空该类；无输出保留原样
-function applyWorldState(parsed) {
+function applyWorldState(parsed, src, srcIdx, srcSig) {
     const entries = parsed.entries || [];
     const clearCats = parsed.clearCats || [];
     for (const cat of clearCats) {
@@ -1669,7 +1681,7 @@ function applyWorldState(parsed) {
         const items = entries.filter(e => e.cat === cat);
         if (!items.length) continue;
         settings.worldState = settings.worldState.filter(e => e.cat !== cat);
-        for (const it of items) settings.worldState.push({ id: uid(), cat, text: it.text });
+        for (const it of items) settings.worldState.push(stampSrc({ id: uid(), cat, text: it.text }, src, srcIdx, srcSig));
     }
 }
 
@@ -1781,19 +1793,23 @@ function extractStorylines(text) {
 }
 
 // 应用剧情线：按线名（忽略首尾空白与大小写）合并——新线追加、已有线更新状态/目标/当前进展/最后活跃日（startDay 只在新线时记录，历史不删不改）
-function applyStorylines(list) {
+function applyStorylines(list, src, srcIdx, srcSig) {
     if (!Array.isArray(list) || !list.length) return;
     for (const sl of list) {
         const key = sl.title.trim().toLowerCase();
         const existing = settings.storylines.find(x => x.title && x.title.trim().toLowerCase() === key);
         if (existing) {
+            const changed = existing.kind !== sl.kind || existing.status !== sl.status
+                || (sl.goal && sl.goal !== existing.goal)
+                || (sl.summary && sl.summary !== existing.summary);
             existing.kind = sl.kind;
             existing.status = sl.status;
             if (sl.goal) existing.goal = sl.goal;
             existing.summary = sl.summary;
             existing.lastDay = settings.storyDay != null ? settings.storyDay : existing.lastDay;
+            if (changed) stampSrc(existing, src, srcIdx, srcSig);
         } else {
-            settings.storylines.push({
+            settings.storylines.push(stampSrc({
                 id: uid(),
                 title: sl.title.trim(),
                 kind: sl.kind,
@@ -1802,7 +1818,7 @@ function applyStorylines(list) {
                 goal: sl.goal,
                 startDay: settings.storyDay != null ? settings.storyDay : null,
                 lastDay: settings.storyDay != null ? settings.storyDay : null,
-            });
+            }, src, srcIdx, srcSig));
         }
     }
 }
@@ -1820,8 +1836,8 @@ function extractPresentChars(text) {
         .filter(Boolean)
         .filter(name => !ENTITY_PRONOUNS.has(name));
 }
-// 把本次总结的来源身份键/下标/内容签名打到实体上（来源失效时据此标「待核对」，不删实体）
-function stampEntitySrc(e, src, srcIdx, srcSig) {
+// 把本次总结的来源身份键/下标/内容签名打到结构化状态条目上（来源失效时据此标「待核对」，不删条目）
+function stampSrc(e, src, srcIdx, srcSig) {
     if (!e || !src) return e;
     e.src = src;
     e.srcIdx = (srcIdx != null) ? srcIdx : null;
@@ -1835,7 +1851,7 @@ function registerEntities(names, src, srcIdx, srcSig) {
     for (const name of names) {
         if (!name) continue;
         if (settings.entities.some(e => e.name === name)) continue;
-        settings.entities.push(stampEntitySrc({ id: uid(), name, age: '', note: '', world: '', timeline: '', identity: '', body: '', mind: '', goal: '', secret: '', promise: '' }, src, srcIdx, srcSig));
+        settings.entities.push(stampSrc({ id: uid(), name, age: '', note: '', world: '', timeline: '', identity: '', body: '', mind: '', goal: '', secret: '', promise: '' }, src, srcIdx, srcSig));
     }
 }
 // 从总结结果里解析【重要度】行 → 'S' | 'A' | 'B'（解析失败/非 S/A 默认 'B'）
@@ -1912,11 +1928,11 @@ function mergeEntityInfos(infos, src, srcIdx, srcSig) {
         if (!name) continue;
         const matches = settings.entities.filter(e => e.name === name);
         if (matches.length === 0) {
-            settings.entities.push(stampEntitySrc(entityFromInfo(name, info), src, srcIdx, srcSig));
+            settings.entities.push(stampSrc(entityFromInfo(name, info), src, srcIdx, srcSig));
         } else if (matches.length === 1) {
             const { score, overlap } = entityDomainScore(info, matches[0]);
-            if (overlap === 0 || score === overlap) { if (applyEntityInfo(matches[0], info)) stampEntitySrc(matches[0], src, srcIdx, srcSig); }
-            else if (score === 0) settings.entities.push(stampEntitySrc(entityFromInfo(name, info), src, srcIdx, srcSig));
+            if (overlap === 0 || score === overlap) { if (applyEntityInfo(matches[0], info)) stampSrc(matches[0], src, srcIdx, srcSig); }
+            else if (score === 0) settings.entities.push(stampSrc(entityFromInfo(name, info), src, srcIdx, srcSig));
             else queueEntityAssignment(info, matches);
         } else {
             // 同名多个：按身份域找唯一最佳归属
@@ -1927,10 +1943,10 @@ function mergeEntityInfos(infos, src, srcIdx, srcSig) {
                 else if (s === bestScore && s > 0) unique = false;
             }
             if (best && bestScore >= 1 && unique) {
-                if (applyEntityInfo(best, info)) stampEntitySrc(best, src, srcIdx, srcSig);
+                if (applyEntityInfo(best, info)) stampSrc(best, src, srcIdx, srcSig);
             } else if (bestScore === 0 && (info.world || info.timeline || info.identity)) {
                 // 无任何命中、但模型给了身份域：默认新建独立实体（域不同即不同人）
-                settings.entities.push(stampEntitySrc(entityFromInfo(name, info), src, srcIdx, srcSig));
+                settings.entities.push(stampSrc(entityFromInfo(name, info), src, srcIdx, srcSig));
             } else {
                 // 并列最高分、或模型没给身份域：无法确定归属，排队待人工确认
                 queueEntityAssignment(info, matches);
@@ -2349,6 +2365,16 @@ function reconcileWithChat() {
             if (flagged && !l.needsReview) { l.needsReview = true; changed = true; }
         }
     }
+    if (Array.isArray(settings.worldState)) {
+        for (const w of settings.worldState) {
+            if (!w.needsReview && sourceGone(w.src, w.srcSig)) { w.needsReview = true; changed = true; }
+        }
+    }
+    if (Array.isArray(settings.storylines)) {
+        for (const sl of settings.storylines) {
+            if (!sl.needsReview && sourceGone(sl.src, sl.srcSig)) { sl.needsReview = true; changed = true; }
+        }
+    }
     // C05/M07：归档来源消息被重roll/删除 → 标记「待核对」（保留原文，不自动删归档）；
     // 旧归档没有 srcKeys 的一律保留不判，避免误伤历史数据
     let archChanged = false;
@@ -2558,11 +2584,11 @@ async function summarizeLastRound() {
                 else pushTimelineEntry(axis.day, newStoryTime, axis.location, axis.event, axis.period, sigBefore, lastIdx, srcSig);
             }
             // 世界状态：解析并按类别快照合并（「无」保留、「空」清空、有新内容替换）
-            applyWorldState(extractWorldState(result));
+            applyWorldState(extractWorldState(result), sigBefore, lastIdx, srcSig);
             // 情感线：解析并追加关系变化（无变化/解析失败则不动；历史只追加不改写）
             applyRelationshipChange(extractRelationshipChange(result), sigBefore, lastIdx, srcSig);
             // 剧情线：解析并按线名合并（新线追加、已有线更新状态/进展）
-            applyStorylines(extractStorylines(result));
+            applyStorylines(extractStorylines(result), sigBefore, lastIdx, srcSig);
             // 角色实体自动登记（开关开启时）：优先用【人物档案】带出年龄/简介/身份域；模型没输出该行时退回只登记【在场人物】名字
             if (settings.autoRegisterEntities) {
                 const infos = extractEntityInfos(result);
@@ -4635,6 +4661,11 @@ function renderRelativeHints() {
 let worldEditingId = null; // 当前编辑中的世界状态条目 id
 let npcEditingId = null; // 当前编辑中的人物档案 id
 
+// 统一「待核对」徽标（复用归档的 amber 样式）：结构化状态来源失效后可见、可人工复核
+function staleBadge(flag) {
+    return flag ? '<span class="st-sd__compress-review">⚠ 待核对</span>' : '';
+}
+
 function renderWorldState() {
     const list = $('#st-serendipity .st-sd__world-list');
     if (!list.length) return;
@@ -4656,6 +4687,7 @@ function renderWorldState() {
             }
             return '<div class="st-sd__world-item" data-id="' + e.id + '">'
                 + '<span class="st-sd__world-item-text">' + escapeHtml(e.text) + '</span>'
+                + staleBadge(e.needsReview)
                 + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__world-edit" data-id="' + e.id + '">编辑</button><button type="button" class="st-sd__world-del" data-id="' + e.id + '">删除</button></span>'
                 + '</div>';
         }).join('');
@@ -4696,6 +4728,7 @@ function renderNpcs() {
             .join('');
         return '<div class="st-sd__npc-item" data-id="' + n.id + '">'
             + '<span class="st-sd__npc-name">' + escapeHtml(n.name) + '</span>'
+            + staleBadge(n.needsReview)
             + (domain ? '<span class="st-sd__npc-domain">' + escapeHtml(domain) + '</span>' : '')
             + (n.age ? '<span class="st-sd__npc-age">' + escapeHtml(n.age) + '岁</span>' : '')
             + (n.note ? '<span class="st-sd__npc-note">' + escapeHtml(n.note) + '</span>' : '')
@@ -4771,6 +4804,7 @@ function renderRelationship() {
         html += '<div class="st-sd__rel-item" data-id="' + l.id + '">';
         html += '<div class="st-sd__rel-head">'
             + '<span class="st-sd__rel-pair">' + escapeHtml(resolveEntityRef(l.a).display) + ' <span class="st-sd__rel-arrow">→</span> ' + escapeHtml(resolveEntityRef(l.b).display) + '</span>'
+            + staleBadge(l.needsReview)
             + '<button type="button" class="st-sd__rel-del" data-id="' + l.id + '">删除</button>'
             + '</div>';
         html += '<div class="st-sd__rel-chips">'
@@ -4787,6 +4821,7 @@ function renderRelationship() {
                     + '<div class="st-sd__rel-row-top">'
                     + '<span class="st-sd__rel-day">' + day + '</span>'
                     + '<span class="st-sd__rel-to">' + escapeHtml(h.to || h.change || '变化') + '</span>'
+                    + staleBadge(h.needsReview)
                     + (h.affection ? '<span class="st-sd__rel-delta' + affClass(h.affection) + '">' + escapeHtml(h.affection) + '</span>' : '')
                     + '<button type="button" class="st-sd__rel-row-del" data-id="' + h.id + '">删除</button>'
                     + '</div>'
@@ -5198,6 +5233,7 @@ function renderStorylines() {
             + '<div class="st-sd__sl-head">'
             + '<span class="st-sd__sl-kind">' + escapeHtml(sl.kind) + '</span>'
             + '<span class="st-sd__sl-title">' + escapeHtml(sl.title) + '</span>'
+            + staleBadge(sl.needsReview)
             + '<button type="button" class="st-sd__sl-status ' + statusCls + '" data-id="' + sl.id + '" title="点击切换状态（' + STORYLINE_STATUS.join(' / ') + '）">' + escapeHtml(sl.status) + '</button>'
             + '<span class="st-sd__memory-actions"><button type="button" class="st-sd__sl-edit" data-id="' + sl.id + '">编辑</button><button type="button" class="st-sd__sl-del" data-id="' + sl.id + '">删除</button></span>'
             + '</div>'
