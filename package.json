@@ -1,0 +1,9 @@
+{
+  "name": "st-serendipity",
+  "private": true,
+  "type": "module",
+  "description": "SillyTavern 剧情记忆扩展（Serendipity）。package.json 仅用于让 Node 测试按 ESM 直接导入 src/ 生产模块，ST 加载扩展走 manifest.json，不读此文件。",
+  "scripts": {
+    "test": "node test/summary-commit.test.mjs"
+  }
+}

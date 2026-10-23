@@ -21,6 +21,7 @@ import { selected_group } from '../../../group-chats.js';
 import { getStringHash, copyText } from '../../../utils.js';
 import { textgen_types, textgenerationwebui_settings } from '../../../textgen-settings.js';
 import { oai_settings } from '../../../openai.js';
+import { hasMemoryForSource, commitSummary } from './src/summary-commit.js';
 
 const extensionName = 'serendipity';
 const VERSION = '2.4.1'; // 面板标题旁展示，更新时与 manifest.json 同步
@@ -2538,6 +2539,25 @@ async function summarizeLastRound() {
         const result = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
         if (result && result.trim()) {
             summaryTx.status = 'validated'; // 结果非空、通过验证：可进入提交阶段（P08）
+            // T002 幂等恢复：本批消息已有记忆（src 命中）说明上一轮「数据已写入但游标未提交」，
+            // 这里不再重复解析/写入（避免重复记忆/关系线/时间线），直接补提交游标。
+            if (hasMemoryForSource(settings, sigBefore)) {
+                const commit = await commitSummary({
+                    settings,
+                    lastIdx,
+                    sigBefore,
+                    save: saveSettingsImmediate,
+                    clearFailStreak: () => { summaryFailStreak[keyBefore] = 0; },
+                    onSaveFailed: (phase, e) => console.warn('[Serendipity] 游标补提交保存失败：', e),
+                });
+                settleSummaryTx(summaryTx, commit.committed ? 'committed' : 'failed_retryable', commit.committed ? '' : '游标补提交失败');
+                updatePromptInjection();
+                renderMemories();
+                renderTimeAxis();
+                if (commit.committed) toastr.success('检测到上一轮总结已写入但游标未提交，已自动补提交');
+                else toastr.warning('游标补提交失败，稍后会自动重试');
+                return;
+            }
             // 解析出新剧情时间，解析失败则沿用上一次（保证时间线不倒退、不丢失）
             let newStoryTime = extractStoryTime(result) || settings.storyTime;
             // 解析结构化时间轴（第X天/地点/重要事情），解析失败则沿用上一次，保证时间轴不倒退
@@ -2604,21 +2624,21 @@ async function summarizeLastRound() {
             const meta = summaryMeta(sel, result, 'memory_summary'); // 来源键/内容签名/模型/token 元数据（summary_structure）
             settings.memories.push({ id: newMemId, time: Date.now(), src: sigBefore, srcIdx: lastIdx, srcSig, storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText, sourceMessageKeys: meta.sourceMessageKeys, sourceSignature: meta.sourceSignature, summaryVersion: settings.summaryVersion, modelId: meta.modelId, inputTokenCount: meta.inputTokenCount, outputTokenCount: meta.outputTokenCount, status: 'committed', characterId: currentCharKey(), chatId: currentChatId(), createdAt: Date.now() });
             if (jump && settings.pendingJump) settings.pendingJump.memIds.push(newMemId);
-            settings.lastSummaryIndex = lastIdx; // 记录已总结到的消息下标，下次只总结新增部分（用总结时的位置，期间新到的消息留给下一次）
-            settings.lastCommittedMessageKey = sigBefore; // 稳定身份键：重roll/删除后据此精确退回，不依赖易漂移的下标
-            summaryFailStreak[keyBefore] = 0;
+            // T002：游标提交移到「数据确认落盘之后」（见下方 commitSummary 两段式提交），
+            // 避免保存失败却已把本批消息标记为已完成。
             const promoted = promoteMemories();
             if (settings.autoFixTime) repairTimeData();
-            // P03/S04：先落盘成功，再报「成功」；保存失败时仍保留内存内结果（当前会话继续有效），
-            // 但不误导为已持久化——刷新/重启后可能重试本轮（记忆与游标一起回退，不会重复写入）
-            let persisted = false;
-            try {
-                await saveSettingsImmediate();
-                persisted = true;
-            } catch (e) {
-                console.warn('[Serendipity] 记忆保存失败：', e);
-            }
-            settleSummaryTx(summaryTx, persisted ? 'committed' : 'failed_retryable', persisted ? '' : '保存失败');
+            // T002：两段式提交——先落盘数据（游标保持旧值），确认成功后才推进游标并二次落盘；
+            // 任何一段失败都不把本批消息标记为已完成（游标不推进），下次重试靠 hasMemoryForSource 幂等跳过重复写入。
+            const commit = await commitSummary({
+                settings,
+                lastIdx,
+                sigBefore,
+                save: saveSettingsImmediate,
+                clearFailStreak: () => { summaryFailStreak[keyBefore] = 0; },
+                onSaveFailed: (phase, e) => console.warn('[Serendipity] ' + (phase === 'data' ? '记忆保存失败' : '游标提交保存失败') + '：', e),
+            });
+            settleSummaryTx(summaryTx, commit.committed ? 'committed' : 'failed_retryable', commit.committed ? '' : (commit.phase === 'data_save_failed' ? '保存失败' : '游标提交失败'));
             refreshLocalChecks(); // 先重算本地时间冲突，再注入正文，保证本轮就提醒模型
             updatePromptInjection();
             renderMemories();
@@ -2630,8 +2650,8 @@ async function summarizeLastRound() {
             const parts = [];
             if (promoted.toLong) parts.push('短期已满十轮，自动放入长期记忆');
             if (parts.length) msg += '；' + parts.join('；');
-            if (persisted) toastr.success(msg);
-            else toastr.warning(msg + '（但保存失败，刷新/重启后可能需要重新总结本轮，请检查存储空间）');
+            if (commit.committed) toastr.success(msg);
+            else toastr.warning(msg + (commit.phase === 'data_save_failed' ? '（但保存失败，稍后会自动重试，不会重复写入）' : '（但游标提交失败，刷新后可能重新总结本轮，已写入的记忆不会重复）'));
             if (promoted.toLong) compressLongMemory(promoted.longId, promoted.sources, keyBefore, stBefore);
 
             // 长期记忆满 10 条：提醒归档到世界书（只提醒一次，归档后重置）
