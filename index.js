@@ -23,7 +23,7 @@ import { textgen_types, textgenerationwebui_settings } from '../../../textgen-se
 import { oai_settings } from '../../../openai.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.3.40'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.4.1'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -343,9 +343,11 @@ function freshCharSettings() {
         summaryTranscriptMax: 24000, // 单次总结发给模型的对话字数上限（开场白与最新两条一定保留，中间超出的省略；可在「记忆」页按模型上下文调整）
         compressKeep: 20,       // 生成摘要时保留最近多少条消息不纳入摘要（留给正文上下文）
         compressBackupDownload: false, // 生成摘要后是否自动下载 JSON 备份文件（默认关：全文已在面板归档可回看，旧楼层也已隐藏可 /unhide 恢复，手机上下载易导致页面跳走）
+        lastCompressToKey: '',  // 上次压缩归档到哪条消息的身份键（messageSig，独立于总结水位线；二次压缩只归档这之后的新消息，不从第1楼重来）
         summaryArchive: [],     // 剧情摘要归档 [{ id, at, from, to, text, raw, rawSize }]：原文全文归档 + 摘要替身（旧楼层隐藏、不删）
         roundsSinceSummary: 0,  // 距上次总结已过的轮数
         lastSummaryIndex: -1,   // 上次总结到的聊天消息下标（-1=尚未总结），用于跨轮总结窗口不丢剧情
+        lastCommittedMessageKey: '', // 上次总结锁定的消息身份键（messageSig，重roll/删除后据此精确退回水位线，比下标更稳定）
         storyTime: '',          // 当前剧情时间（AI 接力维护，每次总结时更新）
         storyDay: null,         // 结构化时间轴：第X天（null=尚未建立）
         storyPeriod: '',        // 当前时段（深夜/清晨/上午/中午/下午/傍晚/夜晚）
@@ -526,6 +528,8 @@ function normalizeCharSettings(cs) {
     else cs.summaryTranscriptMax = Math.floor(cs.summaryTranscriptMax);
     cs.roundsSinceSummary = Number(cs.roundsSinceSummary) || 0;
     cs.lastSummaryIndex = (typeof cs.lastSummaryIndex === 'number' && cs.lastSummaryIndex >= 0) ? Math.floor(cs.lastSummaryIndex) : -1;
+    if (typeof cs.lastCommittedMessageKey !== 'string') cs.lastCommittedMessageKey = '';
+    if (typeof cs.lastCompressToKey !== 'string') cs.lastCompressToKey = '';
     cs.compressKeep = (Number(cs.compressKeep) >= 2 && Number(cs.compressKeep) <= 200) ? Math.floor(Number(cs.compressKeep)) : 20;
     if (cs.compressBackupDownload === undefined) cs.compressBackupDownload = false;
     if (typeof cs.storyTime !== 'string') cs.storyTime = '';
@@ -1785,7 +1789,10 @@ function reconcileWithChat() {
     dropStale(settings.timeline);
     if (!changed) return false;
     // 水位线退回到最早失效来源之前，让被重roll/删除的消息按新内容重新总结
-    if (minSrcIdx !== Infinity) settings.lastSummaryIndex = Math.max(-1, minSrcIdx - 1);
+    if (minSrcIdx !== Infinity) {
+        settings.lastSummaryIndex = Math.max(-1, minSrcIdx - 1);
+        settings.lastCommittedMessageKey = ''; // 身份键作废，按新内容重新总结时重算
+    }
     settings.roundsSinceSummary = Math.max(0, (settings.summarizeEvery || 1) - 1); // 下一次生成结束立即重新总结
     refreshLocalChecks();
     updatePromptInjection();
@@ -1798,12 +1805,27 @@ function reconcileWithChat() {
     return true;
 }
 
+// 总结水位线（下一次总结的起始下标 = 上次总结到的消息下标 + 1）。
+// 优先用已提交的消息身份键回推（重roll/删除后依然精确）；身份键对不上时退回下标兜底（旧数据迁移/对账未跑）。
+function summaryBoundaryIndex() {
+    if (!Array.isArray(chat) || !chat.length) return 0;
+    const key = settings.lastCommittedMessageKey;
+    if (typeof key === 'string' && key) {
+        for (let i = chat.length - 1; i >= 0; i--) {
+            if (messageSig(chat[i]) === key) return i + 1;
+        }
+    }
+    const w = settings.lastSummaryIndex;
+    if (w == null || w < 0) return 0;
+    return w + 1;
+}
+
 // 水位线之后是否出现了新的 AI 回复（越界视为有，交给总结去修正水位线）
 function hasUnsummarizedChat() {
     if (!Array.isArray(chat) || chat.length < 2) return false;
-    const w = settings.lastSummaryIndex;
-    if (w == null || w < 0 || w >= chat.length) return true;
-    for (let i = chat.length - 1; i > w; i--) {
+    const start = summaryBoundaryIndex();
+    if (start >= chat.length) return true;
+    for (let i = chat.length - 1; i >= start; i--) {
         const m = chat[i];
         if (m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim()) return true;
     }
@@ -1835,7 +1857,7 @@ async function summarizeLastRound() {
     // 取「上次总结以来」的新消息窗口：每 N 轮才总结时，把中间跳过的几轮一并带上，避免漏剧情
     const indexed = chat.map((m, i) => ({ m, i })).filter(x => x.m && typeof x.m.mes === 'string' && x.m.mes.trim() && !x.m.is_system);
     if (indexed.length < 2) return;
-    const start = (settings.lastSummaryIndex != null && settings.lastSummaryIndex >= 0) ? settings.lastSummaryIndex + 1 : 0;
+    const start = summaryBoundaryIndex();
     let sel = indexed.filter(x => x.i >= start);
     if (sel.length < 2) {
         // 水位线之后没有新对话（重新进入聊天、其他扩展的后台生成等也会触发生成结束事件）：不重复总结
@@ -1963,6 +1985,7 @@ async function summarizeLastRound() {
             settings.memories.push({ id: newMemId, time: Date.now(), src: sigBefore, srcIdx: lastIdx, storyTime: newStoryTime, storyDay: settings.storyDay, storyPeriod: settings.storyPeriod, storyLocation: settings.storyLocation, importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText), text: memoryText });
             if (jump && settings.pendingJump) settings.pendingJump.memIds.push(newMemId);
             settings.lastSummaryIndex = lastIdx; // 记录已总结到的消息下标，下次只总结新增部分（用总结时的位置，期间新到的消息留给下一次）
+            settings.lastCommittedMessageKey = sigBefore; // 稳定身份键：重roll/删除后据此精确退回，不依赖易漂移的下标
             summaryFailStreak[keyBefore] = 0;
             const promoted = promoteMemories();
             if (settings.autoFixTime) repairTimeData();
@@ -2105,16 +2128,23 @@ async function compressChatHistory() {
     const oldCount = chat.length - keep;
     if (oldCount < 2) { toastr.info('当前聊天还不长（不足 ' + (keep + 1) + ' 条），无需生成摘要'); return; }
 
-    // 首楼开场白（第 0 条）永不纳入：只总结第 1 条到第 oldCount-1 条
-    const compressStart = 1;
-    const oldMsgs = chat.slice(compressStart, oldCount).filter(m => m && typeof m.mes === 'string' && m.mes.trim());
-    if (oldMsgs.length < 2) { toastr.info('没有足够的旧消息可总结'); return; }
+    // 压缩游标：上次归档到的消息身份键之后才算「新消息」，二次压缩只归档新增对话，不从第1楼重来
+    let compressStart = 1;
+    const lastKey = settings.lastCompressToKey;
+    if (typeof lastKey === 'string' && lastKey) {
+        for (let i = oldCount - 1; i >= 1; i--) {
+            if (messageSig(chat[i]) === lastKey) { compressStart = i + 1; break; }
+        }
+    }
+
+    // 首楼开场白（第 0 条）永不纳入；占位/已隐藏的系统消息（is_system）也不纳入，只总结真正的旧对话
+    const indexedOld = chat.slice(compressStart, oldCount).map((m, i) => ({ m, i: i + compressStart })).filter(x => x.m && typeof x.m.mes === 'string' && x.m.mes.trim() && !x.m.is_system);
+    if (indexedOld.length < 2) { toastr.info('没有足够的旧消息可总结（上次压缩后还没有新的对话）'); return; }
 
     isCompressing = true;
     try {
         // map：把旧消息切成小段，并行总结；reduce：多段摘要分批合并成最终摘要
         // 带上原始楼层下标，摘要里能标出「第几楼」
-        const indexedOld = chat.slice(compressStart, oldCount).map((m, i) => ({ m, i: i + compressStart })).filter(x => x.m && typeof x.m.mes === 'string' && x.m.mes.trim());
         const chunks = buildCompressTranscript(indexedOld, COMPRESS_CHUNK_MAX);
         toastr.info('开始生成摘要，共 ' + chunks.length + ' 段（并行处理，请稍候…）', undefined, { timeOut: 3000 });
         let done = 0;
@@ -2139,9 +2169,9 @@ async function compressChatHistory() {
         }
         const summary = summaries[0];
 
-        // 楼层范围（首楼编号从 1 起，跳过第 0 条开场白）：from = 第 2 楼，to = 第 oldCount 楼
-        const from = compressStart + 1;
-        const to = oldCount;
+        // 楼层范围（首楼编号从 1 起，跳过第 0 条开场白）：from/to 取本次实际归档的首尾楼层
+        const from = indexedOld[0].i + 1;
+        const to = indexedOld[indexedOld.length - 1].i + 1;
 
         // 原文全文（归档用）：把这次要隐藏的旧消息原样拼成一段，附上楼层与说话人
         const raw = indexedOld.map(x =>
@@ -2210,9 +2240,8 @@ async function compressChatHistory() {
         // 摘要替身插在旧楼层之后、最近 keep 条之前，作为可视的分隔提示
         chat.splice(oldCount, 0, summaryMsg);
 
-        // 旧楼层已隐藏：清空总结回滚日志并重置水位线，防止 reconcileWithChat 误判「消息变动」而回滚记忆
-        settings.summaryJournal = [];
-        settings.lastSummaryIndex = chat.length - 1;
+        // 记录压缩游标：二次压缩只归档这之后的新消息，不从第1楼重来；不动总结水位线（两者独立）
+        settings.lastCompressToKey = messageSig(indexedOld[indexedOld.length - 1].m);
         saveSettings();
 
         await saveChatConditional();
