@@ -2469,37 +2469,37 @@ function noteSummaryFailure(st, key, lastIdx) {
 
 async function summarizeLastRound() {
     // 上一轮总结还没跑完：不直接跳过，而是记一笔「还有一轮待总结」，等当前跑完再补，避免这一轮被并进下一轮
-    if (isSummarizing) { summaryPending = true; return; }
+    if (isSummarizing) { console.warn('[Serendipity][SummaryDebug] BLOCKED_A isSummarizing 为真，上一轮尚未结束，已挂起待补'); summaryPending = true; return; }
     activateCharacter(); // 每次总结前重新绑定到当前角色，避免切换角色后总结写错档
     reconcileWithChat();
-    if (!settings.memoryEnabled) return;
-    if (!currentDataKey()) return; // 没有选中角色/群组，没有可写入的档案
-    if (!Array.isArray(chat) || chat.length < 2) return;
-    if (!taskConfigured('memory_summary')) return; // 未配置记忆总结模型：跳过本次总结，不回退聊天 API
+    if (!settings.memoryEnabled) { console.warn('[Serendipity][SummaryDebug] BLOCKED_B memoryEnabled 未开启'); return; }
+    if (!currentDataKey()) { console.warn('[Serendipity][SummaryDebug] BLOCKED_C currentDataKey 为空（未选中角色/聊天）'); return; }
+    if (!Array.isArray(chat) || chat.length < 2) { console.warn('[Serendipity][SummaryDebug] BLOCKED_D 聊天消息不足', { chatIsArray: Array.isArray(chat), chatLength: Array.isArray(chat) ? chat.length : null }); return; }
+    if (!taskConfigured('memory_summary')) { console.warn('[Serendipity][SummaryDebug] BLOCKED_E taskConfigured(memory_summary) 未通过（模型未配好）'); return; }
 
     // 取「上次总结以来」的新消息窗口：每 N 轮才总结时，把中间跳过的几轮一并带上，避免漏剧情
     const indexed = chat.map((m, i) => ({ m, i })).filter(x => x.m && typeof x.m.mes === 'string' && x.m.mes.trim() && !x.m.is_system);
-    if (indexed.length < 2) return;
+    if (indexed.length < 2) { console.warn('[Serendipity][SummaryDebug] BLOCKED_F 过滤 system/空消息后不足两条', { indexedLength: indexed.length }); return; }
     const start = summaryBoundaryIndex();
     let sel = indexed.filter(x => x.i >= start);
     if (sel.length < 2) {
         // 水位线之后没有新对话（重新进入聊天、其他扩展的后台生成等也会触发生成结束事件）：不重复总结
-        if (start <= chat.length - 1) return;
+        if (start <= chat.length - 1) { console.warn('[Serendipity][SummaryDebug] BLOCKED_G 水位线之后无新对话', { start, chatLength: chat.length, lastSummaryIndex: settings.lastSummaryIndex, lastCommittedMessageKey: settings.lastCommittedMessageKey, selLength: sel.length }); return; }
         // 水位线越界（消息被删除/回滚等）：退化为最近一轮，避免从此再也不总结
         let lastCharIdx = -1;
         for (let i = indexed.length - 1; i >= 0; i--) { if (!indexed[i].m.is_user) { lastCharIdx = i; break; } }
-        if (lastCharIdx < 0) return;
+        if (lastCharIdx < 0) { console.warn('[Serendipity][SummaryDebug] BLOCKED_H 回退分支找不到角色消息'); return; }
         let userIdx = -1;
         for (let i = lastCharIdx - 1; i >= 0; i--) { if (indexed[i].m.is_user) { userIdx = i; break; } }
-        if (userIdx < 0) return;
+        if (userIdx < 0) { console.warn('[Serendipity][SummaryDebug] BLOCKED_H 回退分支找不到用户消息'); return; }
         sel = [indexed[userIdx], indexed[lastCharIdx]];
     }
     const lastMsg = sel[sel.length - 1].m;
-    if (lastMsg.is_user) return; // 最后一条是用户消息（尚未回复），跳过
+    if (lastMsg.is_user) { console.warn('[Serendipity][SummaryDebug] BLOCKED_I 最后一条仍是用户消息（角色尚未回复）'); return; }
 
     const lastCharMsg = ([...sel].reverse().find(x => !x.m.is_user) || {}).m;
     const lastUserMsg = ([...sel].reverse().find(x => x.m.is_user) || {}).m;
-    if (!lastCharMsg || !lastUserMsg) return;
+    if (!lastCharMsg || !lastUserMsg) { console.warn('[Serendipity][SummaryDebug] BLOCKED_H 最近一轮缺角色或用户消息', { hasLastCharMsg: !!lastCharMsg, hasLastUserMsg: !!lastUserMsg }); return; }
 
     // 总结窗口上限：最早一条（开场白/窗口起点）与最新两条一定保留，中间的从新往旧取、超预算就省略更早的。
     // 这样开头不会被「开场白太长」整段丢掉（此前开头只总结两条），也不至于把超长窗口整段发给模型。
@@ -2523,6 +2523,13 @@ async function summarizeLastRound() {
     isSummarizing = true;
     try {
         const { systemPrompt, prompt } = buildSummaryPrompt(transcript, lastUserMsg.name || '用户', lastCharMsg.name || '角色', settings.storyTime);
+        console.info('[Serendipity][SummaryDebug] READY_TO_CALL_API', {
+            chatLength: chat.length,
+            indexedLength: indexed.length,
+            selectedLength: sel.length,
+            start,
+            dataKey: currentDataKey(),
+        });
         const raw = await callCustomApi({ prompt, systemPrompt, cfg: getTaskCfg('memory_summary') });
         if (currentDataKey() !== keyBefore || settings !== stBefore) {
             console.warn('[Serendipity] 总结期间切换了聊天/角色，本次结果已丢弃，不会写入当前聊天');
@@ -7037,8 +7044,8 @@ jQuery(async () => {
             if (!settings) return;
             activateCharacter();
             reconcileWithChat(); // 重新生成/滑动后先回滚旧记忆，再按新内容总结
-            if (!settings.memoryEnabled) return;
-            if (!hasUnsummarizedChat()) return; // 没有新对话（重新进入聊天等触发的生成结束事件）不计轮、不总结
+            if (!settings.memoryEnabled) { console.warn('[Serendipity][SummaryDebug] AUTO_BLOCKED memoryEnabled 未开启'); return; }
+            if (!hasUnsummarizedChat()) { console.warn('[Serendipity][SummaryDebug] AUTO_BLOCKED hasUnsummarizedChat 为 false（水位线之后没有新对话）', { chatLength: chat.length, lastSummaryIndex: settings.lastSummaryIndex, lastCommittedMessageKey: settings.lastCommittedMessageKey }); return; }
             settings.roundsSinceSummary = (settings.roundsSinceSummary || 0) + 1;
             const every = settings.summarizeEvery || 1;
             const roundReady = settings.roundsSinceSummary >= every;
@@ -7046,7 +7053,10 @@ jQuery(async () => {
             const tokenReady = shouldTriggerSummary(pendingSummaryTokens(), resolveTokenBudget(settings.tokenBudget, getTaskModelContext('memory_summary')));
             if (roundReady || tokenReady) {
                 settings.roundsSinceSummary = 0;
+                console.info('[Serendipity][SummaryDebug] AUTO_CALLING summarizeLastRound', { roundReady, tokenReady, roundsSinceSummary: settings.roundsSinceSummary, every });
                 summarizeLastRound();
+            } else {
+                console.warn('[Serendipity][SummaryDebug] AUTO_NOT_READY 轮数/token 都未达标，本轮不总结', { roundReady, tokenReady, roundsSinceSummary: settings.roundsSinceSummary, every });
             }
         }, 200);
     });
