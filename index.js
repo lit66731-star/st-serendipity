@@ -5601,7 +5601,7 @@ function bindPanelEvents() {
 
     // 立即总结
     panel.find('.st-sd__summarize').on('click', () => {
-        if (!apiConfigured()) { toastr.warning('请先在「记忆」页配置插件 API（不会回退到聊天 API）'); return; }
+        if (!taskConfigured('memory_summary')) { toastr.warning('请先给「记忆总结」任务配好模型（模型管理页或「记忆」页插件 API，不回退聊天 API）'); return; }
         summarizeLastRound();
     });
     // 导出记忆
