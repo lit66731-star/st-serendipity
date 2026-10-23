@@ -165,6 +165,14 @@ serendipity
 | `archiveVectorized` / `semanticRecall` | 归档条目是否标记向量化 / 自动语义召回设置与索引快照 |
 | `worldBook` / `archivedWorldBook` / `worldReminderShown` | 归档目标世界书 / 上次归档 / 归档提醒 |
 
+### UI 隔离（对抗酒馆美化/主题）
+
+面板是**独立固定浅色系统**（暖白底 + 深字），有自己的浅色主题（静谧/蜜桃牛奶/薄荷汽水/薰衣草/奶油布丁/云朵蓝），但**不跟随酒馆全局主题/美化换肤**——这是刻意的：剧情档案这类长文阅读界面需要稳定的白底黑字对比，换了深色美化也要一眼看清。
+
+- **DOM 层**：面板直接 `append` 到 `body` 的普通 DOM（**不是 Shadow DOM**），所以全局美化 CSS 能打到面板内部；隔离靠 **`#st-serendipity` ID 前缀（高优先级）+ `!important`** 顶上去，而不是 Shadow DOM 的样式天然封闭。
+- **已锁死的可读性关键项**：所有文字色（`--sd-text/2/3`）`!important`；输入框/下拉/多行文本固定**黑字白底**（含 `-webkit-text-fill-color`、占位符灰、下拉选项黑字白底）；**光标颜色**、**文本选区**、**字号/行高/字体栈**在根上锁死；标题/区块题头保留衬线字并显式 `!important`。
+- **接受与边界**：接受「美化/主题会尝试覆盖面板样式」这一前提，用上面的硬锁兜住可读性；不做 Shadow DOM（成本高、且会打断 `toastr`、焦点、滚动等酒馆全局交互）。极少数用 `* { … !important }` 的激进美化仍可能突破，属可接受的边缘情况。
+
 ### 记忆总结流水线（核心）
 
 每一轮 AI 回复结束后（`GENERATION_ENDED`），按 `summarizeEvery`（每 N 轮）触发一次 `summarizeLastRound()`：

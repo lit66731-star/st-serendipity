@@ -1895,3 +1895,40 @@ details.st-sd__tier[open] > summary.st-sd__tier-title::before { transform: rotat
 .st-sd__mform-name { width: 88px; flex-shrink: 0; font-size: 12px; color: var(--sd-text-2) !important; font-weight: 500; }
 .st-sd__mform-row input, .st-sd__mform-row select { flex: 1; min-width: 0; }
 .st-sd__mform-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+
+/* ==========================================================================
+   Phase 8 UI 隔离补强：光标 / 选区 / 占位符 / 排版基础锁死
+   面板是浅色固定主题（黑字白底），酒馆「美化 / 主题」的全局 CSS 可能把
+   caret、选区、字体、字号、行高刷成看不清。这里把可读性关键项全部 !important 锁死。
+   （面板直接 append 到 body 的普通 DOM，不是 Shadow DOM——所以靠「ID 高优先级 + !important」隔离，
+   而不是 Shadow DOM 的样式天然隔离。见 README「UI 隔离」说明。）
+   ========================================================================== */
+
+/* 光标颜色：固定深色，防止被刷成白色/透明导致看不见插入点 */
+#st-serendipity input,
+#st-serendipity textarea,
+#st-serendipity [contenteditable="true"] {
+    caret-color: #292724 !important;
+}
+
+/* 文本选区：深底浅字，防止选区背景/文字同色或被刷透明 */
+#st-serendipity ::selection {
+    color: #FFFFFF !important;
+    background-color: rgba(41, 39, 36, 0.88) !important;
+}
+#st-serendipity ::-moz-selection {
+    color: #FFFFFF !important;
+    background-color: rgba(41, 39, 36, 0.88) !important;
+}
+
+/* 排版基础：字号/行高/字体栈在根上锁死，不被酒馆美化改写（不全局 * 覆盖，保留标题的衬线字） */
+#st-serendipity {
+    font-size: var(--sd-fs, 13px) !important;
+    line-height: var(--sd-lh, 1.65) !important;
+    font-family: var(--sd-sans) !important;
+}
+/* 标题/区块题头保留衬线字，并显式 !important 抵御美化覆盖 */
+#st-serendipity .st-sd__title,
+#st-serendipity .st-sd__section-title {
+    font-family: var(--sd-serif) !important;
+}
