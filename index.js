@@ -1577,6 +1577,7 @@ function worldStateByCat() {
     const map = {};
     for (const cat of WORLD_CATS) map[cat] = [];
     for (const e of settings.worldState) {
+        if (e.needsReview) continue; // 待核对（来源被重roll/删除）的世界状态不再注入，避免陈旧事实影响生成
         if (map[e.cat]) map[e.cat].push(e.text);
     }
     return map;
@@ -1587,7 +1588,7 @@ function worldStateLines(byCat) {
 
 // 把当前关系线渲染成紧凑文本（供总结锚点与正文注入复用）
 function relationshipCurrentText() {
-    return settings.relationshipLines.map(l =>
+    return settings.relationshipLines.filter(l => !l.needsReview).map(l =>
         resolveEntityRef(l.a).display + '→' + resolveEntityRef(l.b).display + '：关系 ' + (l.current.relationship || '未知')
         + (l.current.affection ? '，好感 ' + l.current.affection : '')
         + (l.current.attitude ? '，态度 ' + l.current.attitude : '')
@@ -1637,7 +1638,7 @@ function inferMemoryEntity(text) {
     return hits.length === 1 ? hits[0].id : '';
 }
 function npcText() {
-    return settings.entities.map(n => n.name
+    return settings.entities.filter(n => !n.needsReview).map(n => n.name
         + (entityDomain(n) ? '（' + entityDomain(n) + '）' : '')
         + (n.age ? '，' + n.age + '岁' : '')
         + (n.note ? '，' + n.note : '')
@@ -3017,7 +3018,7 @@ function buildMemoryBlock() {
 
 // 情感线注入正文：当前关系（始终）+ 最近变化（限 5 条）+ 关键节点（每条线第一条），控制 token 不爆
 function buildRelationshipBlock() {
-    const lines = settings.relationshipLines;
+    const lines = settings.relationshipLines.filter(l => !l.needsReview);
     if (!lines.length) return '';
     const parts = [];
 
@@ -3061,7 +3062,7 @@ function buildRelationshipBlock() {
 
 // 剧情线注入正文块：只注入「进行中」的线（已结束/搁置不占 token），每条一行极简锚点
 function buildStorylineBlock() {
-    const lines = settings.storylines.filter(sl => sl && sl.title && sl.title.trim() && sl.status === '进行中');
+    const lines = settings.storylines.filter(sl => sl && sl.title && sl.title.trim() && sl.status === '进行中' && !sl.needsReview);
     if (!lines.length) return '';
     const parts = lines.map((sl, i) => {
         let s = (i + 1) + '. [' + sl.kind + '] ' + sl.title;
