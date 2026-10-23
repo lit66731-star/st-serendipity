@@ -1823,9 +1823,16 @@ function summaryBoundaryIndex() {
 // 水位线之后是否出现了新的 AI 回复（越界视为有，交给总结去修正水位线）
 function hasUnsummarizedChat() {
     if (!Array.isArray(chat) || chat.length < 2) return false;
-    const start = summaryBoundaryIndex();
-    if (start >= chat.length) return true;
-    for (let i = chat.length - 1; i >= start; i--) {
+    // 优先用身份键定位水位线（重roll/删除后下标会漂移，键更稳）；键失效退回下标兜底
+    let w = settings.lastSummaryIndex;
+    const key = settings.lastCommittedMessageKey;
+    if (typeof key === 'string' && key) {
+        for (let i = chat.length - 1; i >= 0; i--) {
+            if (messageSig(chat[i]) === key) { w = i; break; }
+        }
+    }
+    if (w == null || w < 0 || w >= chat.length) return true;
+    for (let i = chat.length - 1; i > w; i--) {
         const m = chat[i];
         if (m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim()) return true;
     }
@@ -2639,7 +2646,6 @@ async function injectToWorldBook() {
         await saveWorldInfo(worldName, data, true);
         settings.archivedWorldBook = worldName; // 记录归档目标，用于「未激活」常驻黄条提醒
         settings.longMemories = [];              // 归档后清空长期记忆（正文注入保持有界）
-        settings.summaryJournal = [];            // 归档改动了长期记忆，旧快照不能再回滚
         settings.worldReminderShown = false;
         saveSettings();
         updatePromptInjection();

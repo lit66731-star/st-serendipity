@@ -42,6 +42,24 @@ function compressRangeCore(chat, keep, lastCompressToKey) {
     return { indexedOld, compressStart, oldCount };
 }
 
+// 复刻 index.js hasUnsummarizedChat 的核心（纯函数）
+function hasUnsummarizedCore(chat, lastCommittedMessageKey, lastSummaryIndex) {
+    if (!Array.isArray(chat) || chat.length < 2) return false;
+    let w = lastSummaryIndex;
+    const key = lastCommittedMessageKey;
+    if (typeof key === 'string' && key) {
+        for (let i = chat.length - 1; i >= 0; i--) {
+            if (messageSig(chat[i]) === key) { w = i; break; }
+        }
+    }
+    if (w == null || w < 0 || w >= chat.length) return true;
+    for (let i = chat.length - 1; i > w; i--) {
+        const m = chat[i];
+        if (m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim()) return true;
+    }
+    return false;
+}
+
 // 造消息
 let seq = 0;
 function ai(i, mes, extra = {}) {
@@ -127,6 +145,22 @@ t('Phase3/T11 压缩与总结游标相互独立', () => {
     // 第一次压缩后，总结水位线（若存在）应仍指向它自己的游标，不被压缩改写——由 index.js 里
     // 压缩成功路径只写 lastCompressToKey、不碰 lastSummaryIndex/lastCommittedMessageKey 保证。
     assert.ok(true, '压缩成功路径只写 lastCompressToKey（见 index.js 断言处）');
+});
+
+// hasUnsummarizedChat 边界：水位线正好停在最后一条（刚总结完/重进聊天）→ 无新内容，返回 false
+t('hasUnsummarized 边界：水位线在最后一条 → false', () => {
+    const chat = [ai(0, '开场白'), ai(1, 'A'), ai(2, 'B')];
+    // lastSummaryIndex = 2 = 最后一条已总结；无身份键（旧数据）也应有相同结论
+    assert.equal(hasUnsummarizedCore(chat, '', 2), false);
+    // 身份键指向最后一条 → false
+    assert.equal(hasUnsummarizedCore(chat, messageSig(chat[2]), 2), false);
+});
+
+// hasUnsummarizedChat：水位线之前有新 AI 回复 → true；从没总结过 → true
+t('hasUnsummarized：有新回复/从未总结 → true', () => {
+    const chat = [ai(0, '开场白'), ai(1, 'A'), ai(2, 'B'), ai(3, 'C')];
+    assert.equal(hasUnsummarizedCore(chat, messageSig(chat[1]), 1), true, '水位线后还有 AI 回复');
+    assert.equal(hasUnsummarizedCore(chat, '', -1), true, '从未总结视为有');
 });
 
 console.log('全部通过：' + passed + ' 项');
