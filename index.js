@@ -458,6 +458,7 @@ function normalizeCharSettings(cs) {
             id: e.id,
             a: String(e.a),
             b: String(e.b),
+            needsReview: !!e.needsReview, // 来源消息被重roll/删除后置为待核对（current 可能已陈旧）
             current: {
                 affection: typeof cur.affection === 'string' ? cur.affection : (cur.affection == null ? '' : String(cur.affection)),
                 relationship: typeof cur.relationship === 'string' ? cur.relationship : '',
@@ -473,6 +474,10 @@ function normalizeCharSettings(cs) {
                 reason: typeof h.reason === 'string' ? h.reason : '',
                 event: typeof h.event === 'string' ? h.event : '',
                 affection: typeof h.affection === 'string' ? h.affection : '',
+                src: typeof h.src === 'string' ? h.src : '',           // 来源消息身份键（对账失效用）
+                srcIdx: (h.srcIdx == null || isNaN(h.srcIdx)) ? null : Number(h.srcIdx),
+                srcSig: typeof h.srcSig === 'string' ? h.srcSig : '',  // 来源消息内容签名
+                needsReview: !!h.needsReview,
             })),
         };
     });
@@ -489,6 +494,10 @@ function normalizeCharSettings(cs) {
         goal: typeof e.goal === 'string' ? e.goal : '',
         secret: typeof e.secret === 'string' ? e.secret : '',
         promise: typeof e.promise === 'string' ? e.promise : '',
+        src: typeof e.src === 'string' ? e.src : '',           // 来源消息身份键（对账失效用，随档保留）
+        srcIdx: (e.srcIdx == null || isNaN(e.srcIdx)) ? null : Number(e.srcIdx),
+        srcSig: typeof e.srcSig === 'string' ? e.srcSig : '',  // 来源消息内容签名（原地编辑也能检出）
+        needsReview: !!e.needsReview, // 来源失效后置为待核对（不删，避免连带抹掉其它轮次合并进来的字段）
     }));
     // 一次性迁移：把旧世界状态里的「年龄」转成角色实体；「好感/关系」已被关系线取代（丢弃旧扁平条目，需在「人物→关系」里重建）
     if (!cs._relUnified) {
@@ -1705,7 +1714,7 @@ function findRelationshipLine(a, b) {
 }
 
 // 追加关系变化：历史只追加不改写；current 更新为最新状态
-function applyRelationshipChange(ch) {
+function applyRelationshipChange(ch, src, srcIdx, srcSig) {
     if (!ch || !ch.a || !ch.b) return;
     const line = findRelationshipLine(nameToRef(ch.a), nameToRef(ch.b));
     if (ch.to) line.current.relationship = ch.to;
@@ -1725,7 +1734,7 @@ function applyRelationshipChange(ch) {
         }
     }
     if (ch.attitude) line.current.attitude = ch.attitude;
-    line.history.push({
+    const entry = {
         id: uid(),
         day: (ch.day != null) ? ch.day : settings.storyDay,
         from: ch.from,
@@ -1734,7 +1743,9 @@ function applyRelationshipChange(ch) {
         reason: ch.reason,
         event: ch.event,
         affection: ch.affection || '',
-    });
+    };
+    if (src) { entry.src = src; entry.srcIdx = (srcIdx != null) ? srcIdx : null; entry.srcSig = srcSig || ''; }
+    line.history.push(entry);
 }
 
 // ---------------- 剧情线 / 多线关联 ----------------
@@ -1809,13 +1820,22 @@ function extractPresentChars(text) {
         .filter(Boolean)
         .filter(name => !ENTITY_PRONOUNS.has(name));
 }
+// 把本次总结的来源身份键/下标/内容签名打到实体上（来源失效时据此标「待核对」，不删实体）
+function stampEntitySrc(e, src, srcIdx, srcSig) {
+    if (!e || !src) return e;
+    e.src = src;
+    e.srcIdx = (srcIdx != null) ? srcIdx : null;
+    e.srcSig = srcSig || '';
+    e.needsReview = false;
+    return e;
+}
 // 把名字登记为角色实体（身份域留空；同名已存在则不重复，不自动拆分同名）
-function registerEntities(names) {
+function registerEntities(names, src, srcIdx, srcSig) {
     if (!Array.isArray(names)) return;
     for (const name of names) {
         if (!name) continue;
         if (settings.entities.some(e => e.name === name)) continue;
-        settings.entities.push({ id: uid(), name, age: '', note: '', world: '', timeline: '', identity: '', body: '', mind: '', goal: '', secret: '', promise: '' });
+        settings.entities.push(stampEntitySrc({ id: uid(), name, age: '', note: '', world: '', timeline: '', identity: '', body: '', mind: '', goal: '', secret: '', promise: '' }, src, srcIdx, srcSig));
     }
 }
 // 从总结结果里解析【重要度】行 → 'S' | 'A' | 'B'（解析失败/非 S/A 默认 'B'）
@@ -1871,30 +1891,32 @@ function entityFromInfo(name, info) {
 }
 // 合并一条人物信息到实体：稳定字段只补空、不覆盖手填；状态字段快照式（非空替换、「空」清空、「无」保留）
 function applyEntityInfo(e, info) {
+    let changed = false;
     for (const k of ENTITY_STABLE_FIELDS) {
-        if (!e[k] && info[k] && info[k] !== '空') e[k] = info[k];
+        if (!e[k] && info[k] && info[k] !== '空') { e[k] = info[k]; changed = true; }
     }
     for (const k of ENTITY_STATE_FIELDS) {
-        if (info[k] === '空') e[k] = '';
-        else if (info[k]) e[k] = info[k];
+        if (info[k] === '空') { if (e[k] !== '') { e[k] = ''; changed = true; } }
+        else if (info[k]) { if (e[k] !== info[k]) { e[k] = info[k]; changed = true; } }
     }
+    return changed;
 }
 // 把人物档案信息合并进角色实体：
 //   新名字 → 新建实体；
 //   唯一同名 → 先比身份域：双方都有的域全部一致或有一方没给域 → 合并（稳定字段补空、状态字段快照替换）；域完全不同 → 新建独立实体；部分一致部分冲突 → 排队待人工确认；
 //   同名多个 → 按身份域（世界/时间线/身份）匹配：唯一最佳命中 → 合并；无任何命中但模型给了身份域 → 默认新建独立实体；并列最高分或没给身份域 → 排队待人工确认
-function mergeEntityInfos(infos) {
+function mergeEntityInfos(infos, src, srcIdx, srcSig) {
     if (!Array.isArray(infos)) return;
     for (const info of infos) {
         const name = String(info.name || '').trim();
         if (!name) continue;
         const matches = settings.entities.filter(e => e.name === name);
         if (matches.length === 0) {
-            settings.entities.push(entityFromInfo(name, info));
+            settings.entities.push(stampEntitySrc(entityFromInfo(name, info), src, srcIdx, srcSig));
         } else if (matches.length === 1) {
             const { score, overlap } = entityDomainScore(info, matches[0]);
-            if (overlap === 0 || score === overlap) applyEntityInfo(matches[0], info);
-            else if (score === 0) settings.entities.push(entityFromInfo(name, info));
+            if (overlap === 0 || score === overlap) { if (applyEntityInfo(matches[0], info)) stampEntitySrc(matches[0], src, srcIdx, srcSig); }
+            else if (score === 0) settings.entities.push(stampEntitySrc(entityFromInfo(name, info), src, srcIdx, srcSig));
             else queueEntityAssignment(info, matches);
         } else {
             // 同名多个：按身份域找唯一最佳归属
@@ -1905,10 +1927,10 @@ function mergeEntityInfos(infos) {
                 else if (s === bestScore && s > 0) unique = false;
             }
             if (best && bestScore >= 1 && unique) {
-                applyEntityInfo(best, info);
+                if (applyEntityInfo(best, info)) stampEntitySrc(best, src, srcIdx, srcSig);
             } else if (bestScore === 0 && (info.world || info.timeline || info.identity)) {
                 // 无任何命中、但模型给了身份域：默认新建独立实体（域不同即不同人）
-                settings.entities.push(entityFromInfo(name, info));
+                settings.entities.push(stampEntitySrc(entityFromInfo(name, info), src, srcIdx, srcSig));
             } else {
                 // 并列最高分、或模型没给身份域：无法确定归属，排队待人工确认
                 queueEntityAssignment(info, matches);
@@ -2306,6 +2328,27 @@ function reconcileWithChat() {
     };
     dropStale(settings.memories);
     dropStale(settings.timeline);
+    // 结构化状态来源失效：人物实体 / 关系线历史条目（P1）只标「待核对」不删除，
+    // 避免重roll/删除一条消息连带抹掉其它轮次合并进同一实体的字段或整条关系线的 append-only 历史。
+    const sourceGone = (src, srcSig) => {
+        if (typeof src !== 'string' || !src) return false;
+        if (!live.has(src)) return true;
+        return typeof srcSig === 'string' && srcSig && contentBySig.get(src) !== srcSig;
+    };
+    if (Array.isArray(settings.entities)) {
+        for (const e of settings.entities) {
+            if (!e.needsReview && sourceGone(e.src, e.srcSig)) { e.needsReview = true; changed = true; }
+        }
+    }
+    if (Array.isArray(settings.relationshipLines)) {
+        for (const l of settings.relationshipLines) {
+            let flagged = false;
+            for (const h of (l && Array.isArray(l.history) ? l.history : [])) {
+                if (!h.needsReview && sourceGone(h.src, h.srcSig)) { h.needsReview = true; flagged = true; changed = true; }
+            }
+            if (flagged && !l.needsReview) { l.needsReview = true; changed = true; }
+        }
+    }
     // C05/M07：归档来源消息被重roll/删除 → 标记「待核对」（保留原文，不自动删归档）；
     // 旧归档没有 srcKeys 的一律保留不判，避免误伤历史数据
     let archChanged = false;
@@ -2517,14 +2560,14 @@ async function summarizeLastRound() {
             // 世界状态：解析并按类别快照合并（「无」保留、「空」清空、有新内容替换）
             applyWorldState(extractWorldState(result));
             // 情感线：解析并追加关系变化（无变化/解析失败则不动；历史只追加不改写）
-            applyRelationshipChange(extractRelationshipChange(result));
+            applyRelationshipChange(extractRelationshipChange(result), sigBefore, lastIdx, srcSig);
             // 剧情线：解析并按线名合并（新线追加、已有线更新状态/进展）
             applyStorylines(extractStorylines(result));
             // 角色实体自动登记（开关开启时）：优先用【人物档案】带出年龄/简介/身份域；模型没输出该行时退回只登记【在场人物】名字
             if (settings.autoRegisterEntities) {
                 const infos = extractEntityInfos(result);
-                if (infos.length) mergeEntityInfos(infos);
-                else registerEntities(extractPresentChars(result));
+                if (infos.length) mergeEntityInfos(infos, sigBefore, lastIdx, srcSig);
+                else registerEntities(extractPresentChars(result), sigBefore, lastIdx, srcSig);
             }
             // 记忆正文去掉【时间轴】【世界状态】【关系变化】【人物档案】【剧情线】行（结构化数据已单独存，正文保持干净）
             const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').replace(/【剧情线】[^\n]*\n?/, '').trim();
