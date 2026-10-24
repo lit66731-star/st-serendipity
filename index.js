@@ -2321,23 +2321,35 @@ function settleCompressionTx(tx, status, error) {
 // 对照当前聊天：失效「来源消息已不在/已被替换」的记忆与时间线条目，返回是否有变动
 function reconcileWithChat() {
     if (!settings || isSummarizing || !Array.isArray(chat) || !chat.length) return false;
-    // 当前仍在聊天里的消息签名集合 + 每条消息的内容签名（含被压缩隐藏的楼层：它们仍在 chat 中，来源仍有效）
+    // 当前聊天里所有消息的「内容签名」集合（位置无关、正常对话期间稳定）+「时间戳签名」集合（旧条目回退用）。
+    // 内容签名才是可靠的来源身份：只有消息被重roll/删除/原地编辑才会从集合里消失；时间戳（gen_started/send_date）
+    // 在普通生成过程中会漂移，拿它判来源会误删记忆。因此优先用内容签名，仅在旧条目没有内容签名时才退回时间戳。
     const live = new Set();
-    const contentBySig = new Map();
+    const liveContent = new Set();
     for (const m of chat) {
+        if (!m) continue;
         const s = messageSig(m);
-        if (s) { live.add(s); contentBySig.set(s, contentSignature(m && m.mes)); }
+        if (s) live.add(s);
+        const cs = contentSignature(m && m.mes);
+        if (cs) liveContent.add(cs);
     }
     let changed = false;
     let minSrcIdx = Infinity;
+    // 来源是否失效：有内容签名看内容签名（稳定），没有才退回时间戳签名；两者都没有 = 无法确定来源，一律保留
+    const sourceGone = (src, srcSig) => {
+        if (typeof srcSig === 'string' && srcSig) return !liveContent.has(srcSig);
+        if (typeof src === 'string' && src) return !live.has(src);
+        return false;
+    };
     const dropStale = (arr) => {
         if (!Array.isArray(arr)) return;
         for (let i = arr.length - 1; i >= 0; i--) {
             const e = arr[i];
-            if (!e || typeof e.src !== 'string' || !e.src) continue;
-            // 来源失效两种情况：① 消息被重roll/删除（签名不在 live）；② 消息原地编辑正文（签名在 live，但内容签名变了）
-            const edited = typeof e.srcSig === 'string' && e.srcSig && contentBySig.get(e.src) !== e.srcSig;
-            if (!live.has(e.src) || edited) {
+            if (!e) continue;
+            const hasSrc = typeof e.src === 'string' && e.src;
+            const hasSrcSig = typeof e.srcSig === 'string' && e.srcSig;
+            if (!hasSrc && !hasSrcSig) continue; // 无法确定来源的旧条目一律保留（宁可多留，也不静默清空）
+            if (sourceGone(e.src, e.srcSig)) {
                 if (typeof e.srcIdx === 'number' && e.srcIdx < minSrcIdx) minSrcIdx = e.srcIdx;
                 arr.splice(i, 1);
                 changed = true;
@@ -2348,11 +2360,6 @@ function reconcileWithChat() {
     dropStale(settings.timeline);
     // 结构化状态来源失效：人物实体 / 关系线历史条目（P1）只标「待核对」不删除，
     // 避免重roll/删除一条消息连带抹掉其它轮次合并进同一实体的字段或整条关系线的 append-only 历史。
-    const sourceGone = (src, srcSig) => {
-        if (typeof src !== 'string' || !src) return false;
-        if (!live.has(src)) return true;
-        return typeof srcSig === 'string' && srcSig && contentBySig.get(src) !== srcSig;
-    };
     if (Array.isArray(settings.entities)) {
         for (const e of settings.entities) {
             if (!e.needsReview && sourceGone(e.src, e.srcSig)) { e.needsReview = true; changed = true; }
@@ -2687,6 +2694,131 @@ async function summarizeLastRound() {
             if (wantNext) summarizeLastRound();
         }, 0);
     }
+}
+
+// ---------------- 手动楼层区间总结 ----------------
+// 把一段历史楼层（第 startFloor 楼 ~ 第 endFloor 楼，1 起算）手动总结成记忆，注入记忆面板。
+// 不推进自动总结游标（lastSummaryIndex）、不改当前剧情时间锚点（settings.storyTime/storyDay），
+// 只往 settings.memories 追加条目；短期满 TIER_LIMIT 条依旧走 promoteMemories 合并入长期。
+// mode: 'per-round' = 每轮一条（用户+角色一轮一组，逐条总结）；'whole' = 整段一条（整段合成一条）。
+
+// 把选中的索引化消息按「一轮 = 一条用户消息 + 其后连续角色回复」切组；首条若是角色消息单独成组。
+function groupIntoRounds(indexed) {
+    const rounds = [];
+    let cur = null;
+    for (const it of indexed) {
+        if (it.m.is_user) {
+            if (cur) rounds.push(cur);
+            cur = [it];
+        } else if (cur) {
+            cur.push(it);
+        } else {
+            cur = [it];
+        }
+    }
+    if (cur) rounds.push(cur);
+    return rounds;
+}
+
+async function summarizeManualRange(startFloor, endFloor, mode) {
+    if (isSummarizing) { toastr.warning('正在总结中，请稍后再试'); return; }
+    activateCharacter(); // 绑定到当前角色/聊天，避免总结写错档
+    reconcileWithChat();
+    if (!settings.memoryEnabled) return;
+    if (!currentDataKey()) return;
+    if (!taskConfigured('memory_summary')) { toastr.warning('请先给「记忆总结」任务配好模型（模型页 → API 提供方，不回退聊天 API）'); return; }
+    if (!Array.isArray(chat) || !chat.length) return;
+
+    const startIdx = startFloor - 1;
+    const endIdx = endFloor - 1;
+    const indexed = chat.map((m, i) => ({ m, i }))
+        .filter(x => x.i >= startIdx && x.i <= endIdx && x.m && typeof x.m.mes === 'string' && x.m.mes.trim() && !x.m.is_system);
+    if (indexed.length < 2) { toastr.warning('该区间没有可总结的对话（至少需要两条非系统消息）'); return; }
+
+    const groups = mode === 'per-round' ? groupIntoRounds(indexed) : [indexed];
+    if (!groups.length) { toastr.warning('该区间没有可总结的对话'); return; }
+
+    const keyBefore = currentDataKey();
+    const stBefore = settings;
+    isSummarizing = true;
+    let added = 0;
+    try {
+        for (const g of groups) {
+            if (currentDataKey() !== keyBefore || settings !== stBefore) { toastr.warning('总结期间切换了聊天/角色，已停止'); break; }
+            const lastMsg = g[g.length - 1].m;
+            const lastCharMsg = ([...g].reverse().find(x => !x.m.is_user) || {}).m;
+            const lastUserMsg = ([...g].reverse().find(x => x.m.is_user) || {}).m;
+            if (!lastCharMsg || !lastUserMsg) continue;
+            const maxLen = settings.summaryTranscriptMax || SUMMARY_TRANSCRIPT_MAX;
+            const winBudget = resolveTokenBudget(settings.tokenBudget, getTaskModelContext('memory_summary'));
+            const win = buildSummaryWindowBudgeted(g, winBudget.input, maxLen);
+            const { systemPrompt, prompt } = buildSummaryPrompt(win.transcript, lastUserMsg.name || '用户', lastCharMsg.name || '角色', settings.storyTime);
+            let raw;
+            try {
+                raw = await callCustomApi({ prompt, systemPrompt, cfg: getTaskCfg('memory_summary') });
+            } catch (e) {
+                console.warn('[Serendipity] 手动区间总结第 ' + (g[0].i + 1) + '~' + (g[g.length - 1].i + 1) + ' 楼失败：', e);
+                toastr.warning('总结第 ' + (g[0].i + 1) + '~' + (g[g.length - 1].i + 1) + ' 楼失败：' + safeErrorText(e) + '（已跳过，可重试）');
+                continue;
+            }
+            if (currentDataKey() !== keyBefore || settings !== stBefore) break;
+            const result = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
+            if (!result.trim()) {
+                toastr.warning('第 ' + (g[0].i + 1) + '~' + (g[g.length - 1].i + 1) + ' 楼总结返回空内容，已跳过');
+                continue;
+            }
+            const lastIdx = g[g.length - 1].i;
+            const sigBefore = messageSig(lastMsg);
+            const srcSig = contentSignature(lastMsg.mes);
+            const newStoryTime = extractStoryTime(result) || settings.storyTime;
+            const axis = extractTimeAxis(result);
+            // 结构化行已单独存（此处只把正文存进记忆，保持正文干净）
+            const memoryText = result.trim().replace(/【时间轴】[^\n]*\n?/, '').replace(/【世界状态】[^\n]*\n?/, '').replace(/【关系变化】[^\n]*\n?/, '').replace(/【人物档案】[^\n]*\n?/, '').replace(/【剧情线】[^\n]*\n?/, '').trim();
+            if (!memoryText) continue;
+            settings.summaryVersion = (settings.summaryVersion || 0) + 1;
+            const meta = summaryMeta(g, result, 'memory_summary');
+            settings.memories.push({
+                id: uid(), time: Date.now(), src: sigBefore, srcIdx: lastIdx, srcSig,
+                storyTime: newStoryTime,
+                storyDay: (axis && axis.day != null) ? axis.day : settings.storyDay,
+                storyPeriod: (axis && axis.period) || '', storyLocation: (axis && axis.location) || '',
+                importance: extractImportance(result), entityRef: inferMemoryEntity(memoryText),
+                text: memoryText, sourceMessageKeys: meta.sourceMessageKeys, sourceSignature: meta.sourceSignature,
+                summaryVersion: settings.summaryVersion, modelId: meta.modelId,
+                inputTokenCount: meta.inputTokenCount, outputTokenCount: meta.outputTokenCount,
+                status: 'committed', characterId: currentCharKey(), chatId: currentChatId(), createdAt: Date.now(),
+            });
+            added++;
+        }
+        saveSettings();
+        const promoted = promoteMemories();
+        updatePromptInjection();
+        renderMemories();
+        renderTimeAxis();
+        if (added) {
+            let msg = '已把 ' + added + ' 条记忆注入记忆面板';
+            if (promoted.toLong) msg += '；短期已满十轮，已自动合并入长期记忆';
+            toastr.success(msg);
+            if (promoted.toLong) compressLongMemory(promoted.longId, promoted.sources, keyBefore, stBefore);
+        } else {
+            toastr.info('本次没有新增记忆');
+        }
+    } finally {
+        isSummarizing = false;
+    }
+}
+
+// 弹出「选总结方式」弹窗：每轮一条 vs 整段一条，各带优劣势说明
+function openRangeModeModal(startFloor, endFloor) {
+    const overlay = $('#st-serendipity .st-sd__modal-overlay');
+    if (!overlay.length) return;
+    overlay.find('.st-sd__modal-range').text('（第 ' + startFloor + ' 楼 ~ 第 ' + endFloor + ' 楼）');
+    overlay.data('range', { start: startFloor, end: endFloor });
+    overlay.show();
+}
+function closeRangeModeModal() {
+    const overlay = $('#st-serendipity .st-sd__modal-overlay');
+    if (overlay.length) { overlay.hide(); overlay.removeData('range'); }
 }
 
 // ---------------- 压缩聊天历史（手动按钮：超长聊天救急） ----------------
@@ -3519,6 +3651,11 @@ function renderMemories() {
     if (everyInput.length) everyInput.val(settings.summarizeEvery || 1);
     const summaryMaxInput = $('#st-serendipity .st-sd__summary-max-input');
     if (summaryMaxInput.length) summaryMaxInput.val(settings.summaryTranscriptMax || SUMMARY_TRANSCRIPT_MAX);
+    // 楼层区间总结：只在空着时给默认值（起=1 楼，止=当前总楼层），不覆盖用户已填的区间
+    const rangeStart = $('#st-serendipity .st-sd__range-start');
+    const rangeEnd = $('#st-serendipity .st-sd__range-end');
+    if (rangeStart.length && !String(rangeStart.val() || '').trim()) rangeStart.val(1);
+    if (rangeEnd.length && !String(rangeEnd.val() || '').trim()) rangeEnd.val(Array.isArray(chat) ? chat.length : '');
 
     const hasAny = settings.memories.length || settings.longMemories.length;
     if (!hasAny) {
@@ -5411,6 +5548,14 @@ function buildPanel() {
           <input type="number" class="st-sd__summary-max-input" min="2000" max="200000" step="1000" title="单次总结发给模型的对话字数上限；开场白和最新两条一定保留，超出的中间部分会被省略，可按你模型的上下文大小调整">
           <span class="st-sd__label">字</span>
         </div>
+        <div class="st-sd__range-row">
+          <span class="st-sd__label">楼层区间总结：第</span>
+          <input type="number" class="st-sd__range-input st-sd__range-start" min="1" placeholder="起" title="从第几楼开始总结（1=第一楼）">
+          <span class="st-sd__label">楼 到 第</span>
+          <input type="number" class="st-sd__range-input st-sd__range-end" min="1" placeholder="止" title="到第几楼结束（含），最大为当前聊天总楼层数">
+          <span class="st-sd__label">楼</span>
+          <button type="button" class="st-sd__range-summarize">总结这段</button>
+        </div>
         <div class="st-sd__add-row">
           <input type="text" class="st-sd__note-input" placeholder="手动补记一条记忆（立刻记下某个设定/事件，不等自动总结）">
           <button type="button" class="st-sd__add-note">补记</button>
@@ -5654,6 +5799,27 @@ function buildPanel() {
         <div class="st-sd__mview" data-mview-pane="budget" style="display:none"></div>
         <div class="st-sd__mview" data-mview-pane="logs" style="display:none"></div>
       </div>
+      <div class="st-sd__modal-overlay" style="display:none">
+        <div class="st-sd__modal">
+          <div class="st-sd__modal-title">楼层区间总结<span class="st-sd__modal-range"></span></div>
+          <div class="st-sd__modal-desc">这段对话怎么总结？两种方式都会把结果注入「记忆面板」，短期满 ${TIER_LIMIT} 条仍会自动合并进长期记忆。</div>
+          <button type="button" class="st-sd__mode-opt" data-range-mode="per-round">
+            <span class="st-sd__mode-opt-title">每轮一条</span>
+            <span class="st-sd__mode-opt-sub">适合逐轮补漏、精读</span>
+            <span class="st-sd__mode-opt-pro">优点：每条记忆对应一轮对话，时间/地点/事件分得清，后续检索更准；某轮失败不影响其他轮。</span>
+            <span class="st-sd__mode-opt-con">缺点：轮数 = 模型调用次数，慢、费 token。</span>
+          </button>
+          <button type="button" class="st-sd__mode-opt" data-range-mode="whole">
+            <span class="st-sd__mode-opt-title">整段一条</span>
+            <span class="st-sd__mode-opt-sub">适合快速补一大段区间</span>
+            <span class="st-sd__mode-opt-pro">优点：只调一次模型，快、省 token。</span>
+            <span class="st-sd__mode-opt-con">缺点：整段合并成一条，细节会被压缩，时间/事件不如逐条清晰。</span>
+          </button>
+          <div class="st-sd__modal-actions">
+            <button type="button" class="st-sd__modal-cancel">取消</button>
+          </div>
+        </div>
+      </div>
     </div>`;
     $('body').append(html);
     bindPanelEvents();
@@ -5711,6 +5877,24 @@ function bindPanelEvents() {
         if (!taskConfigured('memory_summary')) { toastr.warning('请先给「记忆总结」任务配好模型（模型页 → API 提供方，不回退聊天 API）'); return; }
         summarizeLastRound();
     });
+    // 楼层区间总结：先弹窗选「每轮一条 / 整段一条」，再按所选方式总结
+    panel.find('.st-sd__range-summarize').on('click', () => {
+        if (!taskConfigured('memory_summary')) { toastr.warning('请先给「记忆总结」任务配好模型（模型页 → API 提供方，不回退聊天 API）'); return; }
+        const total = Array.isArray(chat) ? chat.length : 0;
+        const start = parseInt(panel.find('.st-sd__range-start').val(), 10);
+        const end = parseInt(panel.find('.st-sd__range-end').val(), 10);
+        if (isNaN(start) || isNaN(end) || start < 1 || end < start || end > total) { toastr.warning('请填写正确的楼层区间（1 到 ' + total + ' 楼）'); return; }
+        openRangeModeModal(start, end);
+    });
+    panel.on('click', '.st-sd__mode-opt', function () {
+        const mode = String($(this).data('range-mode'));
+        const range = $('#st-serendipity .st-sd__modal-overlay').data('range');
+        closeRangeModeModal();
+        if (!range || (mode !== 'per-round' && mode !== 'whole')) return;
+        summarizeManualRange(range.start, range.end, mode);
+    });
+    panel.on('click', '.st-sd__modal-cancel', closeRangeModeModal);
+    panel.on('click', '.st-sd__modal-overlay', function (e) { if (e.target === this) closeRangeModeModal(); });
     // 导出记忆
     panel.find('.st-sd__export').on('click', exportMemories);
     // 每 N 轮总结一次

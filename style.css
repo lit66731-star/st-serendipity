@@ -217,7 +217,7 @@
 /* ============ 按钮层级：Primary（深色）/ Secondary（透明+细线）/ Destructive（克制） ============ */
 .st-sd__summarize, .st-sd__inject-world, .st-sd__check-run, .st-sd__check-fix,
 .st-sd__add-note, .st-sd__add-word, .st-sd__add-instr, .st-sd__api-save, .st-sd__embed-api-save,
-.st-sd__world-add, .st-sd__fore-add, .st-sd__axis-save {
+.st-sd__world-add, .st-sd__fore-add, .st-sd__axis-save, .st-sd__range-summarize {
     border: 1px solid var(--sd-primary);
     background: var(--sd-primary);
  color: var(--sd-on-primary) !important;
@@ -400,7 +400,7 @@
 .st-sd__recall-inject-topk, .st-sd__recall-inject-threshold, .st-sd__recall-inject-querytopk,
 .st-sd__recall-inject-budget, .st-sd__recall-world-search,
 .st-sd__sl-title, .st-sd__sl-kind, .st-sd__sl-status, .st-sd__sl-goal,
-.st-sd__sl-e-title, .st-sd__sl-e-kind, .st-sd__sl-e-status, .st-sd__sl-e-goal {
+.st-sd__sl-e-title, .st-sd__sl-e-kind, .st-sd__sl-e-status, .st-sd__sl-e-goal, .st-sd__range-input {
     border: 1px solid var(--sd-border-2);
     border-radius: var(--sd-r);
     height: 34px;
@@ -425,7 +425,7 @@
 .st-sd__recall-inject-topk:focus, .st-sd__recall-inject-threshold:focus, .st-sd__recall-inject-querytopk:focus,
 .st-sd__recall-inject-budget:focus, .st-sd__recall-world-search:focus,
 .st-sd__sl-title:focus, .st-sd__sl-kind:focus, .st-sd__sl-status:focus, .st-sd__sl-goal:focus,
-.st-sd__sl-e-title:focus, .st-sd__sl-e-kind:focus, .st-sd__sl-e-status:focus, .st-sd__sl-e-goal:focus {
+.st-sd__sl-e-title:focus, .st-sd__sl-e-kind:focus, .st-sd__sl-e-status:focus, .st-sd__sl-e-goal:focus, .st-sd__range-input:focus {
     border-color: var(--sd-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--sd-accent) 25%, transparent);
 }
@@ -462,6 +462,102 @@
 }
 .st-sd__every-input { width: 64px; flex: 0 0 auto; text-align: center; }
 .st-sd__summary-max-input { width: 92px; flex: 0 0 auto; text-align: center; }
+.st-sd__range-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+.st-sd__range-input { width: 72px; flex: 0 0 auto; text-align: center; }
+.st-sd__range-summarize { margin-left: auto; }
+
+/* ============ 模态弹窗（楼层区间总结选模式） ============ */
+.st-sd__modal-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(0, 0, 0, 0.5);
+    box-sizing: border-box;
+}
+.st-sd__modal {
+    width: 100%;
+    max-width: 460px;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+    background: var(--sd-surface);
+    border: 1px solid var(--sd-border-2);
+    border-radius: var(--sd-r-lg);
+    padding: 20px;
+    box-sizing: border-box;
+}
+.st-sd__modal-title {
+    font-size: 15px;
+    font-weight: 650;
+    color: var(--sd-text) !important;
+    margin-bottom: 6px;
+}
+.st-sd__modal-range { font-weight: 550; color: var(--sd-accent-deep) !important; }
+.st-sd__modal-desc {
+    font-size: 12.5px;
+    color: var(--sd-text-2) !important;
+    margin-bottom: 16px;
+    line-height: 1.6;
+}
+.st-sd__mode-opt {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    text-align: left;
+    background: var(--sd-surface);
+    border: 1px solid var(--sd-border-2);
+    border-radius: var(--sd-r);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    cursor: pointer;
+    box-sizing: border-box;
+    transition: border-color 0.15s, background 0.15s;
+}
+.st-sd__mode-opt:hover { border-color: var(--sd-accent); background: var(--sd-surface-2); }
+.st-sd__mode-opt-title {
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--sd-text) !important;
+}
+.st-sd__mode-opt-sub {
+    font-size: 12px;
+    color: var(--sd-accent-deep) !important;
+    margin-bottom: 4px;
+}
+.st-sd__mode-opt-pro, .st-sd__mode-opt-con {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--sd-text-2) !important;
+}
+.st-sd__mode-opt-pro::before { content: '✓ '; color: var(--sd-accent-deep); }
+.st-sd__mode-opt-con::before { content: '✕ '; color: var(--sd-danger); }
+.st-sd__modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 4px;
+}
+.st-sd__modal-cancel {
+    border: 1px solid var(--sd-border-2);
+    background: transparent;
+    color: var(--sd-text-2) !important;
+    border-radius: var(--sd-r);
+    height: 34px;
+    padding: 0 16px;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.st-sd__modal-cancel:hover { background: var(--sd-surface-2); color: var(--sd-text) !important; }
 .st-sd__compress-row {
     display: flex;
     align-items: center;
