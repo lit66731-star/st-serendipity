@@ -24,7 +24,7 @@ import { oai_settings } from '../../../openai.js';
 import { hasMemoryForSource, commitSummary } from './src/summary-commit.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.4.1'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.4.2'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
