@@ -24,7 +24,7 @@ import { oai_settings } from '../../../openai.js';
 import { hasMemoryForSource, commitSummary } from './src/summary-commit.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.4.2'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.4.3'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1334,6 +1334,65 @@ function renderModelProviders() {
         + '<div class="st-sd__mform-row st-sd__mform-btns"><button type="button" class="st-sd__mbtn st-sd__mprov-add">添加</button></div></div>'
         + '<div class="st-sd__hint">Key 明文存在酒馆设置里（所有角色共用），不会写进备份文件；共用/公开的酒馆实例请不要填你自己的 Key。首次跑新版本会自动把旧的「插件 API / embeddings API」播种成 legacy_chat / legacy_embed 两个提供方。</div>');
 }
+
+// ---------------- 模型选择弹窗 ----------------
+// 拉取到模型列表后弹窗让用户直接点选模型，点中即绑定到该任务（替代手填模型名的老流程）。
+
+// 把某任务绑定到「提供方+模型」，随后重渲染任务编辑页与总览
+function bindModelToTask(taskId, providerId, modelId, reason) {
+    const r = modelRoot();
+    r.taskBindings = r.taskBindings || {};
+    r.taskBindings[taskId] = { providerId, modelId, mode: 'manual', reason: reason || '手动绑定', capabilities: detectCapabilities({ id: modelId }), updatedAt: Date.now() };
+    saveSettings();
+    renderTaskEditor(taskId);
+    renderModelOverview();
+}
+
+// 单条模型的「能力」小标签：仅当服务端/名字明确暗示是 embedding 模型时打标；对话任务标红（不适合），向量任务标正常
+function modelPickerTag(m, taskId) {
+    const isEmbed = !!(m.capabilities && m.capabilities.embedding === 'confirmed');
+    if (!isEmbed) return '';
+    if (taskId === 'embedding') return '<span class="st-sd__model-item-tag">向量</span>';
+    return '<span class="st-sd__model-item-tag st-sd__model-item-tag--warn">向量</span>';
+}
+
+function modelPickerItems(taskId, providerId, query) {
+    const r = modelRoot();
+    const cached = (providerId && r.modelCache && r.modelCache[providerId] && Array.isArray(r.modelCache[providerId].list)) ? r.modelCache[providerId].list : [];
+    const q = String(query || '').trim().toLowerCase();
+    return cached.filter(m => !q || String(m.id || '').toLowerCase().indexOf(q) >= 0);
+}
+
+// 按当前搜索关键词重渲染模型列表
+function renderModelPickerList() {
+    const overlay = $('#st-serendipity .st-sd__model-overlay');
+    const listEl = overlay.find('.st-sd__model-list');
+    const data = overlay.data('picker');
+    if (!data) return;
+    const q = String(overlay.find('.st-sd__model-search').val() || '');
+    const items = modelPickerItems(data.taskId, data.providerId, q);
+    if (!items.length) { listEl.html('<div class="st-sd__model-empty">没有匹配的模型（换个关键词，或点「拉取模型列表」重新拉）</div>'); return; }
+    listEl.html(items.map(m => '<button type="button" class="st-sd__model-item" data-model="' + escapeHtml(m.id) + '"><span class="st-sd__model-item-id">' + escapeHtml(m.id) + '</span>' + modelPickerTag(m, data.taskId) + '</button>').join(''));
+}
+
+function openModelPicker(taskId, providerId) {
+    const overlay = $('#st-serendipity .st-sd__model-overlay');
+    if (!overlay.length) return;
+    const r = modelRoot();
+    const p = findProvider(providerId);
+    const cached = (providerId && r.modelCache && r.modelCache[providerId] && Array.isArray(r.modelCache[providerId].list)) ? r.modelCache[providerId].list : [];
+    overlay.data('picker', { taskId, providerId });
+    overlay.find('.st-sd__model-modal-sub').text('（' + (TASK_LABELS[taskId] || taskId) + ' · ' + (p ? (p.name || p.id) : providerId) + ' · ' + cached.length + ' 个）');
+    overlay.find('.st-sd__model-search').val('');
+    renderModelPickerList();
+    overlay.show();
+    overlay.find('.st-sd__model-search').trigger('focus');
+}
+function closeModelPicker() {
+    const overlay = $('#st-serendipity .st-sd__model-overlay');
+    if (overlay.length) { overlay.hide(); overlay.removeData('picker'); }
+}
+
 function renderModelBudget() {
     const el = $('#st-serendipity .st-sd__mview[data-mview-pane="budget"]');
     if (!el.length) return;
@@ -2810,14 +2869,14 @@ async function summarizeManualRange(startFloor, endFloor, mode) {
 
 // 弹出「选总结方式」弹窗：每轮一条 vs 整段一条，各带优劣势说明
 function openRangeModeModal(startFloor, endFloor) {
-    const overlay = $('#st-serendipity .st-sd__modal-overlay');
+    const overlay = $('#st-serendipity .st-sd__range-overlay');
     if (!overlay.length) return;
     overlay.find('.st-sd__modal-range').text('（第 ' + startFloor + ' 楼 ~ 第 ' + endFloor + ' 楼）');
     overlay.data('range', { start: startFloor, end: endFloor });
     overlay.show();
 }
 function closeRangeModeModal() {
-    const overlay = $('#st-serendipity .st-sd__modal-overlay');
+    const overlay = $('#st-serendipity .st-sd__range-overlay');
     if (overlay.length) { overlay.hide(); overlay.removeData('range'); }
 }
 
@@ -5799,7 +5858,7 @@ function buildPanel() {
         <div class="st-sd__mview" data-mview-pane="budget" style="display:none"></div>
         <div class="st-sd__mview" data-mview-pane="logs" style="display:none"></div>
       </div>
-      <div class="st-sd__modal-overlay" style="display:none">
+      <div class="st-sd__modal-overlay st-sd__range-overlay" style="display:none">
         <div class="st-sd__modal">
           <div class="st-sd__modal-title">楼层区间总结<span class="st-sd__modal-range"></span></div>
           <div class="st-sd__modal-desc">这段对话怎么总结？两种方式都会把结果注入「记忆面板」，短期满 ${TIER_LIMIT} 条仍会自动合并进长期记忆。</div>
@@ -5817,6 +5876,16 @@ function buildPanel() {
           </button>
           <div class="st-sd__modal-actions">
             <button type="button" class="st-sd__modal-cancel">取消</button>
+          </div>
+        </div>
+      </div>
+      <div class="st-sd__modal-overlay st-sd__model-overlay" style="display:none">
+        <div class="st-sd__modal st-sd__model-modal">
+          <div class="st-sd__modal-title">选择模型<span class="st-sd__model-modal-sub"></span></div>
+          <input type="text" class="st-sd__model-search" placeholder="输入关键词过滤模型（可留空看全部）" autocomplete="off">
+          <div class="st-sd__model-list"></div>
+          <div class="st-sd__modal-actions">
+            <button type="button" class="st-sd__modal-cancel st-sd__model-cancel">取消</button>
           </div>
         </div>
       </div>
@@ -5888,13 +5957,26 @@ function bindPanelEvents() {
     });
     panel.on('click', '.st-sd__mode-opt', function () {
         const mode = String($(this).data('range-mode'));
-        const range = $('#st-serendipity .st-sd__modal-overlay').data('range');
+        const range = $('#st-serendipity .st-sd__range-overlay').data('range');
         closeRangeModeModal();
         if (!range || (mode !== 'per-round' && mode !== 'whole')) return;
         summarizeManualRange(range.start, range.end, mode);
     });
-    panel.on('click', '.st-sd__modal-cancel', closeRangeModeModal);
-    panel.on('click', '.st-sd__modal-overlay', function (e) { if (e.target === this) closeRangeModeModal(); });
+    panel.on('click', '.st-sd__range-overlay .st-sd__modal-cancel', closeRangeModeModal);
+    panel.on('click', '.st-sd__range-overlay', function (e) { if (e.target === this) closeRangeModeModal(); });
+    // 模型选择弹窗：点模型即绑定到当前任务
+    panel.on('click', '.st-sd__model-item', function () {
+        const overlay = $('#st-serendipity .st-sd__model-overlay');
+        const data = overlay.data('picker');
+        const modelId = String($(this).data('model') || '');
+        if (!data || !modelId) return;
+        closeModelPicker();
+        bindModelToTask(data.taskId, data.providerId, modelId, '弹窗选择');
+        toastr.success('已绑定：' + modelId);
+    });
+    panel.on('input', '.st-sd__model-search', renderModelPickerList);
+    panel.on('click', '.st-sd__model-overlay .st-sd__model-cancel', closeModelPicker);
+    panel.on('click', '.st-sd__model-overlay', function (e) { if (e.target === this) closeModelPicker(); });
     // 导出记忆
     panel.find('.st-sd__export').on('click', exportMemories);
     // 每 N 轮总结一次
@@ -6055,8 +6137,9 @@ function bindPanelEvents() {
         const btn = $(this).prop('disabled', true);
         try {
             const list = await fetchModelList(providerId);
-            toastr.success('已拉取 ' + list.length + ' 个模型');
+            toastr.success('已拉取 ' + list.length + ' 个模型，请在弹窗里点选');
             renderTaskEditor(taskId);
+            openModelPicker(taskId, providerId);
         } catch (e) { toastr.error('拉取失败：' + safeErrorText(e, (findProvider(providerId) || {}).key)); }
         finally { btn.prop('disabled', false); }
     });
@@ -6073,12 +6156,7 @@ function bindPanelEvents() {
         const modelId = String(panel.find('.st-sd__mmodel[data-task="' + taskId + '"]').val() || '').trim();
         if (!providerId) { toastr.warning('请先选择提供方'); return; }
         if (!modelId) { toastr.warning('请填写模型名（或先拉取模型列表）'); return; }
-        const r = modelRoot();
-        r.taskBindings = r.taskBindings || {};
-        r.taskBindings[taskId] = { providerId, modelId, mode: 'manual', reason: '手动绑定', capabilities: detectCapabilities({ id: modelId }), updatedAt: Date.now() };
-        saveSettings();
-        renderTaskEditor(taskId);
-        renderModelOverview();
+        bindModelToTask(taskId, providerId, modelId, '手动绑定');
         toastr.success('已绑定：' + modelId);
     });
     panel.on('click', '.st-sd__mclear', function () {
