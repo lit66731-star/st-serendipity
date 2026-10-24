@@ -414,6 +414,7 @@ function normalizeCharSettings(cs) {
         for (const m of arr) {
             if (m.importance !== 'S' && m.importance !== 'A' && m.importance !== 'B') m.importance = '';
             m.entityRef = typeof m.entityRef === 'string' ? m.entityRef : ''; // 关联角色实体（空=未关联）
+            m.needsReview = !!m.needsReview; // 来源消息被重roll/删除后置为待核对（不删、不注入，保留可回看）
         }
     }
     // 旧字段 npcs → entities 一次性迁移（同名角色隔离的数据地基）
@@ -446,6 +447,7 @@ function normalizeCharSettings(cs) {
         src: typeof e.src === 'string' ? e.src : '',      // 来源消息身份键（对账失效用，必须随档保留）
         srcIdx: (e.srcIdx == null || isNaN(e.srcIdx)) ? null : Number(e.srcIdx),
         srcSig: typeof e.srcSig === 'string' ? e.srcSig : '', // 来源消息内容签名（原地编辑也能检出）
+        needsReview: !!e.needsReview, // 来源失效后置为待核对（不删，保留可回看）
     }));
     cs.timeFixLog = cs.timeFixLog.filter(e => e && typeof e.text === 'string').slice(-30);
     cs.checks = cs.checks.filter(e => e && e.id && typeof e.text === 'string' && e.text.trim()).map(e => ({
@@ -1389,7 +1391,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
         : '请根据本段内容，从故事开始估算当前是「第几天」（第X天），以及当前具体时间（年月日几时几分）和发生地点；若没有明确信息，按最保守的估计写，不要虚构。';
     // 已有时间线锚点：把已发生事件的时间事实回传，禁止模型改写历史事件的发生时间
     const timelineAnchor = settings.timeline.length
-        ? '已有剧情时间线（历史时间事实，已经发生，不得改写）：\n' + settings.timeline.slice(-TIMELINE_ANCHOR_MAX).map(t => '- ' + [t.day != null ? '第' + t.day + '天' : '', t.time || '', t.location || '', t.event || ''].filter(Boolean).join(' · ')).join('\n') + '\n规则：1) 上面每条事件的发生时间固定不变，不得把它们重新归入当前日期；2) 当前对话只是提及、回忆旧事件时，该事件仍属于它原来的那一天，不要当成本段新发生的事件，【时间轴】里也不要写成回忆的那一天；3) 【时间】和【时间轴】只描述本段结束时「现在」的进度，只能沿用或向后推进，不能倒退。'
+        ? '已有剧情时间线（历史时间事实，已经发生，不得改写）：\n' + settings.timeline.filter(t => t && !t.needsReview).slice(-TIMELINE_ANCHOR_MAX).map(t => '- ' + [t.day != null ? '第' + t.day + '天' : '', t.time || '', t.location || '', t.event || ''].filter(Boolean).join(' · ')).join('\n') + '\n规则：1) 上面每条事件的发生时间固定不变，不得把它们重新归入当前日期；2) 当前对话只是提及、回忆旧事件时，该事件仍属于它原来的那一天，不要当成本段新发生的事件，【时间轴】里也不要写成回忆的那一天；3) 【时间】和【时间轴】只描述本段结束时「现在」的进度，只能沿用或向后推进，不能倒退。'
         : '';
     // 世界状态锚点：把当前已知状态回传，让模型增量更新（某类别无变化写「无」），而不是每轮从零重造
     const worldStateAnchor = settings.worldState.length
@@ -2155,7 +2157,7 @@ async function runConsistencyCheck() {
         const anchor = '当前剧情时间轴：第' + (settings.storyDay != null ? settings.storyDay : '?') + '天'
             + (settings.storyTime ? ' · ' + settings.storyTime : '') + (settings.storyLocation ? ' · ' + settings.storyLocation : '');
         const tlLines = settings.timeline.length
-            ? settings.timeline.map(e => '第' + (e.day != null ? e.day : '?') + '天' + (e.time ? ' ' + e.time : '') + (e.location ? ' ' + e.location : '') + (e.event ? '：' + e.event : '')).join('\n')
+            ? settings.timeline.filter(e => e && !e.needsReview).map(e => '第' + (e.day != null ? e.day : '?') + '天' + (e.time ? ' ' + e.time : '') + (e.location ? ' ' + e.location : '') + (e.event ? '：' + e.event : '')).join('\n')
             : '（暂无时间线）';
         const worldLines = settings.worldState.length ? worldStateLines(worldStateByCat()) : '（暂无世界状态）';
         const memLines = [...settings.longMemories, ...settings.memories]
@@ -2330,22 +2332,24 @@ function reconcileWithChat() {
     }
     let changed = false;
     let minSrcIdx = Infinity;
-    const dropStale = (arr) => {
+    // 来源失效：只标「待核对」、不删除（记忆/时间轴与人物/关系线/世界状态/剧情线一致，宁可多留一条也不静默清空）。
+    // 待核对条目不注入正文，但保留在面板供回看/手动处理，避免「重说/暂停」把整条记忆凭空抹掉。
+    const markStale = (arr) => {
         if (!Array.isArray(arr)) return;
         for (let i = arr.length - 1; i >= 0; i--) {
             const e = arr[i];
             if (!e || typeof e.src !== 'string' || !e.src) continue;
             // 来源失效两种情况：① 消息被重roll/删除（签名不在 live）；② 消息原地编辑正文（签名在 live，但内容签名变了）
             const edited = typeof e.srcSig === 'string' && e.srcSig && contentBySig.get(e.src) !== e.srcSig;
-            if (!live.has(e.src) || edited) {
+            if ((!live.has(e.src) || edited) && !e.needsReview) {
                 if (typeof e.srcIdx === 'number' && e.srcIdx < minSrcIdx) minSrcIdx = e.srcIdx;
-                arr.splice(i, 1);
+                e.needsReview = true;
                 changed = true;
             }
         }
     };
-    dropStale(settings.memories);
-    dropStale(settings.timeline);
+    markStale(settings.memories);
+    markStale(settings.timeline);
     // 结构化状态来源失效：人物实体 / 关系线历史条目（P1）只标「待核对」不删除，
     // 避免重roll/删除一条消息连带抹掉其它轮次合并进同一实体的字段或整条关系线的 append-only 历史。
     const sourceGone = (src, srcSig) => {
@@ -2406,8 +2410,8 @@ function reconcileWithChat() {
     renderStorylines();
     renderCompressResult(); // 归档「待核对」标记要立刻反映到面板
     saveSettings(); // 失效防抖落盘，别只存在内存里等下一次防抖保存（刷新/更新前由 reloadOnUpdate 兜底）
-    if (changed && archChanged) toastr.info('检测到消息被重新生成/删除：已撤销对应来源的记忆/时间轴，并把受影响的剧情摘要标记为待核对');
-    else if (changed) toastr.info('检测到消息被重新生成/删除，已撤销对应来源的记忆与时间轴，将按新内容重新总结');
+    if (changed && archChanged) toastr.info('检测到消息被重新生成/删除：已把对应来源的记忆/时间轴标记为待核对（不再注入、保留可回看），并把受影响的剧情摘要标记为待核对');
+    else if (changed) toastr.info('检测到消息被重新生成/删除，已把对应来源的记忆与时间轴标记为待核对（不再注入、保留可回看），将按新内容重新总结');
     else toastr.warning('检测到消息被重新生成/删除，且与已归档的剧情摘要范围重叠：相关摘要已标记待核对（原文仍可回看）');
     return true;
 }
@@ -3014,8 +3018,8 @@ function buildMemoryBlock() {
     };
     // 字数预算：S > A > 短期 B(新→旧) > 长期 B(新→旧) 依次占用，放不下的较早记忆不注入（仍可通过语义召回找回）
     const cands = [
-        ...settings.longMemories.map((m, i) => ({ m, isLong: true, i, text: fmt(m, true) })),
-        ...settings.memories.map((m, i) => ({ m, isLong: false, i, text: fmt(m, false) })),
+        ...settings.longMemories.filter(m => m && !m.needsReview).map((m, i) => ({ m, isLong: true, i, text: fmt(m, true) })),
+        ...settings.memories.filter(m => m && !m.needsReview).map((m, i) => ({ m, isLong: false, i, text: fmt(m, false) })),
     ];
     const prio = c => rank(c.m.importance) * 2 + (c.isLong ? 1 : 0);
     const order = [...cands].sort((a, b) => prio(a) - prio(b) || b.m.time - a.m.time);
@@ -3445,6 +3449,7 @@ function memoryItemHtml(m, deletable, tier) {
                 ${timeLabel ? `<span class="st-sd__memory-clock">${timeLabel}</span>` : ''}
                 ${impBadge}
                 ${entityBadge}
+                ${staleBadge(m.needsReview)}
             </div>
             ${locLabel ? `<div class="st-sd__memory-loc">${locLabel}</div>` : ''}
         </div>
