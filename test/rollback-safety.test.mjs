@@ -4,6 +4,10 @@
 // T07（删未总结消息不全量回滚）、T08（删已总结消息只失效来源）、T13（连续重roll 幂等）。
 // 注意：这里复刻的是 index.js 里 reconcileWithChat 的核心算法（去掉 UI/保存副作用），
 // 若算法改动请同步这份测试。
+//
+// 当前算法（2.4.x）：来源失效只看内容签名 srcSig——只有 srcSig 非空且正文已不在聊天里才失效；
+// 没有 srcSig 的旧条目（含只有 messageSig 的）一律保留。messageSig（gen_started/send_date/swipe_id）
+// 在正常生成中会漂移，不再拿它判记忆/时间线的来源失效（归档 srcKeys 仍按 messageSig 判，见下方）。
 
 import assert from 'node:assert';
 
@@ -12,12 +16,21 @@ function messageSig(m) {
     return [m.gen_started || '', m.send_date || '', m.swipe_id == null ? 0 : m.swipe_id].join('|');
 }
 
-// 复刻 reconcileWithChat 的核心（纯函数）：失效 src 已不存在的记忆/时间线条目
+// 复刻 index.js contentSignature 的归一化 + 简单哈希（测试只关心「正文变了签名就变」）
+function contentSigCore(text) {
+    const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    let h = 0;
+    for (let i = 0; i < t.length; i++) { h = ((h << 5) - h + t.charCodeAt(i)) | 0; }
+    return String(h >>> 0);
+}
+
+// 复刻 reconcileWithChat 的核心（纯函数）：只失效「srcSig 非空且正文已不在聊天里」的记忆/时间线条目
 function reconcileCore(chat, memories, timeline) {
-    const live = new Set();
+    const liveContent = new Set();
     for (const m of chat) {
-        const s = messageSig(m);
-        if (s) live.add(s);
+        const cs = contentSigCore(m && m.mes);
+        if (cs) liveContent.add(cs);
     }
     let changed = false;
     let minSrcIdx = Infinity;
@@ -25,7 +38,10 @@ function reconcileCore(chat, memories, timeline) {
         if (!Array.isArray(arr)) return;
         for (let i = arr.length - 1; i >= 0; i--) {
             const e = arr[i];
-            if (e && typeof e.src === 'string' && e.src && !live.has(e.src)) {
+            if (!e) continue;
+            const hasSrcSig = typeof e.srcSig === 'string' && e.srcSig;
+            if (!hasSrcSig) continue; // 无内容签名（旧条目）一律保留：宁可多留，也不静默清空
+            if (!liveContent.has(e.srcSig)) {
                 if (typeof e.srcIdx === 'number' && e.srcIdx < minSrcIdx) minSrcIdx = e.srcIdx;
                 arr.splice(i, 1);
                 changed = true;
@@ -45,8 +61,8 @@ function ai(i, mes, extra = {}) {
 function user(i, mes) {
     return { name: '用户', is_user: true, mes, send_date: 1000 + i, gen_started: 1000 + i, swipe_id: 0 };
 }
-function mem(id, src, srcIdx) {
-    return { id, time: 0, src, srcIdx, text: '记忆' + id };
+function mem(id, src, srcIdx, srcSig) {
+    return { id, time: 0, src, srcIdx, srcSig, text: '记忆' + id };
 }
 
 let passed = 0;
@@ -61,11 +77,10 @@ console.log('rollback-safety.test.mjs');
 // T06：重roll 最后一条回复 → 只失效来源命中的记忆，无关记忆保留
 t('T06 重roll最后一条：只失效来源记忆，无关记忆保留', () => {
     const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '第一次回复')];
-    const sig2 = messageSig(chat[2]);
-    // 记忆 A 来自第2条回复；记忆 B 来自更早的开场白（src=开场白签名）
-    const memories = [mem('A', sig2, 2), mem('B', messageSig(chat[0]), 0)];
+    // 记忆 A 来自第2条回复；记忆 B 来自更早的开场白
+    const memories = [mem('A', messageSig(chat[2]), 2, contentSigCore(chat[2].mes)), mem('B', messageSig(chat[0]), 0, contentSigCore(chat[0].mes))];
     const timeline = [];
-    // 重roll：第2条被替换成新版本（时间戳 + swipe_id 变化）
+    // 重roll：第2条被替换成新版本（正文变了 → 内容签名变）
     chat[2] = ai(2, '第一次回复（新版）', { send_date: 9999, gen_started: 9999, swipe_id: 1 });
     const r = reconcileCore(chat, memories, timeline);
     assert.equal(r.changed, true);
@@ -76,7 +91,7 @@ t('T06 重roll最后一条：只失效来源记忆，无关记忆保留', () => 
 // T05：退出重进（签名不变）→ 什么都不失效
 t('T05 退出重进（消息未变）：不失效任何记忆', () => {
     const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复')];
-    const memories = [mem('A', messageSig(chat[2]), 2), mem('B', messageSig(chat[0]), 0)];
+    const memories = [mem('A', messageSig(chat[2]), 2, contentSigCore(chat[2].mes)), mem('B', messageSig(chat[0]), 0, contentSigCore(chat[0].mes))];
     const r = reconcileCore(chat, memories, []);
     assert.equal(r.changed, false);
     assert.equal(memories.length, 2);
@@ -85,7 +100,7 @@ t('T05 退出重进（消息未变）：不失效任何记忆', () => {
 // T08：删除已总结消息 → 只失效来源，无关记忆保留
 t('T08 删除已总结消息：只失效来源，无关记忆保留', () => {
     const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复')];
-    const memories = [mem('A', messageSig(chat[2]), 2), mem('B', messageSig(chat[0]), 0)];
+    const memories = [mem('A', messageSig(chat[2]), 2, contentSigCore(chat[2].mes)), mem('B', messageSig(chat[0]), 0, contentSigCore(chat[0].mes))];
     chat.splice(2, 1); // 删除第2条
     const r = reconcileCore(chat, memories, []);
     assert.equal(r.changed, true);
@@ -96,7 +111,7 @@ t('T08 删除已总结消息：只失效来源，无关记忆保留', () => {
 // T07：删除未总结消息（无 src 指向它）→ 不全量回滚
 t('T07 删除未总结消息：不影响任何记忆', () => {
     const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复'), user(3, '再说点')];
-    const memories = [mem('A', messageSig(chat[2]), 2)];
+    const memories = [mem('A', messageSig(chat[2]), 2, contentSigCore(chat[2].mes))];
     chat.splice(3, 1); // 删除尚未总结的第3条（用户消息）
     const r = reconcileCore(chat, memories, []);
     assert.equal(r.changed, false, '没有记忆的来源命中被删消息，不应回滚');
@@ -106,7 +121,7 @@ t('T07 删除未总结消息：不影响任何记忆', () => {
 // T13：连续重roll 幂等——第二次检测不再重复撤销、不倒退
 t('T13 连续重roll：幂等，不反复倒退', () => {
     const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复')];
-    const memories = [mem('A', messageSig(chat[2]), 2), mem('B', messageSig(chat[0]), 0)];
+    const memories = [mem('A', messageSig(chat[2]), 2, contentSigCore(chat[2].mes)), mem('B', messageSig(chat[0]), 0, contentSigCore(chat[0].mes))];
     chat[2] = ai(2, '回复 v2', { send_date: 2000, gen_started: 2000, swipe_id: 1 });
     const r1 = reconcileCore(chat, memories, []);
     assert.equal(r1.changed, true);
@@ -117,7 +132,7 @@ t('T13 连续重roll：幂等，不反复倒退', () => {
     assert.deepEqual(memories.map(m => m.id), ['B']);
 });
 
-// 迁移安全：旧记忆（无 src 字段）永远不被失效
+// 迁移安全：旧记忆（无 src / 无 srcSig）永远不被失效
 t('迁移安全：无 src 的旧记忆一律保留', () => {
     const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复')];
     const memories = [{ id: 'OLD', time: 0, text: '旧记忆（无src）' }];
@@ -127,17 +142,40 @@ t('迁移安全：无 src 的旧记忆一律保留', () => {
     assert.equal(memories.length, 1, '无 src 的旧记忆不能被静默清空');
 });
 
-// 时间线同样按来源失效
+// 迁移安全：有 src（messageSig）但没有 srcSig 的旧记忆，来源消失也不删（宁可多留，不静默清空）
+t('迁移安全：有 src 无 srcSig 的旧记忆，来源消失也不删', () => {
+    const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复')];
+    const memories = [mem('A', messageSig(chat[2]), 2)]; // 只有 src，无 srcSig
+    chat[2] = ai(2, '回复 v2', { send_date: 2000, gen_started: 2000, swipe_id: 1 });
+    const r = reconcileCore(chat, memories, []);
+    assert.equal(r.changed, false, 'messageSig 漂移/失效也不能误删无 srcSig 的旧记忆');
+    assert.equal(memories.length, 1);
+});
+
+// 时间线同样按来源（内容签名）失效
 t('时间线：来源被替换的时间线条目同样失效', () => {
     const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复')];
     const timeline = [
-        { id: 'tA', day: 1, src: messageSig(chat[2]), srcIdx: 2, event: 'A' },
-        { id: 'tB', day: 1, src: messageSig(chat[0]), srcIdx: 0, event: 'B' },
+        { id: 'tA', day: 1, src: messageSig(chat[2]), srcIdx: 2, srcSig: contentSigCore(chat[2].mes), event: 'A' },
+        { id: 'tB', day: 1, src: messageSig(chat[0]), srcIdx: 0, srcSig: contentSigCore(chat[0].mes), event: 'B' },
     ];
     chat[2] = ai(2, '回复 v2', { send_date: 2000, gen_started: 2000, swipe_id: 1 });
     const r = reconcileCore(chat, [], timeline);
     assert.equal(r.changed, true);
     assert.deepEqual(timeline.map(e => e.id), ['tB']);
+});
+
+// 原地编辑正文（swipe_id/时间戳不变、只改 mes）→ 内容签名变 → 来源记忆失效
+t('原地编辑正文：签名不变、内容变 → 只失效来源记忆', () => {
+    const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '第一次回复')];
+    const sig2 = messageSig(chat[2]);
+    const memories = [mem('A', sig2, 2, contentSigCore(chat[2].mes))];
+    // 原地编辑：不改时间戳/swipe_id，只改正文 → messageSig 不变、内容签名变
+    chat[2] = ai(2, '第一次回复（改了正文）');
+    assert.equal(messageSig(chat[2]), sig2, '前提：签名确实没变（纯正文编辑）');
+    const r = reconcileCore(chat, memories, []);
+    assert.equal(r.changed, true);
+    assert.equal(memories.length, 0, '正文被原地编辑，来源记忆失效');
 });
 
 // 复刻 index.js reconcileWithChat 里「归档待核对」的核心（纯函数，C05/M07）：
@@ -179,56 +217,6 @@ t('C05 旧归档（无 srcKeys）：保留不判', () => {
     const r = markStaleArchiveCore(chat, arch);
     assert.equal(r.changed, false);
     assert.equal(arch[0].needsReview, false);
-});
-
-// 内容签名（复刻 index.js contentSignature 的归一化 + 简单哈希；测试只关心「正文变了签名就变」）
-function contentSigCore(text) {
-    const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
-    if (!t) return '';
-    let h = 0;
-    for (let i = 0; i < t.length; i++) { h = ((h << 5) - h + t.charCodeAt(i)) | 0; }
-    return String(h >>> 0);
-}
-
-// 复刻 index.js reconcileWithChat 的内容感知失效核心（重roll/删除 + 原地编辑正文）
-function reconcileWithContentCore(chat, memories) {
-    const live = new Set();
-    const contentBySig = new Map();
-    for (const m of chat) {
-        const s = messageSig(m);
-        if (s) { live.add(s); contentBySig.set(s, contentSigCore(m.mes)); }
-    }
-    let changed = false;
-    for (let i = memories.length - 1; i >= 0; i--) {
-        const e = memories[i];
-        if (!e || typeof e.src !== 'string' || !e.src) continue;
-        const edited = typeof e.srcSig === 'string' && e.srcSig && contentBySig.get(e.src) !== e.srcSig;
-        if (!live.has(e.src) || edited) { memories.splice(i, 1); changed = true; }
-    }
-    return changed;
-}
-
-// 原地编辑正文（swipe_id/时间戳不变、只改 mes）→ 来源记忆同样失效（cursor_policy 的「消息内容改变」）
-t('原地编辑正文：签名不变、内容变 → 只失效来源记忆', () => {
-    const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '第一次回复')];
-    const sig2 = messageSig(chat[2]);
-    const memories = [{ ...mem('A', sig2, 2), srcSig: contentSigCore(chat[2].mes) }];
-    // 原地编辑：不改时间戳/swipe_id，只改正文 → messageSig 不变、内容签名变
-    chat[2] = ai(2, '第一次回复（改了正文）');
-    assert.equal(messageSig(chat[2]), sig2, '前提：签名确实没变（纯正文编辑）');
-    const r = reconcileWithContentCore(chat, memories);
-    assert.equal(r, true);
-    assert.equal(memories.length, 0, '正文被原地编辑，来源记忆失效');
-});
-
-// 无 srcSig 的旧记忆：只按签名是否在 live 判断，不因内容签名为空被误删
-t('无 srcSig 的旧记忆：不受内容签名逻辑影响', () => {
-    const chat = [ai(0, '开场白'), user(1, '你好'), ai(2, '回复')];
-    const memories = [{ ...mem('A', messageSig(chat[2]), 2) }]; // 无 srcSig
-    chat[2] = ai(2, '回复（正文改了）'); // 同签名、正文改，但旧记忆没有 srcSig，不判内容
-    const r = reconcileWithContentCore(chat, memories);
-    assert.equal(r, false);
-    assert.equal(memories.length, 1, '无 srcSig 的旧记忆保留（迁移安全）');
 });
 
 console.log('全部通过：' + passed + ' 项');

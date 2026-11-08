@@ -2394,10 +2394,10 @@ function reconcileWithChat() {
     }
     let changed = false;
     let minSrcIdx = Infinity;
-    // 来源是否失效：有内容签名看内容签名（稳定），没有才退回时间戳签名；两者都没有 = 无法确定来源，一律保留
+    // 来源是否失效：只看内容签名 srcSig（位置无关、正常对话期间稳定）。没有内容签名的旧条目一律保留——
+    // messageSig 用 gen_started/send_date/swipe_id 拼，正常生成中会漂移，拿它判来源会误删正常总结出的记忆。
     const sourceGone = (src, srcSig) => {
         if (typeof srcSig === 'string' && srcSig) return !liveContent.has(srcSig);
-        if (typeof src === 'string' && src) return !live.has(src);
         return false;
     };
     const dropStale = (arr) => {
