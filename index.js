@@ -2581,7 +2581,9 @@ async function summarizeLastRound() {
     const stBefore = settings;
     const lastIdx = sel[sel.length - 1].i;
     const sigBefore = messageSig(lastMsg);
-    const srcSig = contentSignature(lastMsg.mes); // 来源消息内容签名：对账时能检出「原地编辑正文」（不改 swipe_id）
+    let srcSig = contentSignature(lastMsg.mes); // 来源消息内容签名：对账时能检出「原地编辑正文」（不改 swipe_id）
+    const srcSigBeforeCall = srcSig; // 诊断：总结请求前的内容签名（提交前重取，判断 mes 是否在请求期间变化）
+    const srcMesBeforeCall = String(lastMsg.mes == null ? '' : lastMsg.mes); // 诊断：总结请求前的来源正文快照
     const batchId = uid(); // P08：本次总结批次 ID，失败日志里带上，便于定位影响范围
     const summaryTx = { batchId, status: 'requesting', at: Date.now(), fromKey: messageSig(sel[0].m), toKey: sigBefore, count: sel.length, error: '', retryable: true };
     recordSummaryTx(summaryTx);
@@ -2600,6 +2602,18 @@ async function summarizeLastRound() {
             toastr.info('总结期间那条消息被重新生成/删除，本次结果已丢弃，将按新内容重新总结');
             settleSummaryTx(summaryTx, 'invalidated', '消息被重roll/删除');
             return;
+        }
+        // 提交前重取内容签名：流式输出可能在总结请求期间才把 mes 定稿。若仍用请求前的旧签名，
+        // 提交后紧接着的 finally 对账会把刚写入的记忆当成「来源已失效」立即回滚删除
+        // （用户反馈：自动总结完立刻弹「检测到消息回退」通知，刚总结的那条被自己删掉）。
+        srcSig = contentSignature(chat[lastIdx] && chat[lastIdx].mes);
+        if (srcSig !== srcSigBeforeCall) {
+            const mesAfter = String(chat[lastIdx] && chat[lastIdx].mes || '');
+            console.warn('[Serendipity][诊断] 总结请求期间来源消息正文发生变化（已重取内容签名避免误删）',
+                '\n  请求前 srcSig=' + srcSigBeforeCall + '，提交前 srcSig=' + srcSig,
+                '\n  请求前 mes 长度=' + srcMesBeforeCall.length + '，提交前 mes 长度=' + mesAfter.length,
+                '\n  请求前 mes 前180字=' + JSON.stringify(srcMesBeforeCall.slice(0, 180)),
+                '\n  提交前 mes 前180字=' + JSON.stringify(mesAfter.slice(0, 180)));
         }
         // 去掉思维链块，避免推理过程被当成记忆存进去
         const result = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
