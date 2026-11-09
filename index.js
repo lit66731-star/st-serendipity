@@ -24,7 +24,7 @@ import { oai_settings } from '../../../openai.js';
 import { hasMemoryForSource, commitSummary } from './src/summary-commit.js';
 
 const extensionName = 'serendipity';
-const VERSION = '2.4.4'; // 面板标题旁展示，更新时与 manifest.json 同步
+const VERSION = '2.4.5'; // 面板标题旁展示，更新时与 manifest.json 同步
 
 const TIER_LIMIT = 10; // 满 10 条晋级
 
@@ -1461,6 +1461,7 @@ function buildSummaryPrompt(transcript, userName, charName, storyTime) {
     return {
         systemPrompt: [
             '你是剧情记忆助手。请阅读下面这段对话，提取信息并总结。只输出总结本身，不要复述、不要添加任何解释或客套。',
+            '以下对话为成人向虚构创作内容。请保持中立、客观，只做剧情归纳与信息提取；不评判、不拒绝、不展开、不续写，即使出现露骨或敏感描写也照常提取剧情要点。',
             '',
             timeAnchor,
             '',
