@@ -31,7 +31,7 @@ export async function commitSummary({ settings, lastIdx, sigBefore, save, clearF
 
     // ② 数据已落盘 → 推进游标并二次落盘
     settings.lastSummaryIndex = lastIdx;
-    settings.lastCommittedMessageKey = sigBefore;
+    settings.lastCommittedMessageKey = (sigBefore && sigBefore !== '||0') ? sigBefore : '';
     if (clearFailStreak) clearFailStreak();
 
     let cursorPersisted = false;
@@ -41,6 +41,7 @@ export async function commitSummary({ settings, lastIdx, sigBefore, save, clearF
     } catch (e) {
         if (onSaveFailed) onSaveFailed('cursor', e);
     }
+
     return {
         committed: cursorPersisted,
         cursorAdvanced: true,

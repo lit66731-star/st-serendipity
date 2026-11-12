@@ -896,7 +896,11 @@ function getApiCfg() {
 }
 function apiEndpoint(url) {
     url = String(url || '').trim().replace(/\/+$/, '');
+    if (!url) return '';
     if (/\/chat\/completions$/i.test(url)) return url;
+    if (!/\/(v\d+|api)(\/|$)/i.test(url)) {
+        return url + '/v1/chat/completions';
+    }
     return url + '/chat/completions';
 }
 // 把可能出现在报错里的密钥抹掉（报错会弹 toast / 进控制台，可能被截图或转发）
@@ -1102,7 +1106,10 @@ function getTaskModelContext(taskId) {
 // 消息内容签名：messageSig 只对重roll/删除（swipe_id/时间戳变化）敏感，检测不到「原地编辑正文」。
 // 两者一起用才能覆盖文档里 message_edited 场景（Phase 4 历史范围校验会用到）。
 function contentSignature(text) {
-    const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    const t = String(text == null ? '' : text)
+        .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
     return t ? String(getStringHash(t)) : '';
 }
 // 组装 summary_structure 的来源/签名/模型/token 元数据（随记忆与归档记录存，用于追溯与内容改动校验）
@@ -2398,14 +2405,22 @@ function reconcileWithChat() {
     // 来源是否失效：只看内容签名 srcSig（位置无关、正常对话期间稳定）。没有内容签名的旧条目一律保留——
     // messageSig 用 gen_started/send_date/swipe_id 拼，正常生成中会漂移，拿它判来源会误删正常总结出的记忆。
     const sourceGone = (src, srcSig) => {
-        if (typeof srcSig === 'string' && srcSig) return !liveContent.has(srcSig);
+        if (typeof srcSig === 'string' && srcSig) {
+            if (liveContent.has(srcSig)) return false;
+            // 容错：正文若因标点/格式微调导致内容签名未直接命中，但身份键明确在当前聊天且非空特征（排除 ||0），不误删
+            if (src && src !== '||0' && live.has(src)) return false;
+            return true;
+        }
         return false;
     };
     const dropStale = (arr) => {
         if (!Array.isArray(arr)) return;
+        const now = Date.now();
         for (let i = arr.length - 1; i >= 0; i--) {
             const e = arr[i];
             if (!e) continue;
+            // 刚写入成功的条目增加 15 秒保护冷却期，避免生成定稿微调产生瞬时竞态误删
+            if (e.time && (now - e.time < 15000) && e.src && live.has(e.src)) continue;
             const hasSrc = typeof e.src === 'string' && e.src;
             const hasSrcSig = typeof e.srcSig === 'string' && e.srcSig;
             if (!hasSrc && !hasSrcSig) continue; // 无法确定来源的旧条目一律保留（宁可多留，也不静默清空）
@@ -2484,7 +2499,7 @@ function reconcileWithChat() {
 function summaryBoundaryIndex() {
     if (!Array.isArray(chat) || !chat.length) return 0;
     const key = settings.lastCommittedMessageKey;
-    if (typeof key === 'string' && key) {
+    if (typeof key === 'string' && key && key !== '||0') {
         for (let i = chat.length - 1; i >= 0; i--) {
             if (messageSig(chat[i]) === key) return i + 1;
         }
@@ -2502,7 +2517,7 @@ function hasUnsummarizedChat() {
     // 优先用身份键定位水位线（重roll/删除后下标会漂移，键更稳）；键失效退回下标兜底
     let w = settings.lastSummaryIndex;
     const key = settings.lastCommittedMessageKey;
-    if (typeof key === 'string' && key) {
+    if (typeof key === 'string' && key && key !== '||0') {
         for (let i = chat.length - 1; i >= 0; i--) {
             if (messageSig(chat[i]) === key) { w = i; break; }
         }
@@ -3178,7 +3193,8 @@ async function writeSummaryToWorldBook(summary, from, to) {
     entry.content = '【前情摘要 · 第' + from + '–' + to + '楼 · ' + dateStr + '】以下事件是过去已经发生的剧情，不是当前正在发生；除非剧情明确说再次发生。\n' + summary;
     entry.key = memoryKeywords({ text: summary, entityRef: null, storyLocation: settings.storyLocation });
     entry.constant = false;   // 不常驻，靠关键词/语义按需召回
-    entry.selective = true;
+    entry.selective = false;  // 关键修复：设为 false，允许主关键词按需召回，避免因空 keysecondary 导致被 SillyTavern 永久跳过
+    entry.keysecondary = [];
     const charFile = currentCharFileName();
     if (charFile) entry.characterFilter = { isExclude: false, names: [charFile], tags: [] };
     entry.vectorized = !!settings.archiveVectorized;
@@ -3461,12 +3477,10 @@ function memoryKeywords(m) {
     }
     const loc = (m.storyLocation || '').trim();
     if (loc.length >= 2 && !/^(这里|那里|某处|室内|室外|原地|当地)$/.test(loc)) keys.add(loc);
-    const arr = [...keys];
-    if (!arr.length) {
-        const cn = currentCharName();
-        if (cn && cn.trim()) arr.push(cn.trim());
-    }
-    return arr.slice(0, 8);
+    const cn = currentCharName();
+    if (cn && cn.trim().length >= 2) keys.add(cn.trim());
+    const arr = [...keys].filter(k => typeof k === 'string' && k.trim());
+    return arr.length ? arr.slice(0, 10) : (cn ? [cn.trim()] : ['记忆']);
 }
 
 // 条目内容 = 原文 + 时间前缀，召回后模型能知道这是哪天的事
@@ -3508,6 +3522,16 @@ async function injectToWorldBook() {
             toastr.error('读取世界书「' + worldName + '」失败，可能已被删除，请重新选择');
             return;
         }
+        // 自动兼容修复：若世界书中已有 Serendipity 归档条目曾被误标为 selective=true，一并修复为 false
+        if (data && data.entries) {
+            for (const uid of Object.keys(data.entries)) {
+                const item = data.entries[uid];
+                if (item && typeof item.comment === 'string' && item.comment.startsWith('[Serendipity]') && item.selective) {
+                    item.selective = false;
+                    item.keysecondary = Array.isArray(item.keysecondary) ? item.keysecondary : [];
+                }
+            }
+        }
         const charFile = currentCharFileName();
         let written = 0;
         for (const m of settings.longMemories) {
@@ -3518,7 +3542,8 @@ async function injectToWorldBook() {
             entry.content = memoryEntryContent(m);
             entry.key = memoryKeywords(m);        // 关键词：按人物/地点等召回
             entry.constant = false;               // 不常驻，靠关键词触发按需召回
-            entry.selective = true;               // 选择性触发（关键词匹配）
+            entry.selective = false;              // 关键修复：设为 false 允许主关键词按需召回
+            entry.keysecondary = [];
             // 绑定当前角色：酒馆的过滤字段是 characterFilter.names，值为头像文件名去扩展名；群聊/无角色时不设过滤
             if (charFile) entry.characterFilter = { isExclude: false, names: [charFile], tags: [] };
             entry.vectorized = !!settings.archiveVectorized; // 语义召回：标 true 交给酒馆向量存储按语义召回（需 ST 向量存储已启用并配好 embedding 源）
@@ -4232,8 +4257,12 @@ const EMBED_QUERY_TIMEOUT_MS = 15000;  // 查询向量超时（注入正文会�
 // OpenAI 兼容的 embeddings 端点（url 可能带 /chat/completions 或裸 /v1）
 function embedEndpoint(url) {
     url = String(url || '').trim().replace(/\/+$/, '');
+    if (!url) return '';
     if (/\/embeddings$/i.test(url)) return url;
     if (/\/chat\/completions$/i.test(url)) return url.replace(/\/chat\/completions$/i, '/embeddings');
+    if (!/\/(v\d+|api)(\/|$)/i.test(url)) {
+        return url + '/v1/embeddings';
+    }
     return url + '/embeddings';
 }
 
@@ -4251,7 +4280,10 @@ function getEmbedCfg() {
     }
     const main = root.api || {};
     const e = root.embedApi || {};
-    const model = String(e.model || root.embedModel || main.model || '').trim();
+    let model = String(e.model || root.embedModel || '').trim();
+    if (!model && main.model && EMBED_HINT.test(main.model)) {
+        model = String(main.model).trim();
+    }
     if (e.url && String(e.url).trim()) {
         return { url: String(e.url).trim(), key: String(e.key || '').trim(), model };
     }
@@ -4305,10 +4337,16 @@ function vecToB64(v) {
 }
 
 function b64ToVec(b64) {
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return Array.from(new Float32Array(bytes.buffer));
+    try {
+        if (typeof b64 !== 'string' || !b64) return [];
+        const bin = atob(b64);
+        if (!bin.length || bin.length % 4 !== 0) return [];
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return Array.from(new Float32Array(bytes.buffer));
+    } catch (e) {
+        return [];
+    }
 }
 
 function embedStoreKey(key) {
@@ -4342,8 +4380,15 @@ function saveEmbedStore(store, key) {
     try {
         localStorage.setItem(embedStoreKey(key), JSON.stringify({ model: store.model, items }));
     } catch (e) {
-        // 容量不足：保留内存里已算的，下次还会重算，至少不崩
-        console.warn('[Serendipity] 保存本地向量缓存失败（可能超出浏览器存储上限）：', e);
+        console.warn('[Serendipity] 保存本地向量缓存空间不足，尝试修剪后重试：', e);
+        try {
+            const pruned = {};
+            const keys = Object.keys(items).slice(-40);
+            for (const k of keys) pruned[k] = items[k];
+            localStorage.setItem(embedStoreKey(key), JSON.stringify({ model: store.model, items: pruned }));
+        } catch (e2) {
+            console.warn('[Serendipity] 修剪后仍无法写入本地向量缓存：', e2);
+        }
     }
 }
 
@@ -7324,8 +7369,12 @@ jQuery(async () => {
             // 并列触发：每 N 轮 或 未处理历史 token 达到（输入预算 × 触发比例）都总结。未知上下文时 token 触发自动失效，退回纯轮数。
             const tokenReady = shouldTriggerSummary(pendingSummaryTokens(), resolveTokenBudget(settings.tokenBudget, getTaskModelContext('memory_summary')));
             if (roundReady || tokenReady) {
-                settings.roundsSinceSummary = 0;
-                summarizeLastRound();
+                if (taskConfigured('memory_summary')) {
+                    settings.roundsSinceSummary = 0;
+                    summarizeLastRound();
+                } else {
+                    toastr.info('已达到自动记忆总结触发条件，请在 Serendipity 模型页为「记忆总结」任务绑定提供方与模型', undefined, { timeOut: 8000 });
+                }
             }
         }, 200);
     });
